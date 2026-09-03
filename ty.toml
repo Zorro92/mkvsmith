@@ -1,0 +1,13 @@
+# ty configuration — trial run (side-by-side with pyright, see pyrightconfig.json).
+# Strict-ish rule set recommended by ty's "Coming from pyright" migration guide.
+#
+# CAUTION (ty 0.0.71 bug): when ty *discovers* this file itself (walking up
+# from the project root), it silently drops all diagnostics for main.py.
+# The same content passed explicitly works correctly:
+#     uvx ty check --config-file ty.toml
+# `ty server` (the Zed LSP) takes no flags, so the editor likely shows the
+# buggy results until this is fixed upstream.
+[rules]
+missing-type-argument = "error"
+possibly-unresolved-reference = "warn"
+unsound-return-statement = "error"

@@ -123,6 +123,16 @@ mkvsmith> q          # salir
   y oculta tras `--debug` (que expone `--multi-edition` y el comando interactivo
   `me`). La reproducción a través de los puntos donde se unen las ediciones
   puede no funcionar en todos los reproductores.
+- **Dolby Vision no ha sido probado a fondo.** HDR10 y HDR10+ no requieren
+  tratamiento especial (sus metadatos viajan dentro del bitstream de vídeo y
+  sobreviven intactos a un remux), y la señalización de color BT.2020/PQ para
+  Blu-rays HDR y DV se analiza desde la playlist y está cubierta por pruebas
+  unitarias. Sin embargo, no se ha dispuesto de ningún disco Dolby Vision
+  Profile 7 (UHD Blu-ray de doble capa) para hacer pruebas: un remux conserva
+  únicamente la capa base compatible con HDR10 (el DV completo requeriría
+  procesamiento a nivel de bitstream, algo que un remuxer deliberadamente no
+  hace), y no está verificado si la entrada de la capa de mejora del disco
+  puede aparecer como una pista de vídeo extra espuria.
 
 ## Fixtures de disco
 

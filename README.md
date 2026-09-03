@@ -1,5 +1,7 @@
 # mkvsmith
 
+> [English](README.md) · [Español](README.es.md)
+
 MakeMKV-style DVD/Blu-ray ripper that produces MKV files using
 [mkvmerge](https://mkvtoolnix.download/) (MKVToolNix).
 

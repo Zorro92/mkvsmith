@@ -120,6 +120,15 @@ mkvsmith> q          # quit
   gated behind `--debug` (which exposes `--multi-edition` and the interactive
   `me` command). Playback across the seams where editions are stitched
   together may not work in every player.
+- **Dolby Vision has not been fully tested.** HDR10 and HDR10+ need no special
+  handling (their metadata travels inside the video bitstream and survives a
+  remux untouched), and the BT.2020/PQ colour signalling for HDR and DV
+  Blu-rays is parsed from the playlist and covered by unit tests. However,
+  no Dolby Vision Profile 7 (dual-layer UHD Blu-ray) disc has been available
+  to test against: a remux keeps only the HDR10-compatible base layer (full
+  DV would require bitstream-level processing, which a remuxer deliberately
+  does not do), and it is unverified whether the disc's enhancement-layer
+  entry can show up as a stray extra video track.
 
 ## Disc fixtures
 

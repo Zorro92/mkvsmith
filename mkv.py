@@ -168,6 +168,27 @@ _COLOR_RANGE: dict[str, int] = {
 }
 
 
+def _chroma_siting_for_codec(codec: str) -> str | None:
+    """Return "hori,vert" chroma siting for codecs that cannot signal it.
+
+    MPEG-2 has no bitstream field for chroma siting: the position of the
+    4:2:0 chroma planes is fixed by the standard (collocated with the left
+    luma column, vertically midway between rows).  Matroska expresses that
+    as ChromaSitingHorz=1 (left collocated) / ChromaSitingVert=2 (half) —
+    the same mapping FFmpeg's libavformat/matroskaenc.c uses for
+    AVCHROMA_LOC_LEFT ("MPEG-2 style").  Signalling it explicitly completes
+    the track header; players already assume this convention when the
+    element is absent.
+
+    Other codecs (H.264/HEVC VUI chroma_sample_position) *can* signal siting
+    in the bitstream, which mkvsmith does not parse — passing a guess would
+    risk overriding a real value, so they get None.
+    """
+    if codec == "mpeg2video":
+        return "1,2"
+    return None
+
+
 def _resolve_video_color(stream: Stream) -> tuple[str, str, str, str] | None:
     """Return (primaries, transfer, matrix, range) to apply to a video stream.
 
@@ -967,6 +988,11 @@ class MKVCreator:
                         ):
                             if code is not None:
                                 cmd += [opt, f"{input_id}:{code}"]
+                    # Chroma siting: only for codecs with no bitstream
+                    # signalling of their own (see _chroma_siting_for_codec).
+                    siting = _chroma_siting_for_codec(s.codec)
+                    if siting is not None:
+                        cmd += ["--chroma-siting", f"{input_id}:{siting}"]
 
                 # Track name: prefer explicit title, otherwise synthesize
                 # for audio from channel count + codec. Use the accurate channel

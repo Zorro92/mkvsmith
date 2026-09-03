@@ -1,7 +1,12 @@
 """Unit tests for mux-time colour resolution (mkv._resolve_video_color)."""
 
 from models import Stream
-from mkv import _COLOR_CICP, _COLOR_RANGE, _resolve_video_color
+from mkv import (
+    _COLOR_CICP,
+    _COLOR_RANGE,
+    _chroma_siting_for_codec,
+    _resolve_video_color,
+)
 
 
 def _video(height: int | None = None, **kwargs: object) -> Stream:
@@ -102,3 +107,17 @@ def test_every_resolvable_value_has_a_mkvmerge_code() -> None:
         assert value in _COLOR_CICP, value
     for value in ("tv", "limited", "pc", "full"):
         assert value in _COLOR_RANGE, value
+
+
+def test_mpeg2_chroma_siting_is_left_collocated_half() -> None:
+    # MPEG-2 4:2:0 cannot signal siting; the fixed position is chroma
+    # collocated with the left luma column (1), vertically halfway between
+    # rows (2) — FFmpeg's AVCHROMA_LOC_LEFT mapping.
+    assert _chroma_siting_for_codec("mpeg2video") == "1,2"
+
+
+def test_codecs_with_vui_signalling_get_no_chroma_siting() -> None:
+    # H.264/HEVC carry chroma_sample_position in the VUI; passing a guess
+    # could override a real bitstream value, so no option is emitted.
+    for codec in ("h264", "h265", "hevc", "vc1", "mpeg1video"):
+        assert _chroma_siting_for_codec(codec) is None, codec

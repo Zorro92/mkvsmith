@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# Virtual environments
+.venv
+.aider*
+
+# Agent tooling (not part of the shipped tool)
+.agents/
+
+# Disc-derived binary fixtures (not committed; see README "Disc fixtures")
+tests/fixtures/

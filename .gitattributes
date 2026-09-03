@@ -1,0 +1,3 @@
+# Normalise line endings: store LF in the repo, check out the OS-native
+# ending locally so diffs stay clean across Windows/Linux/macOS.
+* text=auto

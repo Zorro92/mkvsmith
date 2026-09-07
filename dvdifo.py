@@ -1708,66 +1708,85 @@ def _parse_pgc_stream_languages(
 # =============================================================================
 
 
-def _pgc_angle_from_commands(ifo_data: bytes, pgc_abs: int) -> int:
-    """Detect which angle a PGC selects by parsing its pre-commands.
-
-    On seamless-branching discs that use multi-angle blocks (e.g. Beauty and
-    the Beast SE), different editions share the same PGC cell table but set
-    different angles via SetSTN pre-commands. Angle 1 selects block_mode=1
-    cells, Angle 2 selects block_mode=2 cells, etc.
-
-    Returns the angle number (1-based), or 1 if no SetSTN angle command is
-    found (the default/standard angle).
-    """
+def _pgc_command_table_base(ifo_data: bytes, pgc_abs: int) -> int | None:
     if pgc_abs + _PGCOffset.COMMANDS_OFFSET + 2 > len(ifo_data):
         log_debug(f"    _pgc_angle: PGC offset {pgc_abs:#x} out of bounds for commands")
-        return 1
-    cmd_tbl_off = _read_u16(ifo_data, pgc_abs + _PGCOffset.COMMANDS_OFFSET)
+        return None
+
+    command_table_offset = _read_u16(ifo_data, pgc_abs + _PGCOffset.COMMANDS_OFFSET)
     log_debug(
-        f"    _pgc_angle: pgc_abs={pgc_abs:#x} cmd_tbl_off=0x{cmd_tbl_off:x} (at PGC+0x{_PGCOffset.COMMANDS_OFFSET:X})"
+        f"    _pgc_angle: pgc_abs={pgc_abs:#x} "
+        f"cmd_tbl_off=0x{command_table_offset:x} "
+        f"(at PGC+0x{_PGCOffset.COMMANDS_OFFSET:X})"
     )
-    if cmd_tbl_off == 0:
+    if command_table_offset == 0:
         log_debug("    _pgc_angle: command table offset is 0, no commands")
-        return 1
-    cmd_base = pgc_abs + cmd_tbl_off
-    if cmd_base + 6 > len(ifo_data):
-        log_debug(f"    _pgc_angle: cmd_base {cmd_base:#x} out of bounds")
-        return 1
-    nr_pre = _read_u16(ifo_data, cmd_base) & 0x3F
-    nr_post = _read_u16(ifo_data, cmd_base + 2) & 0x3F
-    nr_cell = _read_u16(ifo_data, cmd_base + 4) & 0x3F
-    log_debug(f"    _pgc_angle: nr_pre={nr_pre} nr_post={nr_post} nr_cell={nr_cell}")
-    # Pre-commands start after the 8-byte header (nr_pre, nr_post,
-    # nr_cell as 3x u16, plus a 2-byte reserved/next-command field).
-    pre_start = cmd_base + 8
-    for i in range(nr_pre):
-        off = pre_start + i * 8
-        if off + 8 > len(ifo_data):
+        return None
+
+    command_base = pgc_abs + command_table_offset
+    if command_base + 6 > len(ifo_data):
+        log_debug(f"    _pgc_angle: cmd_base {command_base:#x} out of bounds")
+        return None
+    return command_base
+
+
+def _pgc_pre_command_count(ifo_data: bytes, command_base: int) -> int:
+    pre_count = _read_u16(ifo_data, command_base) & 0x3F
+    post_count = _read_u16(ifo_data, command_base + 2) & 0x3F
+    cell_count = _read_u16(ifo_data, command_base + 4) & 0x3F
+    log_debug(
+        f"    _pgc_angle: nr_pre={pre_count} nr_post={post_count} nr_cell={cell_count}"
+    )
+    return pre_count
+
+
+def _scan_pgc_angle_commands(
+    ifo_data: bytes, command_base: int, command_count: int
+) -> int:
+    # Pre-commands start after the 8-byte command-table header.
+    first_command = command_base + 8
+    for index in range(command_count):
+        offset = first_command + index * 8
+        if offset + 8 > len(ifo_data):
             break
-        cmd = ifo_data[off]
-        # Dump first 8 and any SetSTN commands
-        if i < 8 or cmd in (0x51, 0x41):
-            b = ifo_data[off : off + 8]
+
+        command = ifo_data[offset]
+        if index < 8 or command in (0x51, 0x41):
+            command_bytes = ifo_data[offset : offset + 8]
             log_debug(
-                f"    _pgc_angle: pre[{i}] off=0x{off:x} "
-                f"cmd=0x{cmd:02x} bytes={b.hex(' ')}"
+                f"    _pgc_angle: pre[{index}] off=0x{offset:x} "
+                f"cmd=0x{command:02x} "
+                f"bytes={command_bytes.hex(' ')}"
             )
-        # SetSTN command: byte 0 = 0x51 (direct) or 0x41 (via GPRM)
-        if cmd in (0x51, 0x41):
-            angle_byte = ifo_data[off + 5]
-            log_debug(
-                f"    _pgc_angle: pre[{i}] cmd=0x{cmd:02x} "
-                f"bytes=[{ifo_data[off]:02x} {ifo_data[off + 1]:02x} "
-                f"{ifo_data[off + 2]:02x} {ifo_data[off + 3]:02x} "
-                f"{ifo_data[off + 4]:02x} {ifo_data[off + 5]:02x} "
-                f"{ifo_data[off + 6]:02x} {ifo_data[off + 7]:02x}] "
-                f"angle_byte=0x{angle_byte:02x}"
-            )
-            if angle_byte & 0x80:
-                angle = angle_byte & 0x7F
-                if angle > 0:
-                    log_debug(f"    _pgc_angle: detected Angle {angle}")
-                    return angle
+
+        if command not in (0x51, 0x41):
+            continue
+        angle_byte = ifo_data[offset + 5]
+        log_debug(
+            f"    _pgc_angle: pre[{index}] cmd=0x{command:02x} "
+            f"angle_byte=0x{angle_byte:02x}"
+        )
+        if angle_byte & 0x80:
+            angle = angle_byte & 0x7F
+            if angle > 0:
+                log_debug(f"    _pgc_angle: detected Angle {angle}")
+                return angle
+    return 0
+
+
+def _pgc_angle_from_commands(ifo_data: bytes, pgc_abs: int) -> int:
+    """Detect the angle selected by SetSTN pre-commands.
+
+    Returns a one-based angle number, defaulting to angle 1 when the command
+    table is absent or contains no angle selection.
+    """
+    command_base = _pgc_command_table_base(ifo_data, pgc_abs)
+    if command_base is None:
+        return 1
+    command_count = _pgc_pre_command_count(ifo_data, command_base)
+    angle = _scan_pgc_angle_commands(ifo_data, command_base, command_count)
+    if angle:
+        return angle
     log_debug("    _pgc_angle: no SetSTN angle command found, returning 1")
     return 1
 

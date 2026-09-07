@@ -30,6 +30,7 @@ from dvdifo import (
     _parse_vts_video_attrs,
     _parse_vts_audio_attrs,
     _parse_vts_vobu_admap,
+    _vts_ttn1_pgc_abs,
 )
 from models import StreamType
 
@@ -227,6 +228,7 @@ def test_get_active_pgc_streams(fixtures_dir: Path) -> None:
 def test_find_main_pgc_and_enumerate_vts_pgcs(fixtures_dir: Path) -> None:
     data = (fixtures_dir / "dvd_vts_01_0.ifo").read_bytes()
 
+    assert _vts_ttn1_pgc_abs(data) == 4408
     assert _find_main_pgc(data) == (4408, 4484.433766666667, 71)
     assert _find_main_pgc(data, 1) == (4408, 4484.433766666667, 71)
     assert _find_main_pgc(data, 2) == (7128, 12.0, 1)

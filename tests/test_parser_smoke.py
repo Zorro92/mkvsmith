@@ -27,6 +27,10 @@ from dvdifo import (
     _parse_vts_pgc_info,
     _parse_vts_vobu_admap,
     _pgc_offset_table_base,
+    _vts_pgc_absolute_offset,
+    _vts_ptt_srpt_base,
+    _vts_title_unit_base,
+    _vts_ttn1_pgc_number,
 )
 
 
@@ -242,3 +246,47 @@ def test_find_main_pgc_falls_back_to_longest_then_most_cells(
 
     monkeypatch.setattr(dvdifo, "_enumerate_vts_pgcs", lambda _data: [])
     assert dvdifo._find_main_pgc(bytes(data)) is None
+
+
+def _vts_ttn1_pointer_buffer() -> bytes:
+    data = bytearray(0x1100)
+    data[0xC8:0xCC] = struct.pack(">I", 1)  # VTS_PTT_SRPT sector
+    data[0xCC:0xD0] = struct.pack(">I", 2)  # VTS_PGCIT sector
+    data[0x800:0x802] = struct.pack(">H", 1)  # one SRPT title
+    data[0x808:0x80C] = struct.pack(">I", 0x10)
+    data[0x810:0x812] = struct.pack(">H", 1)  # one PTT
+    data[0x812:0x814] = struct.pack(">H", 2)  # PGC number 2
+    data[0x1010:0x1018] = struct.pack(">I", 0) + struct.pack(">I", 0x20)
+    return bytes(data)
+
+
+def test_vts_ttn1_pointer_stages() -> None:
+    data = _vts_ttn1_pointer_buffer()
+
+    assert _vts_ptt_srpt_base(data) == 0x800
+    assert _vts_title_unit_base(data, 0x800) == 0x810
+    assert _vts_ttn1_pgc_number(data, 0x810) == 2
+    assert _vts_pgc_absolute_offset(data, 2) == 0x1020
+    assert dvdifo._vts_ttn1_pgc_abs(data) == 0x1020
+
+
+def test_vts_ttn1_pointer_stages_reject_invalid_entries() -> None:
+    zero_srpt = bytearray(_vts_ttn1_pointer_buffer())
+    zero_srpt[0xC8:0xCC] = b"\x00" * 4
+    assert _vts_ptt_srpt_base(bytes(zero_srpt)) is None
+
+    zero_titles = bytearray(_vts_ttn1_pointer_buffer())
+    zero_titles[0x800:0x802] = b"\x00\x00"
+    assert _vts_ptt_srpt_base(bytes(zero_titles)) is None
+
+    zero_ptts = bytearray(_vts_ttn1_pointer_buffer())
+    zero_ptts[0x810:0x812] = b"\x00\x00"
+    assert _vts_title_unit_base(bytes(zero_ptts), 0x800) is None
+
+    zero_pgcn = bytearray(_vts_ttn1_pointer_buffer())
+    zero_pgcn[0x812:0x814] = b"\x00\x00"
+    assert _vts_ttn1_pgc_number(bytes(zero_pgcn), 0x810) is None
+
+    zero_pgcit = bytearray(_vts_ttn1_pointer_buffer())
+    zero_pgcit[0xCC:0xD0] = b"\x00" * 4
+    assert _vts_pgc_absolute_offset(bytes(zero_pgcit), 2) is None

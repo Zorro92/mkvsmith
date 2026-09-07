@@ -22,6 +22,7 @@ from dvdifo import (
     _find_main_pgc,
     _get_active_pgc_streams,
     _parse_pgc_stream_languages,
+    _lookup_main_feature_range,
     _parse_vmg_ifo,
     _pgc_angle_from_commands,
     _parse_vts_c_adt,
@@ -281,4 +282,22 @@ def test_parse_multi_angle_pgc_chapters(fixtures_dir: Path) -> None:
     )
     assert angle_two_chapters[-4:] == pytest.approx(
         [4740.731, 4913.498, 5186.865, 5438.766], abs=1e-3
+    )
+
+
+def test_lookup_multi_angle_main_feature_ranges(fixtures_dir: Path) -> None:
+    data = (fixtures_dir / "beauty_vts_09_0.ifo").read_bytes()
+    vob_total_bytes = 254_951_424 + 1_073_739_776 * 4 + 38_658_048
+
+    assert _lookup_main_feature_range(data, vob_total_bytes, 1) == (
+        8_192,
+        3_019_911_168,
+    )
+    assert _lookup_main_feature_range(data, vob_total_bytes, 2) == (
+        8_192,
+        4_333_602_816,
+    )
+    assert _lookup_main_feature_range(data, vob_total_bytes, 3) == (
+        8_192,
+        4_333_617_152,
     )

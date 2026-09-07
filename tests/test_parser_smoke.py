@@ -321,3 +321,30 @@ def test_trim_trailing_menu_programs_stops_at_real_program() -> None:
     result = _trim_trailing_menu_programs(chapters, durations, 111.0)
 
     assert result == ([0.0, 100.0], 110.0)
+
+
+def test_pgc_program_cell_duration_selects_angle_cell() -> None:
+    data = bytearray(0x200)
+    cell_table = 0x100
+
+    def write_cell(cell: int, cell_type: int, seconds: int) -> None:
+        base = cell_table + (cell - 1) * 24
+        data[base] = cell_type << 6
+        data[base + 4 : base + 8] = bytes(
+            [0x00, 0x00, seconds, 0xC0]  # NTSC BCD duration, zero frames
+        )
+
+    write_cell(1, 1, 1)
+    write_cell(2, 2, 2)
+    write_cell(3, 3, 3)
+
+    parsed = bytes(data)
+    assert dvdifo._pgc_program_cell_duration(
+        parsed, cell_table, 1, 3, angle_index=0
+    ) == pytest.approx(1.0)
+    assert dvdifo._pgc_program_cell_duration(
+        parsed, cell_table, 1, 3, angle_index=1
+    ) == pytest.approx(2.0)
+    assert dvdifo._pgc_program_cell_duration(
+        parsed, cell_table, 1, 3, angle_index=9
+    ) == pytest.approx(3.0)

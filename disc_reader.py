@@ -4,8 +4,8 @@ Disc-reading helpers for mkvsmith.
 Provides functions for detecting source types, listing and extracting files
 from ISO images using 7z, direct loop-mount mounting via sudo, and other
 low-level disc I/O.  Extracted / mounted resources are tracked in the global
-``_TEMP_DIRS`` / ``_TEMP_FILES`` / ``_SYMLINK_CLEANUP`` /
-``_DIRECT_MOUNT_CLEANUP`` lists from ``main`` so they are cleaned up on exit.
+runtime cleanup registries. Callers may inject registry lists; standalone
+calls fall back to the process-wide ``RUNTIME_STATE``.
 """
 
 from __future__ import annotations
@@ -19,11 +19,8 @@ from enum import Enum
 from pathlib import Path
 
 from models import (
-    CONFIG,
-    _DIRECT_MOUNT_CLEANUP,
-    _SYMLINK_CLEANUP,
-    _TEMP_DIRS,
-    _TEMP_FILES,
+    Config,
+    RUNTIME_STATE,
     log_debug,
     log_error,
     log_info,
@@ -54,7 +51,7 @@ def _probe_has_iso9660_pvd(iso_path: Path) -> bool:
             f.seek(16 * 2048)
             ident = f.read(2048)[1:6]
             return ident == b"CD001"
-    except Exception:
+    except OSError:
         return False
 
 
@@ -67,33 +64,54 @@ def _has_file_with_ext(root: Path, exts: tuple[str, ...]) -> bool:
     return False
 
 
-def detect_source_type(s: Path) -> SourceType:
-    if s.is_dir():
-        if (s / "VIDEO_TS").is_dir():
-            return SourceType.DVD
-        if (s / "BDMV").is_dir() or (s / "bdmv").is_dir():
-            return SourceType.BLURAY
-        if _has_file_with_ext(s, (".m2ts",)):
-            return SourceType.BLURAY_RAW
-        if _has_file_with_ext(s, (".vob",)):
-            return SourceType.DVD_RAW
-        if _has_file_with_ext(s, (".iso",)):
-            return SourceType.ISO_UNKNOWN
-    if s.is_file():
-        if s.suffix.lower() == ".iso":
-            return SourceType.ISO_UNKNOWN
-        if s.suffix.lower() in (
-            ".m2ts",
-            ".vob",
-            ".mkv",
-            ".mp4",
-            ".avi",
-            ".mov",
-            ".wmv",
-            ".ts",
-        ):
-            return SourceType.VIDEO_FILE
-    if str(s).startswith("/dev/"):
+_VIDEO_FILE_EXTENSIONS = (
+    ".m2ts",
+    ".vob",
+    ".mkv",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".wmv",
+    ".ts",
+)
+
+
+def _directory_source_type(source: Path) -> SourceType | None:
+    if not source.is_dir():
+        return None
+    if (source / "VIDEO_TS").is_dir():
+        return SourceType.DVD
+    if (source / "BDMV").is_dir() or (source / "bdmv").is_dir():
+        return SourceType.BLURAY
+    if _has_file_with_ext(source, (".m2ts",)):
+        return SourceType.BLURAY_RAW
+    if _has_file_with_ext(source, (".vob",)):
+        return SourceType.DVD_RAW
+    if _has_file_with_ext(source, (".iso",)):
+        return SourceType.ISO_UNKNOWN
+    return None
+
+
+def _file_source_type(source: Path) -> SourceType | None:
+    if not source.is_file():
+        return None
+    if source.suffix.lower() == ".iso":
+        return SourceType.ISO_UNKNOWN
+    if source.suffix.lower() in _VIDEO_FILE_EXTENSIONS:
+        return SourceType.VIDEO_FILE
+    return None
+
+
+def detect_source_type(source: Path) -> SourceType:
+    directory_type = _directory_source_type(source)
+    if directory_type is not None:
+        return directory_type
+
+    file_type = _file_source_type(source)
+    if file_type is not None:
+        return file_type
+
+    if str(source).startswith("/dev/"):
         return SourceType.DEVICE
     return SourceType.UNKNOWN
 
@@ -120,7 +138,7 @@ def _total_ram_bytes() -> int | None:
             for line in f:
                 if line.startswith(b"MemTotal:"):
                     return int(line.split()[1]) * 1024  # KiB -> bytes
-    except Exception:
+    except (OSError, ValueError, IndexError):
         pass
     # macOS / *BSD: POSIX sysconf.
     try:
@@ -148,7 +166,7 @@ def _total_ram_bytes() -> int | None:
         if windll is not None:
             windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
         return int(stat.ullTotalPhys)
-    except Exception:
+    except OSError:
         return None
 
 
@@ -163,7 +181,7 @@ def _available_ram_bytes() -> int | None:
             for line in f:
                 if line.startswith(b"MemAvailable:"):
                     return int(line.split()[1]) * 1024  # KiB -> bytes
-    except Exception:
+    except (OSError, ValueError, IndexError):
         pass
     return None
 
@@ -196,11 +214,11 @@ def _is_ram_backed_dir(path: Path) -> bool:
     """
     try:
         resolved = str(path.resolve())
-    except Exception:
+    except OSError:
         resolved = str(path)
     try:
         mounts = Path("/proc/mounts").read_text().splitlines()
-    except Exception:
+    except OSError:
         return False
     best_mp = ""
     best_fs = ""
@@ -218,17 +236,18 @@ def _is_ram_backed_dir(path: Path) -> bool:
     return best_fs in ("tmpfs", "ramfs")
 
 
-def init_ram_budget() -> None:
-    """Compute the RAM-backed temp-dir budget and store it on ``CONFIG``.
+def init_ram_budget(config: Config | None = None) -> None:
+    """Compute the RAM-backed temp-dir budget on the supplied config.
 
-    Sets ``CONFIG.ram_budget_bytes`` to ``ram_limit`` * total RAM when the
+    Sets ``ram_budget_bytes`` to ``ram_limit`` * total RAM when the
     *effective* temp dir (``--temp-dir`` if given, else the system temp) is
     RAM-backed, otherwise leaves it ``None`` (no limit enforced).
     """
-    CONFIG.ram_budget_bytes = None
-    if CONFIG.ram_limit <= 0:
+    effective_config = config or RUNTIME_STATE.config
+    effective_config.ram_budget_bytes = None
+    if effective_config.ram_limit <= 0:
         return
-    effective = CONFIG.temp_dir or Path(tempfile.gettempdir())
+    effective = effective_config.temp_dir or Path(tempfile.gettempdir())
     if not _is_ram_backed_dir(effective):
         log_debug(f"Temp dir '{effective}' is disk-backed; no RAM budget enforced.")
         return
@@ -243,28 +262,31 @@ def init_ram_budget() -> None:
             )
         )
         return
-    budget = int(total * CONFIG.ram_limit)
-    CONFIG.ram_budget_bytes = budget
+    budget = int(total * effective_config.ram_limit)
+    effective_config.ram_budget_bytes = budget
     log_info(
         tr(
             "Temp dir '{dir}' is RAM-backed; limiting extracts to {gb:.1f} GB "
             "({pct:.0%} of {total_gb:.1f} GB RAM). Oversized titles spill to disk.",
             dir=effective,
             gb=budget / 1e9,
-            pct=CONFIG.ram_limit,
+            pct=effective_config.ram_limit,
             total_gb=total / 1e9,
         )
     )
 
 
-def _should_spill_to_disk(estimated_bytes: int) -> str | None:
+def _should_spill_to_disk(
+    estimated_bytes: int, config: Config | None = None
+) -> str | None:
     """Why an extraction of *estimated_bytes* must avoid the RAM temp dir.
 
     Returns a reason string (``"budget"`` or ``"available"``) when the
     extraction should spill to disk, or ``None`` when it's safe to use the
     RAM-backed temp dir.
     """
-    budget = CONFIG.ram_budget_bytes
+    effective_config = config or RUNTIME_STATE.config
+    budget = effective_config.ram_budget_bytes
     if not budget:
         return None
     if estimated_bytes > budget:
@@ -277,7 +299,7 @@ def _should_spill_to_disk(estimated_bytes: int) -> str | None:
     return None
 
 
-def _disk_temp_base() -> Path:
+def _disk_temp_base(config: Config | None = None) -> Path:
     """A writable, disk-backed directory for oversized extractions.
 
     Considers the user's ``--temp-dir`` (if set and disk-backed), then the
@@ -285,34 +307,38 @@ def _disk_temp_base() -> Path:
     home directory, preferring disk-backed candidates. Falls back to the system
     temp dir if nothing better is found.
     """
+    effective_config = config or RUNTIME_STATE.config
     candidates: list[Path] = []
-    if CONFIG.temp_dir:
-        candidates.append(CONFIG.temp_dir)
+    if effective_config.temp_dir:
+        candidates.append(effective_config.temp_dir)
     candidates.append(Path("/var/tmp"))
-    if CONFIG.output_dir:
-        candidates.append(Path(CONFIG.output_dir))
+    if effective_config.output_dir:
+        candidates.append(Path(effective_config.output_dir))
     candidates.append(Path.home())
     for c in candidates:
         try:
             if c.exists() and os.access(c, os.W_OK) and not _is_ram_backed_dir(c):
                 return c
-        except Exception:
+        except OSError:
             continue
     return Path(tempfile.gettempdir())
 
 
-def temp_base_for_title(estimated_bytes: int) -> Path | None:
+def temp_base_for_title(
+    estimated_bytes: int, config: Config | None = None
+) -> Path | None:
     """Temp-file base dir for a title's extraction, or ``None`` for the default.
 
     Returns a disk-backed path when the title is expected to exceed the RAM
     budget (so it spills off tmpfs), otherwise ``None`` to use the normal
     (possibly RAM-backed) temp dir. Emits a single warning per spill.
     """
-    reason = _should_spill_to_disk(estimated_bytes)
+    effective_config = config or RUNTIME_STATE.config
+    reason = _should_spill_to_disk(estimated_bytes, effective_config)
     if not reason:
         return None
-    base = _disk_temp_base()
-    budget = CONFIG.ram_budget_bytes or 0
+    base = _disk_temp_base(effective_config)
+    budget = effective_config.ram_budget_bytes or 0
     if reason == "budget":
         log_warn(
             tr(
@@ -344,7 +370,9 @@ def temp_base_for_title(estimated_bytes: int) -> Path | None:
 # =============================================================================
 
 
-def _get_safe_7z_path(iso_path: Path) -> tuple[Path, Path | None]:
+def _get_safe_7z_path(
+    iso_path: Path, symlinks: list[Path] | None = None
+) -> tuple[Path, Path | None]:
     """Return a safe 7z-compatible path for *iso_path*, creating a symlink
     if the filename contains characters that confuse 7z (e.g. spaces, parens).
 
@@ -357,9 +385,12 @@ def _get_safe_7z_path(iso_path: Path) -> tuple[Path, Path | None]:
     safe_path = iso_path.parent / safe_name
     try:
         safe_path.symlink_to(iso_path.resolve())
-        _SYMLINK_CLEANUP.append(safe_path)
+        if symlinks is None:
+            RUNTIME_STATE.cleanup.register_symlink(safe_path)
+        else:
+            symlinks.append(safe_path)
         return safe_path, safe_path
-    except Exception:
+    except OSError:
         return iso_path, None
 
 
@@ -368,65 +399,97 @@ def _get_safe_7z_path(iso_path: Path) -> tuple[Path, Path | None]:
 # =============================================================================
 
 
-def _list_iso_files_7z(iso_path: Path) -> tuple[list[str], dict[str, int]]:
+_ISO_MEDIA_PREFIXES = (
+    "BDMV/STREAM/",
+    "BDMV/PLAYLIST/",
+    "BDMV/CLIPINF/",
+    "VIDEO_TS/",
+    "BDMV/META/",
+)
+
+_ISO_MEDIA_EXTENSIONS = (
+    ".mpls",
+    ".m2ts",
+    ".vob",
+    ".clpi",
+    ".xml",
+    ".ifo",
+    ".bup",
+)
+
+
+def _run_7z_listing(target_path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["7z", "l", "-slt", str(target_path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def _is_iso_media_path(internal_path: str) -> bool:
+    return internal_path.upper().startswith(_ISO_MEDIA_PREFIXES) and (
+        internal_path.lower().endswith(_ISO_MEDIA_EXTENSIONS)
+    )
+
+
+def _parse_7z_listing(stdout: str) -> tuple[list[str], dict[str, int]]:
+    paths: list[str] = []
+    sizes: dict[str, int] = {}
+    current_path: str | None = None
+    current_path_is_media = False
+
+    # 7z -slt prints one block per entry; "Path =" precedes "Size =".
+    for line in stdout.splitlines():
+        if line.startswith("Path = "):
+            internal_path = line[7:].strip()
+            if internal_path.startswith("/"):
+                internal_path = internal_path[1:]
+            current_path = internal_path
+            current_path_is_media = _is_iso_media_path(internal_path)
+            if current_path_is_media:
+                paths.append(internal_path)
+        elif (
+            line.startswith("Size = ")
+            and current_path is not None
+            and current_path_is_media
+        ):
+            try:
+                sizes[current_path] = int(line[7:].strip())
+            except ValueError:
+                pass
+
+    return paths, sizes
+
+
+def _list_iso_files_7z(
+    iso_path: Path, symlinks: list[Path] | None = None
+) -> tuple[list[str], dict[str, int]]:
     """List the Blu-ray / DVD paths inside an ISO using ``7z l -slt``.
 
-    Returns a ``(paths, sizes)`` pair. *paths* are the internal ISO paths
-    (e.g. ``BDMV/STREAM/00001.m2ts``) matching known disc directory structures;
-    *sizes* maps each of those paths to its (uncompressed) byte size, used to
-    estimate extraction cost for RAM-budget spill decisions. Returns
-    ``([], {})`` on failure.
+    Returns a ``(paths, sizes)`` pair. *paths* are internal ISO media paths and
+    *sizes* maps each path to its uncompressed byte size for RAM-budget
+    estimates. Returns ``([], {})`` on failure.
     """
-    target_path, _ = _get_safe_7z_path(iso_path)
+    target_path, _ = _get_safe_7z_path(iso_path, symlinks)
     try:
-        res = subprocess.run(
-            ["7z", "l", "-slt", str(target_path)],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if res.returncode != 0:
-            log_error(
-                tr("7z failed: {err}", err=(res.stdout + " " + res.stderr).strip())
-            )
-            return [], {}
-        paths: list[str] = []
-        sizes: dict[str, int] = {}
-        valid_prefixes = [
-            "BDMV/STREAM/",
-            "BDMV/PLAYLIST/",
-            "BDMV/CLIPINF/",
-            "VIDEO_TS/",
-            "BDMV/META/",
-        ]
-        valid_exts = (".mpls", ".m2ts", ".vob", ".clpi", ".xml", ".ifo", ".bup")
-        cur_path: str | None = None
-        cur_ok = False
-        # 7z -slt prints one block per entry; within a block "Path =" precedes
-        # "Size =", so we track the current path and attach its size.
-        for line in res.stdout.splitlines():
-            if line.startswith("Path = "):
-                p = line[7:].strip()
-                if p.startswith("/"):
-                    p = p[1:]
-                cur_path = p
-                cur_ok = any(
-                    p.upper().startswith(pf) for pf in valid_prefixes
-                ) and p.lower().endswith(valid_exts)
-                if cur_ok:
-                    paths.append(p)
-            elif line.startswith("Size = ") and cur_path is not None and cur_ok:
-                try:
-                    sizes[cur_path] = int(line[7:].strip())
-                except ValueError:
-                    pass
-        return paths, sizes
+        result = _run_7z_listing(target_path)
     except FileNotFoundError:
         log_error(tr("7z missing. Install with: sudo apt install p7zip-full"))
         return [], {}
-    except Exception as e:
-        log_error(tr("7z exception: {err}", err=e))
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        log_error(tr("7z exception: {err}", err=exc))
         return [], {}
+
+    if result.returncode != 0:
+        log_error(
+            tr(
+                "7z failed: {err}",
+                err=(result.stdout + " " + result.stderr).strip(),
+            )
+        )
+        return [], {}
+    return _parse_7z_listing(result.stdout)
 
 
 # =============================================================================
@@ -435,7 +498,10 @@ def _list_iso_files_7z(iso_path: Path) -> tuple[list[str], dict[str, int]]:
 
 
 def _extract_with_7z(
-    iso_path: Path, internal_paths: list[str], out_dir: Path
+    iso_path: Path,
+    internal_paths: list[str],
+    out_dir: Path,
+    symlinks: list[Path] | None = None,
 ) -> list[Path]:
     """Extract *internal_paths* from *iso_path* into *out_dir* using 7z.
 
@@ -444,7 +510,7 @@ def _extract_with_7z(
     if not internal_paths:
         return []
     out_dir.mkdir(parents=True, exist_ok=True)
-    target_path, _ = _get_safe_7z_path(iso_path)
+    target_path, _ = _get_safe_7z_path(iso_path, symlinks)
     res = subprocess.run(
         ["7z", "e", str(target_path), f"-o{out_dir}"] + internal_paths + ["-y"],
         capture_output=True,
@@ -465,45 +531,75 @@ def _extract_with_7z(
     ]
 
 
-def _extract_partial_7z(
-    iso_path: Path, internal_path: str, size_mb: int = 256
-) -> Path | None:
-    """Extract a prefix of a single file from an ISO via 7z pipe.
+def _registered_temp_file(temp_files: list[Path] | None) -> Path:
+    with tempfile.NamedTemporaryFile(suffix=".tmp", delete=False) as temp_handle:
+        temp_path = Path(temp_handle.name)
+    if temp_files is None:
+        RUNTIME_STATE.cleanup.register_temp_file(temp_path)
+    else:
+        temp_files.append(temp_path)
+    return temp_path
 
-    Reads the first *size_mb* MiB of *internal_path* into a temp file and
-    returns its path.  This is used for lightweight probing (e.g. reading
-    the first sector of an M2TS for chapter data) without extracting the
-    entire multi-GB stream.
-    """
-    tmp = Path(tempfile.NamedTemporaryFile(suffix=".tmp", delete=False).name)
-    _TEMP_FILES.append(tmp)
-    target_path, _ = _get_safe_7z_path(iso_path)
+
+def _start_7z_pipe(target_path: Path, internal_path: str) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        ["7z", "e", "-so", str(target_path), internal_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _stop_7z_process(process: subprocess.Popen[bytes]) -> None:
     try:
-        proc = subprocess.Popen(
-            ["7z", "e", "-so", str(target_path), internal_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        stdout = proc.stdout
-        if stdout is None:
-            proc.terminate()
-            tmp.unlink(missing_ok=True)
-            return None
-        bytes_read, limit = 0, size_mb * 1024 * 1024
-        with open(tmp, "wb") as f:
-            while True:
-                chunk = stdout.read(1024 * 1024)
-                if not chunk:
-                    break
-                bytes_read += len(chunk)
-                f.write(chunk)
-                if bytes_read >= limit:
-                    break
-        proc.kill()
-        proc.wait()
-        return tmp
-    except Exception:
-        tmp.unlink(missing_ok=True)
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait()
+    except OSError:
+        pass
+
+
+def _copy_bounded_stdout(stdout, output_file, limit: int) -> None:
+    bytes_read = 0
+    while True:
+        chunk = stdout.read(1024 * 1024)
+        if not chunk:
+            break
+        bytes_read += len(chunk)
+        output_file.write(chunk)
+        if bytes_read >= limit:
+            break
+
+
+def _extract_partial_7z(
+    iso_path: Path,
+    internal_path: str,
+    size_mb: int = 256,
+    *,
+    temp_files: list[Path] | None = None,
+    symlinks: list[Path] | None = None,
+) -> Path | None:
+    """Extract a bounded prefix from one ISO member using a 7z pipe."""
+    target_path, _ = _get_safe_7z_path(iso_path, symlinks)
+    temp_path = _registered_temp_file(temp_files)
+    try:
+        process = _start_7z_pipe(target_path, internal_path)
+        try:
+            stdout = process.stdout
+            if stdout is None:
+                _stop_7z_process(process)
+                temp_path.unlink(missing_ok=True)
+                return None
+            with temp_path.open("wb") as output_file:
+                _copy_bounded_stdout(stdout, output_file, size_mb * 1024 * 1024)
+        except BaseException:
+            _stop_7z_process(process)
+            raise
+        _stop_7z_process(process)
+        return temp_path
+    except (OSError, subprocess.SubprocessError):
+        temp_path.unlink(missing_ok=True)
         return None
 
 
@@ -512,20 +608,13 @@ def _extract_partial_7z(
 # =============================================================================
 
 
-def _try_direct_mount(iso_path: Path) -> Path | None:
-    """Attempt to mount *iso_path* via ``sudo mount -o loop,ro``.
-
-    Returns the mount-point ``Path`` on success, ``None`` on failure or
-    when disabled (``--no-sudo``).
-    """
-    if CONFIG.no_sudo:
-        log_info(tr("Skipping direct mount (--no-sudo is set)"))
-        return None
+def _confirm_direct_mount(iso_path: Path) -> bool:
     try:
-        ans = (
+        answer = (
             input(
                 tr(
-                    "[INFO] Attempt to mount '{path}' via 'sudo mount -o loop,ro'? [y/N]:",
+                    "[INFO] Attempt to mount '{path}' via "
+                    "'sudo mount -o loop,ro'? [y/N]:",
                     path=iso_path,
                 )
                 + " "
@@ -534,47 +623,78 @@ def _try_direct_mount(iso_path: Path) -> Path | None:
             .lower()
         )
     except (EOFError, KeyboardInterrupt):
-        return None
-    if ans not in ("y", "yes"):
-        return None
-    log_info(tr("Attempting direct mount via 'sudo mount -o loop,ro'..."))
-    mnt = Path(tempfile.mkdtemp(prefix="mkv_mount_"))
+        return False
+    return answer in ("y", "yes")
+
+
+def _run_direct_mount(
+    iso_path: Path, mountpoint: Path
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["sudo", "mount", "-o", "loop,ro", str(iso_path), str(mountpoint)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _register_direct_mount(mountpoint: Path, direct_mounts: list[Path] | None) -> None:
+    if direct_mounts is None:
+        RUNTIME_STATE.cleanup.register_direct_mount(mountpoint)
+    else:
+        direct_mounts.append(mountpoint)
+
+
+def _remove_empty_mountpoint(mountpoint: Path) -> None:
     try:
-        res = subprocess.run(
-            ["sudo", "mount", "-o", "loop,ro", str(iso_path), str(mnt)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if res.returncode != 0:
-            log_error(
-                tr(
-                    "mount failed (rc={rc}): {err}",
-                    rc=res.returncode,
-                    err=(res.stdout + res.stderr).strip(),
-                )
-            )
-            try:
-                mnt.rmdir()
-            except Exception:
-                pass
-            return None
-        _DIRECT_MOUNT_CLEANUP.append(mnt)
-        return mnt
+        mountpoint.rmdir()
+    except OSError:
+        pass
+
+
+def _try_direct_mount(
+    iso_path: Path,
+    config: Config | None = None,
+    *,
+    direct_mounts: list[Path] | None = None,
+) -> Path | None:
+    """Attempt to mount *iso_path* via ``sudo mount -o loop,ro``.
+
+    Returns the mount-point ``Path`` on success, ``None`` on failure or
+    when disabled (``--no-sudo``).
+    """
+    if (config or RUNTIME_STATE.config).no_sudo:
+        log_info(tr("Skipping direct mount (--no-sudo is set)"))
+        return None
+    if not _confirm_direct_mount(iso_path):
+        return None
+
+    log_info(tr("Attempting direct mount via 'sudo mount -o loop,ro'..."))
+    mountpoint = Path(tempfile.mkdtemp(prefix="mkv_mount_"))
+    try:
+        result = _run_direct_mount(iso_path, mountpoint)
     except FileNotFoundError:
         log_error(tr("mount/sudo not found on PATH."))
-        try:
-            mnt.rmdir()
-        except Exception:
-            pass
+        _remove_empty_mountpoint(mountpoint)
         return None
-    except Exception as e:
-        log_error(tr("mount exception: {err}", err=e))
-        try:
-            mnt.rmdir()
-        except Exception:
-            pass
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_error(tr("mount exception: {err}", err=exc))
+        _remove_empty_mountpoint(mountpoint)
         return None
+
+    if result.returncode != 0:
+        log_error(
+            tr(
+                "mount failed (rc={rc}): {err}",
+                rc=result.returncode,
+                err=(result.stdout + result.stderr).strip(),
+            )
+        )
+        _remove_empty_mountpoint(mountpoint)
+        return None
+
+    _register_direct_mount(mountpoint, direct_mounts)
+    return mountpoint
 
 
 # =============================================================================
@@ -587,10 +707,12 @@ def _extract_full_for_muxing(
     internals: Sequence[str],
     *,
     temp_base: Path | None = None,
+    temp_dirs: list[Path] | None = None,
+    symlinks: list[Path] | None = None,
 ) -> list[Path]:
     """Extract the full set of internal ISO files for muxing into a temp dir.
 
-    Creates a temp directory (registered in ``_TEMP_DIRS``) and extracts
+    Creates a temp directory (registered in the supplied registry) and extracts
     *internals* into it via ``_extract_with_7z``. *temp_base*, when given,
     overrides the parent of the temp directory — used to spill oversized
     titles off a RAM-backed temp dir onto disk (see ``temp_base_for_title``).
@@ -601,5 +723,8 @@ def _extract_full_for_muxing(
             dir=str(temp_base) if temp_base else None,
         )
     )
-    _TEMP_DIRS.append(out_dir)
-    return _extract_with_7z(iso_path, list(internals), out_dir)
+    if temp_dirs is None:
+        RUNTIME_STATE.cleanup.register_temp_dir(out_dir)
+    else:
+        temp_dirs.append(out_dir)
+    return _extract_with_7z(iso_path, list(internals), out_dir, symlinks)

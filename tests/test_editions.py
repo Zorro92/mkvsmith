@@ -22,7 +22,14 @@ import pytest
 
 from mkv import _write_multi_edition_chapters_xml, _write_tags_xml_mkvmerge
 from models import EditionAtom, EditionSpec, Stream, StreamType, Title
-from scan import _detect_edition_groups, _edition_atoms, build_multi_edition_title
+from scan import (
+    _build_edition_specs,
+    _detect_edition_groups,
+    _edition_atoms,
+    _union_edition_clips,
+    _validate_edition_titles,
+    build_multi_edition_title,
+)
 
 
 def _child(elem: ET.Element, tag: str) -> ET.Element:
@@ -365,3 +372,45 @@ def test_multi_edition_xml_round_trips_through_mkvmerge(tmp_path: Path) -> None:
         if _child(t, "Targets").findtext("EditionUID") is not None
     }
     assert titles == {"1": "Forward", "2": "Reverse"}
+
+
+def test_union_edition_clips_pads_mismatched_metadata_and_keeps_first() -> None:
+    t1 = _mk_title(0, ["A", "B"], [5.0, 7.0], [0.0], playlist="00800")
+    t2 = _mk_title(1, ["B", "A", "C"], [9.0, 3.0], [0.0], playlist="00801")
+    t2.clip_sizes = [900, 300]
+
+    union = _union_edition_clips([t1, t2])
+
+    assert union.keys == [
+        str(Path("/disc/A.m2ts")),
+        str(Path("/disc/B.m2ts")),
+        str(Path("/disc/C.m2ts")),
+    ]
+    assert union.index == {
+        str(Path("/disc/A.m2ts")): 0,
+        str(Path("/disc/B.m2ts")): 1,
+        str(Path("/disc/C.m2ts")): 2,
+    }
+    assert union.durations == [5.0, 7.0, 0.0]
+    assert union.sizes == [1000, 1000, 0]
+    assert union.starts == [0.0, 5.0, 12.0]
+    assert union.total_duration == 12.0
+
+
+def test_validate_edition_titles_rejects_mixed_source_modes() -> None:
+    folder = _mk_title(0, ["A"], [5.0], [0.0], playlist="00800")
+    iso = _mk_title(1, ["B"], [5.0], [0.0], playlist="00801")
+    iso.source_file = Path("/disc/disc.iso")
+    iso.iso_internal_paths = ["BDMV/STREAM/B.m2ts"]
+
+    with pytest.raises(ValueError, match="cannot mix ISO and folder"):
+        _validate_edition_titles([folder, iso])
+
+
+def test_build_edition_specs_rejects_name_count_mismatch() -> None:
+    first = _mk_title(0, ["A"], [5.0], [0.0], playlist="00800")
+    second = _mk_title(1, ["B"], [5.0], [0.0], playlist="00801")
+    clip_union = _union_edition_clips([first, second])
+
+    with pytest.raises(ValueError, match="edition name count"):
+        _build_edition_specs([first, second], first, clip_union, ["Only One"])

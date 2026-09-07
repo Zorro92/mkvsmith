@@ -28,32 +28,30 @@ from __future__ import annotations
 
 import re
 import struct
-import sys
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, ClassVar, TypedDict
+from typing import Any, Callable, ClassVar, TypedDict
 
 
 # =============================================================================
 # Debug logging
 # =============================================================================
 #
-# main.py calls set_debug(CONFIG.debug) at startup so this module emits the same
-# [DEBUG] lines that it did before extraction. Until that call is made, debug
-# output is suppressed.
+# cli.py injects RuntimeLogger.debug at startup. Until that call is made,
+# debug output is suppressed.
 
-_DEBUG = False
-
-
-def set_debug(enabled: bool) -> None:
-    global _DEBUG
-    _DEBUG = enabled
+_debug_logger: Callable[[str], None] | None = None
 
 
-def log_debug(msg: str) -> None:
-    if _DEBUG:
-        print(f"[DEBUG] {msg}", file=sys.stderr)
+def set_debug(debug_logger: Callable[[str], None] | None) -> None:
+    global _debug_logger
+    _debug_logger = debug_logger
+
+
+def log_debug(message: str) -> None:
+    if _debug_logger is not None:
+        _debug_logger(message)
 
 
 # =============================================================================
@@ -428,12 +426,12 @@ _AUDIO_CHANNEL_TITLES = {
 # =============================================================================
 #
 # VTSI_MAT offsets for DVD .IFO stream-attribute tables and sector pointers.
-# DVDs store audio/subtitle languages and codec info here; ffprobe on a raw
-# .VOB cannot recover them, so we read the matching VTS_*_0.IFO instead.
+# DVDs store audio/subtitle languages and codec info here; raw .VOB
+# bitstream probing cannot recover them, so we read VTS_*_0.IFO directly.
 #
 # VTS_C_ADT (Cell Address Table) at sector pointer 0xE0 maps each cell's
 # VOB_ID/Cell_ID to its sector range, enabling IFO-based trimming without
-# scanning the VOBs via ffprobe.
+# scanning the VOB bitstream.
 _VTS_IFO_IDENT = b"DVDVIDEO-VTS"
 # VTS_V_ATR (video attributes) at 0x0200 (2 bytes)
 _VTS_IFO_VIDEO_ATTR = 0x0200
@@ -873,9 +871,9 @@ def _parse_vts_ifo_languages(
 
     Returns ``(audio_by_id, sub_by_id)`` mapping the MPEG program-stream
     sub-stream ID (audio ``0x80``-``0x87``, subpicture ``0x20``-``0x3F``) to a
-    2-char ISO 639-1 language code. Keying by ID is essential because ffmpeg
-    enumerates PS streams by first packet appearance, not by ID, so positional
-    order is unreliable. Language codes that are unset (all-zero) or non-ASCII
+    2-char ISO 639-1 language code. Keying by ID is essential because media
+    tools may enumerate PS streams by first packet appearance rather than ID,
+    making positional order unreliable. Language codes that are unset (all-zero) or non-ASCII
     are reported as "und". Returns empty dicts for an invalid VTS IFO.
     """
     if len(ifo_data) < 4 or ifo_data[0:12] != _VTS_IFO_IDENT:
@@ -1451,9 +1449,9 @@ def _parse_vts_pgc_info(
 ) -> tuple[list[float], float]:
     """Return (chapters, total duration) for a PGC in a VTS .IFO.
 
-    Used to recover authoritative chapter timings and runtime - ffprobe on raw
-    VOBs reports wrong durations once timestamps wrap across VOB parts, and only
-    sees the first VOB. Returns ([], 0.0) on any parse failure.
+    Used to recover authoritative chapter timings and runtime; raw-VOB probing
+    can report wrong durations once timestamps wrap across VOB parts and may
+    inspect only the first VOB. Returns ([], 0.0) on any parse failure.
 
     ``pgc_number`` selects a specific PGC (1-indexed, see
     ``_enumerate_vts_pgcs``) instead of the default title's PGC - used to
@@ -1478,104 +1476,100 @@ def _parse_vts_pgc_info(
 # =============================================================================
 
 
-def _get_active_pgc_streams(
-    ifo_data: bytes,
-    pgc_number: int | None = None,
-) -> tuple[set[int], set[int]]:
-    """Determine which audio/subpicture stream IDs are active in the longest PGC.
-
-    Reads the PGC's stream control tables to find which audio (0x80+) and
-    subpicture (0x20+) streams are actually used by the main PGC. Streams that
-    exist in the VTS attribute table but aren't active in the PGC belong to
-    other PGCs (menus, extras) and should not be included in the title.
-
-    Per the DVD-Video specification (http://www.mpucoder.com/DVD/pgc.html),
-    the PGC header always has 8 audio-stream-control and 32 subpicture-stream-
-    control entries. In simplified mode (category bit 1 = 0) the entries are
-    inline; in offset mode the fields are u16 pointers to external tables.
-
-    Returns ``(audio_ids, sub_ids)`` as sets of sub-stream IDs.
-    Returns empty sets on any error (caller falls back to all VTS streams).
-    """
+def _active_pgc_audio_streams(
+    ifo_data: bytes, pgc_abs: int, offset_mode: bool
+) -> set[int]:
     audio_active: set[int] = set()
-    sub_active: set[int] = set()
 
-    if len(ifo_data) < 0x200 or ifo_data[:12] != _VTS_IFO_IDENT:
-        return audio_active, sub_active
-
-    main = _find_main_pgc(ifo_data, pgc_number)
-    if main is None:
-        return audio_active, sub_active
-    pgc_abs = main[0]
-
-    pgc_category = _read_u16(ifo_data, pgc_abs)
-    offset_mode = bool(pgc_category & 0x0002)
-
-    # --- Audio Stream Control ---
     if offset_mode:
-        # Offset mode: PGC+0x0C holds a u16 pointer to the ASCT.
-        # Each ASCT entry is 8 bytes: stream_num (u16), lang (2B), type (2B), ext (2B).
-        # stream_num bit 15 = available flag, low bits = stream number (0-7).
-        asct_off = (
+        # Offset mode: PGC+0x0C points to an 8-byte ASCT per VTS audio stream.
+        # Bit 15 marks availability; 0xFFFF means no stream.
+        asct_offset = (
             _read_u16(ifo_data, pgc_abs + _PGCOffset.AST_CTL)
             if pgc_abs + _PGCOffset.AST_CTL + 2 <= len(ifo_data)
             else 0
         )
-        if asct_off:
-            asct_base = pgc_abs + asct_off
-            n_vts_audio = min(
-                _read_vts_audio_count(ifo_data), _PGCOffset.NUM_AST_ENTRIES
-            )
-            for i in range(n_vts_audio):
-                off = asct_base + i * _PGCOffset.AST_NORMAL_ENTRY_LEN
-                if off + 6 > len(ifo_data):
-                    break
-                stream_num = _read_u16(ifo_data, off)
-                # In offset mode bit 15 indicates availability; 0xFFFF = no stream
-                if stream_num != 0xFFFF:
-                    audio_active.add(0x80 + (stream_num & 0x7FFF))
-    else:
-        # Simplified mode: inline AST at PGC+0x0C, 8 entries of 2 bytes each.
-        # First byte: bits 0-2 = stream number, bit 7 = available flag.
-        ast_base = pgc_abs + _PGCOffset.AST_CTL
-        for i in range(_PGCOffset.NUM_AST_ENTRIES):
-            off = ast_base + i * 2
-            if off + 2 > len(ifo_data):
-                break
-            b0 = ifo_data[off]
-            available = bool(b0 & 0x80)
-            stream_num = b0 & 0x07
-            if available and stream_num != 0x07:
-                audio_active.add(0x80 + stream_num)
+        if not asct_offset:
+            return audio_active
 
-    # --- Subpicture Stream Control ---
-    # Always 32 entries of 4 bytes. Each entry's first byte:
-    #   bits 0-4 = stream number (for 4:3 display)
-    #   bit 7    = stream available flag
-    # In simplified mode the entries are inline at PGC+0x1C.
-    # In offset mode PGC+0x1C is a u16 pointer to the SPST base.
+        asct_base = pgc_abs + asct_offset
+        audio_count = min(_read_vts_audio_count(ifo_data), _PGCOffset.NUM_AST_ENTRIES)
+        for index in range(audio_count):
+            offset = asct_base + index * _PGCOffset.AST_NORMAL_ENTRY_LEN
+            if offset + 6 > len(ifo_data):
+                break
+            stream_number = _read_u16(ifo_data, offset)
+            if stream_number != 0xFFFF:
+                audio_active.add(0x80 + (stream_number & 0x7FFF))
+        return audio_active
+
+    # Simplified mode: eight inline 2-byte entries at PGC+0x0C.
+    ast_base = pgc_abs + _PGCOffset.AST_CTL
+    for index in range(_PGCOffset.NUM_AST_ENTRIES):
+        offset = ast_base + index * 2
+        if offset + 2 > len(ifo_data):
+            break
+        first_byte = ifo_data[offset]
+        available = bool(first_byte & 0x80)
+        stream_number = first_byte & 0x07
+        if available and stream_number != 0x07:
+            audio_active.add(0x80 + stream_number)
+    return audio_active
+
+
+def _active_pgc_subpicture_streams(
+    ifo_data: bytes, pgc_abs: int, offset_mode: bool
+) -> set[int]:
     if offset_mode:
-        spst_off = (
+        spst_offset = (
             _read_u16(ifo_data, pgc_abs + _PGCOffset.SPST_CTL)
             if pgc_abs + _PGCOffset.SPST_CTL + 2 <= len(ifo_data)
             else 0
         )
-        spst_base = pgc_abs + spst_off if spst_off else 0
+        spst_base = pgc_abs + spst_offset if spst_offset else 0
     else:
-        spst_base = pgc_abs + _PGCOffset.SPST_CTL  # inline at PGC+0x1C
+        spst_base = pgc_abs + _PGCOffset.SPST_CTL
 
-    if spst_base:
-        for i in range(_PGCOffset.NUM_SPST_ENTRIES):
-            entry_off = spst_base + i * _PGCOffset.SPST_ENTRY_LEN
-            if entry_off + 4 > len(ifo_data):
-                break
-            b0 = ifo_data[entry_off]
-            available = bool(b0 & 0x80)
-            stream_num = b0 & 0x1F  # bits 0-4
-            if available and stream_num != 0x1F:
-                sub_active.add(0x20 + stream_num)
+    subpicture_active: set[int] = set()
+    if not spst_base:
+        return subpicture_active
 
-    return audio_active, sub_active
+    for index in range(_PGCOffset.NUM_SPST_ENTRIES):
+        entry_offset = spst_base + index * _PGCOffset.SPST_ENTRY_LEN
+        if entry_offset + 4 > len(ifo_data):
+            break
+        first_byte = ifo_data[entry_offset]
+        available = bool(first_byte & 0x80)
+        stream_number = first_byte & 0x1F
+        if available and stream_number != 0x1F:
+            subpicture_active.add(0x20 + stream_number)
+    return subpicture_active
+
+
+def _get_active_pgc_streams(
+    ifo_data: bytes,
+    pgc_number: int | None = None,
+) -> tuple[set[int], set[int]]:
+    """Return audio and subpicture IDs active in the selected PGC.
+
+    Reads the PGC stream-control tables described by the DVD-Video PGC
+    specification. Returns empty sets on invalid input or a missing PGC;
+    callers then fall back to the authoritative VTS attribute-table IDs.
+    """
+    if len(ifo_data) < 0x200 or ifo_data[:12] != _VTS_IFO_IDENT:
+        return set(), set()
+
+    main = _find_main_pgc(ifo_data, pgc_number)
+    if main is None:
+        return set(), set()
+
+    pgc_abs = main[0]
+    pgc_category = _read_u16(ifo_data, pgc_abs)
+    offset_mode = bool(pgc_category & 0x0002)
+    return (
+        _active_pgc_audio_streams(ifo_data, pgc_abs, offset_mode),
+        _active_pgc_subpicture_streams(ifo_data, pgc_abs, offset_mode),
+    )
 
 
 def _parse_pgc_stream_languages(
@@ -1756,170 +1750,186 @@ class CadtCell(TypedDict):
     end_sector: int
 
 
-def _parse_vts_c_adt(ifo_data: bytes) -> list[CadtCell]:
-    """Parse the VTS Cell Address Table into a list of cell entries.
-
-    Each entry from VTS_C_ADT (at sector pointer 0xE0 in VTSI_MAT):
-      - vob_id: VOB identifier (1-based within the VTS)
-      - cell_id: cell number within that VOB
-      - start_sector: first LBA of the cell (relative to VTS VOB area start)
-      - end_sector: last LBA of the cell
-
-    Returns an empty list if the C_ADT is missing, truncated, or the sector
-    pointer is zero. Callers should fall back to PTS-based trimming.
-    """
+def _vts_c_adt_bounds(ifo_data: bytes) -> tuple[int, int] | None:
+    """Return ``(entry_base, end_address)`` for VTS_C_ADT, or None."""
     if len(ifo_data) < _VTS_PTR_C_ADT + 4:
-        return []
-    sect_ptr = _read_u32(ifo_data, _VTS_PTR_C_ADT)
-    if sect_ptr == 0:
-        return []
-    base = sect_ptr * 2048
+        return None
+    sector_pointer = _read_u32(ifo_data, _VTS_PTR_C_ADT)
+    if sector_pointer == 0:
+        return None
+    base = sector_pointer * 2048
     if base + 8 > len(ifo_data):
-        return []
-    # VTS_C_ADT starts with a 4-byte end address (relative to IFO start).
-    # On some discs end_addr is corrupt and points far past the real table.
-    # Strategy: scan forward from the entry area and stop at the first
-    # all-zero 12-byte entry (the table is always zero-padded to its end).
-    end_addr = _read_u32(ifo_data, base)
-    log_debug(
-        f"VTS_C_ADT: sect_ptr={sect_ptr} base={base:#x} end_addr=0x{end_addr:08x}"
-    )
+        return None
 
-    cells: list[CadtCell] = []
-    entry_base = base + 4
-    max_bytes = len(ifo_data) - entry_base
-    max_slots = max_bytes // _VTS_C_ADT_ENTRY_LEN
+    # VTS_C_ADT starts with a 4-byte end address relative to the IFO start.
+    # Some discs store a corrupt value far beyond the real table; callers scan
+    # for zero padding instead of trusting it unconditionally.
+    end_address = _read_u32(ifo_data, base)
+    log_debug(
+        f"VTS_C_ADT: sect_ptr={sector_pointer} base={base:#x} "
+        f"end_addr=0x{end_address:08x}"
+    )
+    return base + 4, end_address
+
+
+def _scan_vts_c_adt_entries(
+    ifo_data: bytes, entry_base: int, max_slots: int, end_address: int
+) -> int:
+    n_address_slots = 0
+    if end_address > entry_base:
+        n_address_slots = (end_address - entry_base) // _VTS_C_ADT_ENTRY_LEN
+    n_entries = min(max_slots, max(n_address_slots, max_slots))
+
+    # The table is zero-padded; the first all-zero 12-byte slot is its end.
+    entry_count = 0
+    for index in range(n_entries):
+        offset = entry_base + index * _VTS_C_ADT_ENTRY_LEN
+        if offset + _VTS_C_ADT_ENTRY_LEN > len(ifo_data):
+            break
+        if not any(ifo_data[offset : offset + _VTS_C_ADT_ENTRY_LEN]):
+            break
+        entry_count = index + 1
+
+    log_debug(
+        f"VTS_C_ADT: {entry_count} raw entries "
+        f"(end_addr suggests {n_address_slots}, IFO caps at {max_slots})"
+    )
+    return entry_count
+
+
+def _decode_vts_c_adt_entry(ifo_data: bytes, offset: int) -> CadtCell | None:
+    vob_id = _read_u16(ifo_data, offset)
+    cell_id = ifo_data[offset + 2]
+    start_sector = _read_u32(ifo_data, offset + 4)
+    end_sector = _read_u32(ifo_data, offset + 8)
+    if vob_id == 0 or cell_id == 0:
+        return None
+    if start_sector >= end_sector:
+        return None
+    return {
+        "vob_id": vob_id,
+        "cell_id": cell_id,
+        "start_sector": start_sector,
+        "end_sector": end_sector,
+    }
+
+
+def _parse_vts_c_adt(ifo_data: bytes) -> list[CadtCell]:
+    """Parse the VTS Cell Address Table into a list of valid cell entries.
+
+    Each entry maps a ``(VOB ID, cell ID)`` pair to its sector range relative
+    to the VTS title VOB area. Missing, truncated, or invalid tables return an
+    empty list so callers can fall back to PTS-based trimming.
+    """
+    bounds = _vts_c_adt_bounds(ifo_data)
+    if bounds is None:
+        return []
+    entry_base, end_address = bounds
+
+    max_slots = (len(ifo_data) - entry_base) // _VTS_C_ADT_ENTRY_LEN
     if max_slots <= 0:
         return []
-
-    # Determine candidate slot count from end_addr if available.
-    n_addr_slots = 0
-    if end_addr > base + 4:
-        n_addr_slots = (end_addr - base - 4) // _VTS_C_ADT_ENTRY_LEN
-    n_entries = min(max_slots, max(n_addr_slots, max_slots))
-
-    # Scan for the first all-zero entry (real end of C_ADT).
-    real_n = 0
-    for i in range(n_entries):
-        off = entry_base + i * _VTS_C_ADT_ENTRY_LEN
-        if off + _VTS_C_ADT_ENTRY_LEN > len(ifo_data):
-            break
-        # Check if this 12-byte entry is entirely zero-filled.
-        is_zero = True
-        for b in ifo_data[off : off + _VTS_C_ADT_ENTRY_LEN]:
-            if b != 0:
-                is_zero = False
-                break
-        if is_zero:
-            break
-        real_n = i + 1
-
-    log_debug(
-        f"VTS_C_ADT: {real_n} raw entries (end_addr suggests {n_addr_slots}, IFO caps at {max_slots})"
-    )
-    if real_n == 0:
+    raw_count = _scan_vts_c_adt_entries(ifo_data, entry_base, max_slots, end_address)
+    if raw_count == 0:
         return []
 
-    for i in range(real_n):
-        off = entry_base + i * _VTS_C_ADT_ENTRY_LEN
-        if off + _VTS_C_ADT_ENTRY_LEN > len(ifo_data):
+    cells: list[CadtCell] = []
+    for index in range(raw_count):
+        offset = entry_base + index * _VTS_C_ADT_ENTRY_LEN
+        if offset + _VTS_C_ADT_ENTRY_LEN > len(ifo_data):
             break
-        vob_id = _read_u16(ifo_data, off)
-        cell_id = ifo_data[off + 2]  # byte 2 = Cell ID (per libdvdread / mpucoder)
-        start_sector = _read_u32(ifo_data, off + 4)
-        end_sector = _read_u32(ifo_data, off + 8)
-        # Skip clearly invalid entries (common when end_addr is corrupt).
-        if vob_id == 0 or cell_id == 0:
-            continue
-        if start_sector >= end_sector:
-            continue
-        cells.append(
-            {
-                "vob_id": vob_id,
-                "cell_id": cell_id,
-                "start_sector": start_sector,
-                "end_sector": end_sector,
-            }
-        )
-    log_debug(f"VTS_C_ADT: {len(cells)} valid cell entries (out of {real_n} raw)")
+        cell = _decode_vts_c_adt_entry(ifo_data, offset)
+        if cell is not None:
+            cells.append(cell)
+
+    log_debug(f"VTS_C_ADT: {len(cells)} valid cell entries (out of {raw_count} raw)")
     if cells:
         log_debug(
             "  C_ADT sample: first 3 entries: "
             + ", ".join(
-                f"VOB={c['vob_id']} Cell={c['cell_id']} sectors={c['start_sector']}-{c['end_sector']}"
-                for c in cells[:3]
+                f"VOB={cell['vob_id']} Cell={cell['cell_id']} "
+                f"sectors={cell['start_sector']}-{cell['end_sector']}"
+                for cell in cells[:3]
             )
         )
         log_debug(
             "  C_ADT sample: last 3 entries: "
             + ", ".join(
-                f"VOB={c['vob_id']} Cell={c['cell_id']} sectors={c['start_sector']}-{c['end_sector']}"
-                for c in cells[-3:]
+                f"VOB={cell['vob_id']} Cell={cell['cell_id']} "
+                f"sectors={cell['start_sector']}-{cell['end_sector']}"
+                for cell in cells[-3:]
             )
         )
     return cells
 
 
-def _parse_vts_vobu_admap(ifo_data: bytes) -> list[int] | None:
-    """Parse the VTS VOBU Address Map into a sorted list of VOBU start sectors.
-
-    VOBU_ADMAP provides the starting sector (relative to VTS VOB area) of every
-    VOBU in the VTS. The table sits at the sector given by the 4-byte offset at
-    VTSI_MAT+0xE4.  Each entry is a 4-byte big-endian VOBU start sector.
-
-    Returns a sorted list of VOBU start sectors, or None on any error.
-    """
+def _vts_vobu_admap_bounds(ifo_data: bytes) -> tuple[int, int] | None:
+    """Return ``(entry_base, end_address)`` for VTS_VOBU_ADMAP, or None."""
     if len(ifo_data) < _VTS_PTR_VOBU_ADMAP + 4:
         return None
-    sect_ptr = _read_u32(ifo_data, _VTS_PTR_VOBU_ADMAP)
-    if sect_ptr == 0:
+    sector_pointer = _read_u32(ifo_data, _VTS_PTR_VOBU_ADMAP)
+    if sector_pointer == 0:
         return None
-    base = sect_ptr * 2048
+    base = sector_pointer * 2048
     if base + 8 > len(ifo_data):
         return None
-    # VTS_VOBU_ADMAP starts with a 4-byte end address (relative to IFO start).
-    end_addr = _read_u32(ifo_data, base)
-    log_debug(
-        f"VTS_VOBU_ADMAP: sect_ptr={sect_ptr} base={base:#x} end_addr=0x{end_addr:08x}"
-    )
 
-    entry_base = base + 4
-    max_bytes = len(ifo_data) - entry_base
-    max_entries = max_bytes // _VTS_VOBU_ADMAP_ENTRY_LEN
+    # VTS_VOBU_ADMAP starts with a four-byte end address relative to the IFO.
+    end_address = _read_u32(ifo_data, base)
+    log_debug(
+        f"VTS_VOBU_ADMAP: sect_ptr={sector_pointer} base={base:#x} "
+        f"end_addr=0x{end_address:08x}"
+    )
+    return base + 4, end_address
+
+
+def _leading_vobu_zero_is_valid(ifo_data: bytes, offset: int) -> bool:
+    """Distinguish sector zero from zero padding at the table start."""
+    next_offset = offset + _VTS_VOBU_ADMAP_ENTRY_LEN
+    if next_offset + _VTS_VOBU_ADMAP_ENTRY_LEN > len(ifo_data):
+        return False
+    next_vobu = _read_u32(ifo_data, next_offset)
+    return next_vobu != 0
+
+
+def _scan_vts_vobu_admap(
+    ifo_data: bytes,
+    entry_base: int,
+    max_entries: int,
+    end_address: int,
+) -> list[int]:
+    n_address_entries = 0
+    if end_address > entry_base:
+        n_address_entries = (end_address - entry_base) // _VTS_VOBU_ADMAP_ENTRY_LEN
+    n_entries = min(max_entries, max(n_address_entries, max_entries))
+
+    vobus: list[int] = []
+    for index in range(n_entries):
+        offset = entry_base + index * _VTS_VOBU_ADMAP_ENTRY_LEN
+        if offset + _VTS_VOBU_ADMAP_ENTRY_LEN > len(ifo_data):
+            break
+        vobu_start = _read_u32(ifo_data, offset)
+        if vobu_start == 0:
+            if index == 0 and _leading_vobu_zero_is_valid(ifo_data, offset):
+                vobus.append(vobu_start)
+                continue
+            break
+        vobus.append(vobu_start)
+    return vobus
+
+
+def _parse_vts_vobu_admap(ifo_data: bytes) -> list[int] | None:
+    """Parse VTS_VOBU_ADMAP into sorted VOBU start sectors, or None."""
+    bounds = _vts_vobu_admap_bounds(ifo_data)
+    if bounds is None:
+        return None
+    entry_base, end_address = bounds
+
+    max_entries = (len(ifo_data) - entry_base) // _VTS_VOBU_ADMAP_ENTRY_LEN
     if max_entries <= 0:
         return None
 
-    # Determine entry count from end_addr if available.
-    n_addr_entries = 0
-    if end_addr > base + 4:
-        n_addr_entries = (end_addr - base - 4) // _VTS_VOBU_ADMAP_ENTRY_LEN
-    n_entries = min(max_entries, max(n_addr_entries, max_entries))
-
-    # Scan for the first all-zero entry (real end of VOBU_ADMAP).
-    vobus: list[int] = []
-    for i in range(n_entries):
-        off = entry_base + i * _VTS_VOBU_ADMAP_ENTRY_LEN
-        if off + _VTS_VOBU_ADMAP_ENTRY_LEN > len(ifo_data):
-            break
-        (vobu_start,) = _VTS_VOBU_ADMAP_ENTRY.unpack_from(ifo_data, off)
-        if vobu_start == 0:
-            # VOBU_ADMAP should not contain zero entries, but some discs
-            # pad with zeros at the end.  A leading zero is valid when the
-            # first VOBU starts at sector 0 (relative to VTS VOB area).
-            # Peek at the next entry to distinguish leading-zero from
-            # trailing-padding: if the next entry is non-zero, the current
-            # zero entry is a legitimate VOBU at sector 0.
-            if i == 0:
-                peek_off = off + _VTS_VOBU_ADMAP_ENTRY_LEN
-                nbytes = peek_off + _VTS_VOBU_ADMAP_ENTRY_LEN
-                if nbytes <= len(ifo_data):
-                    (next_vobu,) = _VTS_VOBU_ADMAP_ENTRY.unpack_from(ifo_data, peek_off)
-                    if next_vobu != 0:
-                        vobus.append(vobu_start)
-                        continue
-            break
-        vobus.append(vobu_start)
-
+    vobus = _scan_vts_vobu_admap(ifo_data, entry_base, max_entries, end_address)
     log_debug(f"VTS_VOBU_ADMAP: {len(vobus)} VOBU entries")
     if vobus:
         log_debug(f"  VOBU_ADMAP range: sectors {vobus[0]}-{vobus[-1]}")
@@ -2306,7 +2316,7 @@ def _lookup_main_feature_range(
       - The cell address table is missing or malformed
       - The computed range is empty or invalid
 
-    Callers fall back to PTS-based ffprobe scanning on None.
+    Callers fall back to direct MPEG-PS PTS scanning on None.
     """
     # 1. Parse VTS_C_ADT and build a lookup by (VOB_ID, Cell_ID).
     #    When the C_ADT is empty (e.g. seamless-branching discs where

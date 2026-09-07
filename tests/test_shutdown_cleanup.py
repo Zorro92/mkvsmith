@@ -16,17 +16,14 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
+import models
 import pytest
 
 from models import (
-    _ACTIVE_MUXER_PGIDS,
-    _ACTIVE_OUTPUT_FILES,
-    _SYMLINK_CLEANUP,
-    _TEMP_DIRS,
-    _TEMP_FILES,
+    RuntimeState,
     _kill_active_muxers,
     cleanup_temp_dirs,
     finish_progress_line,
@@ -39,21 +36,13 @@ from models import (
 
 
 @pytest.fixture(autouse=True)
-def reset_cleanup_state() -> Iterator[None]:
-    """Isolate tests from the shared global cleanup registries."""
-    _ACTIVE_MUXER_PGIDS.clear()
-    _ACTIVE_OUTPUT_FILES.clear()
-    _SYMLINK_CLEANUP.clear()
-    _TEMP_DIRS.clear()
-    _TEMP_FILES.clear()
-    set_progress_active(False)
-    yield
-    _ACTIVE_MUXER_PGIDS.clear()
-    _ACTIVE_OUTPUT_FILES.clear()
-    _SYMLINK_CLEANUP.clear()
-    _TEMP_DIRS.clear()
-    _TEMP_FILES.clear()
-    set_progress_active(False)
+def isolated_runtime_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> RuntimeState:
+    """Run each test against a fresh injected runtime state."""
+    runtime_state = RuntimeState()
+    monkeypatch.setattr(models, "RUNTIME_STATE", runtime_state)
+    return runtime_state
 
 
 def test_cleanup_temp_dirs_removes_tracked_files_and_dirs(tmp_path: Path) -> None:
@@ -63,8 +52,8 @@ def test_cleanup_temp_dirs_removes_tracked_files_and_dirs(tmp_path: Path) -> Non
     f = tmp_path / "partial.tmp"
     f.write_bytes(b"data")
 
-    _TEMP_DIRS.append(d)
-    _TEMP_FILES.append(f)
+    models.RUNTIME_STATE.cleanup.temp_dirs.append(d)
+    models.RUNTIME_STATE.cleanup.temp_files.append(f)
     cleanup_temp_dirs()
 
     assert not d.exists()
@@ -77,7 +66,7 @@ def test_cleanup_temp_dirs_removes_symlinks_only(tmp_path: Path) -> None:
     link = tmp_path / "safe.iso"
     link.symlink_to(target)
 
-    _SYMLINK_CLEANUP.append(link)
+    models.RUNTIME_STATE.cleanup.symlinks.append(link)
     cleanup_temp_dirs()
 
     assert not link.exists()
@@ -85,8 +74,8 @@ def test_cleanup_temp_dirs_removes_symlinks_only(tmp_path: Path) -> None:
 
 
 def test_cleanup_temp_dirs_ignores_missing_paths() -> None:
-    _TEMP_DIRS.append(Path("/nonexistent/mkv_scan"))
-    _TEMP_FILES.append(Path("/nonexistent/partial.tmp"))
+    models.RUNTIME_STATE.cleanup.temp_dirs.append(Path("/nonexistent/mkv_scan"))
+    models.RUNTIME_STATE.cleanup.temp_files.append(Path("/nonexistent/partial.tmp"))
     cleanup_temp_dirs()  # must not raise
 
 
@@ -106,8 +95,8 @@ def test_kill_active_muxers_kills_child_and_removes_partial_output(
 
         assert child.wait(timeout=10) == -signal.SIGKILL
         assert not out.exists()
-        assert _ACTIVE_MUXER_PGIDS == []
-        assert _ACTIVE_OUTPUT_FILES == []
+        assert models.RUNTIME_STATE.active_processes.muxer_pgids == []
+        assert models.RUNTIME_STATE.active_processes.output_files == []
     finally:
         if child.poll() is None:
             child.kill()
@@ -121,8 +110,8 @@ def test_register_unregister_roundtrip(tmp_path: Path) -> None:
 
     unregister_active_muxer(42)
     unregister_active_output(out)
-    assert _ACTIVE_MUXER_PGIDS == []
-    assert _ACTIVE_OUTPUT_FILES == []
+    assert models.RUNTIME_STATE.active_processes.muxer_pgids == []
+    assert models.RUNTIME_STATE.active_processes.output_files == []
 
     # Unregistering an unknown entry is a no-op.
     unregister_active_muxer(42)
@@ -163,7 +152,7 @@ tmp.write_bytes(b"temp")
 Path(sys.argv[3]).write_text(str(g.pid))
 models.register_active_muxer(g.pid)
 models.register_active_output(out)
-models._TEMP_FILES.append(tmp)
+models.RUNTIME_STATE.cleanup.temp_files.append(tmp)
 models.set_progress_active(True)
 sys.stderr.write("\rMuxing 42%")
 sys.stderr.flush()
@@ -219,3 +208,59 @@ def test_sigint_handler_kills_muxer_and_cleans_up(tmp_path: Path) -> None:
                 os.kill(gpid, signal.SIGKILL)
             except OSError:
                 pass
+
+
+def test_cleanup_temp_dirs_removes_nested_contents(tmp_path: Path) -> None:
+    directory = tmp_path / "mkv_scan_nested"
+    nested = directory / "BDMV" / "STREAM"
+    nested.mkdir(parents=True)
+    (nested / "clip.m2ts").write_bytes(b"video")
+
+    models.RUNTIME_STATE.cleanup.temp_dirs.append(directory)
+    (directory / "partial.tmp").write_bytes(b"data")
+    models.RUNTIME_STATE.cleanup.temp_files.append(directory / "partial.tmp")
+    cleanup_temp_dirs()
+
+    assert not directory.exists()
+
+
+def test_cleanup_failed_unmount_preserves_mountpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mountpoint = tmp_path / "mount"
+    mountpoint.mkdir()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        models.subprocess,
+        "run",
+        lambda command, **_kwargs: (
+            commands.append(command) or SimpleNamespace(returncode=1)
+        ),
+    )
+    models.RUNTIME_STATE.cleanup.direct_mounts.append(mountpoint)
+
+    cleanup_temp_dirs(interrupt=True)
+
+    assert commands == [["sudo", "-n", "umount", str(mountpoint)]]
+    assert mountpoint.exists()
+
+
+def test_cleanup_successful_interrupt_unmount_removes_mountpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mountpoint = tmp_path / "mount"
+    mountpoint.mkdir()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        models.subprocess,
+        "run",
+        lambda command, **_kwargs: (
+            commands.append(command) or SimpleNamespace(returncode=0)
+        ),
+    )
+    models.RUNTIME_STATE.cleanup.direct_mounts.append(mountpoint)
+
+    cleanup_temp_dirs(interrupt=True)
+
+    assert commands == [["sudo", "-n", "umount", str(mountpoint)]]
+    assert not mountpoint.exists()

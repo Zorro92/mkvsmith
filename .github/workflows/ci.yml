@@ -23,13 +23,13 @@ jobs:
         run: uv sync --python ${{ matrix.python-version }}
 
       - name: Run tests
-        run: uv run pytest
+        run: uv run pytest -ra
 
       - name: Lint
-        run: uv run ruff check
+        run: uv run ruff check $(git ls-files '*.py')
 
       - name: Format check
-        run: uv run ruff format --check
+        run: uv run ruff format --check $(git ls-files '*.py')
 
       - name: Type check
         run: uv run ty check --config-file ty.toml

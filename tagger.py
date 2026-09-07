@@ -28,8 +28,7 @@ from typing import Any, Callable, TypedDict, final
 from models import (
     RipError,
     TagOptions,
-    _console,
-    _TEMP_FILES,
+    RUNTIME_STATE,
     log_info,
     log_warn,
 )
@@ -83,8 +82,8 @@ class MovieMetadata:
 
 # MovieMetadata attribute -> (Matroska tag name, optional formatter). Falsy
 # values are skipped. `title` is intentionally absent: it is written to the
-# Matroska Segment Title element separately (ffmpeg maps the lowercase "title"
-# key to it), and a TITLE tag would collide with it case-insensitively.
+# Matroska Segment Title element separately; a TITLE tag would collide with
+# that element case-insensitively.
 _TAG_FIELDS: list[tuple[str, str, Callable[[Any], str] | None]] = [
     ("tmdb_id", "TMDB", None),
     ("imdb_id", "IMDB", None),
@@ -171,6 +170,194 @@ def sanitize_title(filename: str) -> tuple[str, int | None]:
 # =============================================================================
 
 
+def _apply_artwork_metadata(metadata: MovieMetadata, info: dict[str, Any]) -> None:
+    metadata.poster_path = info.get("poster_path")
+    metadata.backdrop_path = info.get("backdrop_path")
+
+
+def _apply_identification_metadata(
+    metadata: MovieMetadata,
+    info: dict[str, Any],
+    properties: list[str],
+    movie_id: int,
+) -> None:
+    if "TMDbID" in properties:
+        metadata.tmdb_id = f"movie/{movie_id}"
+    if "IMDbID" in properties and info.get("imdb_id"):
+        metadata.imdb_id = info["imdb_id"]
+
+
+def _apply_scalar_metadata(
+    metadata: MovieMetadata, info: dict[str, Any], properties: list[str]
+) -> None:
+    fields: tuple[tuple[str, str, str], ...] = (
+        ("Title", "title", "title"),
+        ("Overview", "overview", "overview"),
+        ("ReleaseDate", "release_date", "release_date"),
+        ("Runtime", "runtime", "runtime"),
+        ("OriginalLanguage", "original_language", "original_language"),
+        ("UserRating", "vote_average", "user_rating"),
+    )
+    for prop, info_key, metadata_attr in fields:
+        if prop in properties:
+            setattr(metadata, metadata_attr, info.get(info_key))
+
+
+def _apply_list_metadata(
+    metadata: MovieMetadata, info: dict[str, Any], properties: list[str]
+) -> None:
+    if "Genres" in properties:
+        metadata.genres = [genre["name"] for genre in info.get("genres", [])]
+    if "ProductionCompanies" in properties:
+        metadata.production_companies = [
+            company["name"] for company in info.get("production_companies", [])
+        ]
+
+
+def _apply_core_metadata(
+    metadata: MovieMetadata,
+    info: dict[str, Any],
+    properties: list[str],
+    movie_id: int,
+) -> None:
+    _apply_artwork_metadata(metadata, info)
+    _apply_identification_metadata(metadata, info, properties, movie_id)
+    _apply_scalar_metadata(metadata, info, properties)
+    _apply_list_metadata(metadata, info, properties)
+
+
+def _apply_credits_metadata(
+    metadata: MovieMetadata, credits: dict[str, Any], properties: list[str]
+) -> None:
+    if "Cast" in properties:
+        metadata.cast = [
+            person["name"] for person in credits.get("cast", [])[:MAX_CAST]
+        ]
+    if "Writers" in properties:
+        metadata.writers = [
+            f"{person['name']} ({person['job']})"
+            for person in credits.get("crew", [])
+            if person.get("department") == "Writing"
+        ][:MAX_WRITERS]
+    if "Directors" in properties:
+        metadata.directors = [
+            person["name"]
+            for person in credits.get("crew", [])
+            if person.get("department") == "Directing"
+            and person.get("job") == "Director"
+        ][:MAX_DIRECTORS]
+
+
+def _region_content_rating(release_info: dict[str, Any], region: str) -> str | None:
+    for country in release_info.get("results", []):
+        if country.get("iso_3166_1") != region:
+            continue
+        rating = next(
+            (
+                release["certification"]
+                for release in country.get("release_dates", [])
+                if release.get("certification")
+            ),
+            None,
+        )
+        assert rating is None or isinstance(rating, str)
+        return rating
+    return None
+
+
+def _apply_custom_metadata(
+    metadata: MovieMetadata, info: dict[str, Any], properties: list[str]
+) -> None:
+    for prop in ("Budget", "Revenue", "Status"):
+        if prop not in properties:
+            continue
+        value = info.get(prop.lower())
+        if value is None:
+            continue
+        if prop in ("Budget", "Revenue") and isinstance(value, (int, float)):
+            value = f"${value:,.2f}"
+        elif isinstance(value, list):
+            value = ", ".join(str(item) for item in value)
+        metadata.custom_properties[prop] = str(value)
+
+
+def _truncate_preview_overview(overview: str) -> str:
+    if len(overview) <= 120:
+        return overview
+    return overview[:117] + "..."
+
+
+def _core_metadata_preview_rows(
+    metadata: MovieMetadata,
+) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    if metadata.title:
+        rows.append(("Title", metadata.title))
+    if metadata.tmdb_id:
+        rows.append(("TMDb ID", metadata.tmdb_id))
+    if metadata.imdb_id:
+        rows.append(("IMDb ID", metadata.imdb_id))
+    if metadata.release_date:
+        rows.append(("Release Date", metadata.release_date))
+    if metadata.runtime:
+        rows.append(("Runtime", f"{metadata.runtime} min"))
+    if metadata.genres:
+        rows.append(("Genres", ", ".join(metadata.genres)))
+    if metadata.user_rating:
+        rows.append(("User Rating", str(metadata.user_rating)))
+    if metadata.content_rating:
+        rows.append(("Content Rating", metadata.content_rating))
+    if metadata.original_language:
+        rows.append(("Language", metadata.original_language))
+    return rows
+
+
+def _people_metadata_preview_rows(
+    metadata: MovieMetadata,
+) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    if metadata.directors:
+        rows.append(("Directors", ", ".join(metadata.directors)))
+    if metadata.cast:
+        rows.append(("Cast", ", ".join(metadata.cast[:5])))
+    return rows
+
+
+def _overview_metadata_preview_row(
+    metadata: MovieMetadata,
+) -> list[tuple[str, str]]:
+    if not metadata.overview:
+        return []
+    return [("Overview", _truncate_preview_overview(metadata.overview))]
+
+
+def _metadata_preview_rows(
+    metadata: MovieMetadata,
+) -> list[tuple[str, str]]:
+    return [
+        *_core_metadata_preview_rows(metadata),
+        *_people_metadata_preview_rows(metadata),
+        *_overview_metadata_preview_row(metadata),
+        *((prop, str(value)) for prop, value in metadata.custom_properties.items()),
+    ]
+
+
+def _print_plain_metadata_rows(rows: list[tuple[str, str]]) -> None:
+    for prop, value in rows:
+        print(f"  {prop}: {value}")
+
+
+def _print_rich_metadata_rows(rows: list[tuple[str, str]]) -> None:
+    from rich.table import Table
+
+    table = Table(title=tr("Metadata Preview"))
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="green")
+    for prop, value in rows:
+        table.add_row(prop, value)
+    RUNTIME_STATE.logger.console.print(table)
+
+
 @final
 class TmdbClient:
     """Minimal TMDB v3 client using only the standard library."""
@@ -251,122 +438,38 @@ class TmdbClient:
         region: str = "US",
         language: str | None = None,
     ) -> MovieMetadata:
-        md = MovieMetadata()
+        metadata = MovieMetadata()
         info = self._get(f"movie/{movie_id}", {"language": language})
-        md.poster_path = info.get("poster_path")
-        md.backdrop_path = info.get("backdrop_path")
-        if "TMDbID" in props:
-            md.tmdb_id = f"movie/{movie_id}"
-        if "IMDbID" in props and info.get("imdb_id"):
-            md.imdb_id = info["imdb_id"]
-        if "Title" in props:
-            md.title = info.get("title")
-        if "Overview" in props:
-            md.overview = info.get("overview")
-        if "Genres" in props:
-            md.genres = [g["name"] for g in info.get("genres", [])]
-        if "ReleaseDate" in props:
-            md.release_date = info.get("release_date")
-        if "Runtime" in props:
-            md.runtime = info.get("runtime")
-        if "OriginalLanguage" in props:
-            md.original_language = info.get("original_language")
-        if "ProductionCompanies" in props:
-            md.production_companies = [
-                c["name"] for c in info.get("production_companies", [])
-            ]
-        if "UserRating" in props:
-            md.user_rating = info.get("vote_average")
-        if any(p in props for p in ("Cast", "Writers", "Directors")):
+        _apply_core_metadata(metadata, info, props, movie_id)
+
+        if any(prop in props for prop in ("Cast", "Writers", "Directors")):
             credits = self._get(f"movie/{movie_id}/credits")
-            if "Cast" in props:
-                md.cast = [p["name"] for p in credits.get("cast", [])[:MAX_CAST]]
-            if "Writers" in props:
-                md.writers = [
-                    f"{p['name']} ({p['job']})"
-                    for p in credits.get("crew", [])
-                    if p.get("department") == "Writing"
-                ][:MAX_WRITERS]
-            if "Directors" in props:
-                md.directors = [
-                    p["name"]
-                    for p in credits.get("crew", [])
-                    if p.get("department") == "Directing" and p.get("job") == "Director"
-                ][:MAX_DIRECTORS]
+            _apply_credits_metadata(metadata, credits, props)
+
         if "ContentRating" in props:
             release_info = self._get(f"movie/{movie_id}/release_dates")
-            for country in release_info.get("results", []):
-                if country.get("iso_3166_1") == region:
-                    for rel in country.get("release_dates", []):
-                        if rel.get("certification"):
-                            md.content_rating = rel["certification"]
-                            break
-                    break
+            metadata.content_rating = _region_content_rating(release_info, region)
+
         if "Keywords" in props:
             keywords = self._get(f"movie/{movie_id}/keywords")
-            md.keywords = [k["name"] for k in keywords.get("keywords", [])]
-        for prop in ("Budget", "Revenue", "Status"):
-            if prop in props:
-                value = info.get(prop.lower())
-                if value is None:
-                    continue
-                if prop == "Budget" and isinstance(value, (int, float)):
-                    value = f"${value:,.2f}"
-                elif prop == "Revenue" and isinstance(value, (int, float)):
-                    value = f"${value:,.2f}"
-                elif isinstance(value, list):
-                    value = ", ".join(str(v) for v in value)
-                md.custom_properties[prop] = str(value)
-        return md
+            metadata.keywords = [
+                keyword["name"] for keyword in keywords.get("keywords", [])
+            ]
 
-    def display_preview(self, md: MovieMetadata) -> None:
+        _apply_custom_metadata(metadata, info, props)
+        return metadata
+
+    def display_preview(self, metadata: MovieMetadata) -> None:
         from models import HAS_RICH
 
-        rows: list[tuple[str, str]] = []
-        if md.title:
-            rows.append(("Title", md.title))
-        if md.tmdb_id:
-            rows.append(("TMDb ID", md.tmdb_id))
-        if md.imdb_id:
-            rows.append(("IMDb ID", md.imdb_id))
-        if md.release_date:
-            rows.append(("Release Date", md.release_date))
-        if md.runtime:
-            rows.append(("Runtime", f"{md.runtime} min"))
-        if md.genres:
-            rows.append(("Genres", ", ".join(md.genres)))
-        if md.user_rating:
-            rows.append(("User Rating", str(md.user_rating)))
-        if md.content_rating:
-            rows.append(("Content Rating", md.content_rating))
-        if md.original_language:
-            rows.append(("Language", md.original_language))
-        if md.directors:
-            rows.append(("Directors", ", ".join(md.directors)))
-        if md.cast:
-            rows.append(("Cast", ", ".join(md.cast[:5])))
-        if md.overview:
-            overview = md.overview
-            if len(overview) > 120:
-                overview = overview[:117] + "..."
-            rows.append(("Overview", overview))
-        for prop, value in md.custom_properties.items():
-            rows.append((prop, str(value)))
-        if HAS_RICH and _console is not None:
+        rows = _metadata_preview_rows(metadata)
+        if HAS_RICH:
             try:
-                from rich.table import Table
-            except ImportError:
-                pass  # fall through to plain print below
-            else:
-                table = Table(title=tr("Metadata Preview"))
-                table.add_column("Property", style="cyan")
-                table.add_column("Value", style="green")
-                for k, v in rows:
-                    table.add_row(k, v)
-                _console.print(table)
+                _print_rich_metadata_rows(rows)
                 return
-        for k, v in rows:
-            print(f"  {k}: {v}")
+            except ImportError:
+                pass
+        _print_plain_metadata_rows(rows)
 
     def download_image(self, image_path: str, size: str = "original") -> bytes | None:
         if not image_path:
@@ -493,17 +596,99 @@ class ArtAttachment(TypedDict):
     label: str
 
 
-def _prepare_tagging(
-    search_name: str, opts: TagOptions
-) -> tuple[MovieMetadata | None, list[ArtAttachment]]:
-    """Fetch TMDB metadata for a rip, prompting for selection/confirmation.
+def _tagging_search_title(search_name: str, opts: TagOptions) -> tuple[str, int | None]:
+    if opts.title_override:
+        return opts.title_override, opts.year_override
 
-    Returns ``(metadata_or_None, art_attachments)``. ``metadata`` is None when
-    tagging is skipped (no key, user cancel). ``art_attachments`` is a list of
-    dicts ``{path, mime, filename, label}`` for temp images to attach at mux
-    time. Raises RipError on fatal fetch problems; the caller treats a tagging
-    failure as non-fatal to the rip itself.
-    """
+    search_title, search_year = sanitize_title(search_name)
+    if opts.year_override is not None:
+        search_year = opts.year_override
+    return search_title, search_year
+
+
+def _fetch_and_confirm_metadata(
+    client: TmdbClient,
+    search_title: str,
+    search_year: int | None,
+    opts: TagOptions,
+) -> MovieMetadata | None:
+    log_info(
+        "Looking up TMDB metadata for '"
+        + search_title
+        + "'"
+        + (f" ({search_year})" if search_year else "")
+    )
+    movie_id = client.get_movie_id(search_title, search_year)
+    metadata = client.get_metadata(
+        movie_id,
+        opts.metadata,
+        region=opts.region,
+        language=opts.language,
+    )
+    client.display_preview(metadata)
+
+    if opts.confirm and not _tag_confirm("Tag this rip with the above metadata?"):
+        log_info("Tagging skipped by user")
+        return None
+    return metadata
+
+
+def _download_art_attachment(
+    client: TmdbClient,
+    image_path: str,
+    label: str,
+    filename: str,
+    temp_files: list[Path],
+) -> ArtAttachment | None:
+    data = client.download_image(image_path)
+    if not data:
+        log_warn(f"{label} not available")
+        return None
+
+    extension = Path(image_path).suffix.lower() or ".jpg"
+    temp_path = Path(tempfile.NamedTemporaryFile(suffix=extension, delete=False).name)
+    temp_path.write_bytes(data)
+    temp_files.append(temp_path)
+    mime_type = "image/png" if extension == ".png" else "image/jpeg"
+    log_info(f"{label} downloaded")
+    return {
+        "path": temp_path,
+        "mime": mime_type,
+        "filename": filename,
+        "label": label,
+    }
+
+
+def _prepare_art_attachments(
+    client: TmdbClient,
+    metadata: MovieMetadata,
+    opts: TagOptions,
+    temp_files: list[Path],
+) -> list[ArtAttachment]:
+    wanted = {
+        "poster": opts.art in ("poster", "both"),
+        "backdrop": opts.art in ("backdrop", "both"),
+    }
+    sources = (
+        ("poster", metadata.poster_path, "Poster", "cover.jpg"),
+        ("backdrop", metadata.backdrop_path, "Backdrop", "fanart.jpg"),
+    )
+    attachments: list[ArtAttachment] = []
+    for kind, image_path, label, filename in sources:
+        if not wanted[kind] or not image_path:
+            continue
+        attachment = _download_art_attachment(
+            client, image_path, label, filename, temp_files
+        )
+        if attachment is not None:
+            attachments.append(attachment)
+    return attachments
+
+
+def _prepare_tagging(
+    search_name: str, opts: TagOptions, temp_files: list[Path]
+) -> tuple[MovieMetadata | None, list[ArtAttachment]]:
+    """Fetch TMDB metadata for a rip, prompting for selection/confirmation."""
     api_key = _resolve_tmdb_key(opts)
     if not api_key:
         log_warn(
@@ -512,54 +697,10 @@ def _prepare_tagging(
         return None, []
 
     client = TmdbClient(api_key)
-    if opts.title_override:
-        s_title, s_year = opts.title_override, opts.year_override
-    else:
-        s_title, s_year = sanitize_title(search_name)
-        if opts.year_override is not None:
-            s_year = opts.year_override
-
-    log_info(
-        "Looking up TMDB metadata for '"
-        + s_title
-        + "'"
-        + (f" ({s_year})" if s_year else "")
-    )
-    movie_id = client.get_movie_id(s_title, s_year)
-    md = client.get_metadata(
-        movie_id, opts.metadata, region=opts.region, language=opts.language
-    )
-    client.display_preview(md)
-
-    if opts.confirm and not _tag_confirm("Tag this rip with the above metadata?"):
-        log_info("Tagging skipped by user")
+    search_title, search_year = _tagging_search_title(search_name, opts)
+    metadata = _fetch_and_confirm_metadata(client, search_title, search_year, opts)
+    if metadata is None:
         return None, []
 
-    art_attachments: list[ArtAttachment] = []
-    if opts.art:
-        want = {
-            "poster": opts.art in ("poster", "both"),
-            "backdrop": opts.art in ("backdrop", "both"),
-        }
-        sources = [
-            ("poster", md.poster_path, "Poster", "cover.jpg"),
-            ("backdrop", md.backdrop_path, "Backdrop", "fanart.jpg"),
-        ]
-        for kind, img_path, label, fname in sources:
-            if not want[kind] or not img_path:
-                continue
-            data = client.download_image(img_path)
-            if not data:
-                log_warn(f"{label} not available")
-                continue
-            ext = Path(img_path).suffix.lower() or ".jpg"
-            tf = Path(tempfile.NamedTemporaryFile(suffix=ext, delete=False).name)
-            tf.write_bytes(data)
-            _TEMP_FILES.append(tf)
-            mime = "image/png" if ext == ".png" else "image/jpeg"
-            art_attachments.append(
-                {"path": tf, "mime": mime, "filename": fname, "label": label}
-            )
-            log_info(f"{label} downloaded")
-
-    return md, art_attachments
+    attachments = _prepare_art_attachments(client, metadata, opts, temp_files)
+    return metadata, attachments

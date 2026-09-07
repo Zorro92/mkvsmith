@@ -18,11 +18,16 @@ import pytest
 
 from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from dvdifo import (
+    _get_active_pgc_streams,
+    _parse_pgc_stream_languages,
     _parse_vmg_ifo,
+    _parse_vts_c_adt,
     _parse_vts_ifo_languages,
     _parse_vts_pgc_info,
+    _parse_vts_subp_attrs,
     _parse_vts_video_attrs,
     _parse_vts_audio_attrs,
+    _parse_vts_vobu_admap,
 )
 from models import StreamType
 
@@ -149,3 +154,67 @@ def test_parse_vts_ifo(fixtures_dir: Path) -> None:
     assert audio_attrs[0x80].codec == "AC3"
     assert audio_attrs[0x80].channels == 6
     assert audio_attrs[0x81].channels == 2
+
+
+def test_parse_vts_subp_attrs_and_pgc_stream_languages(
+    fixtures_dir: Path,
+) -> None:
+    data = (fixtures_dir / "dvd_vts_01_0.ifo").read_bytes()
+
+    attrs = _parse_vts_subp_attrs(data)
+
+    assert sorted(attrs) == [0x20, 0x21, 0x22]
+    assert [
+        (attrs[sid].lang_code, attrs[sid].is_hearing_impaired) for sid in sorted(attrs)
+    ] == [
+        ("en", True),
+        ("fr", True),
+        ("es", True),
+    ]
+    assert all(attrs[sid].code_extension == 0 for sid in attrs)
+    assert _parse_pgc_stream_languages(data) == ({}, {})
+
+
+def test_parse_vts_c_adt_and_vobu_admap(fixtures_dir: Path) -> None:
+    data = (fixtures_dir / "dvd_vts_01_0.ifo").read_bytes()
+
+    cells = _parse_vts_c_adt(data)
+    vobus = _parse_vts_vobu_admap(data)
+
+    assert len(cells) == 53
+    assert cells[0] == {
+        "vob_id": 6,
+        "cell_id": 70,
+        "start_sector": 399360,
+        "end_sector": 411275,
+    }
+    assert cells[-1] == {
+        "vob_id": 28,
+        "cell_id": 210,
+        "start_sector": 655616,
+        "end_sector": 1888940,
+    }
+    assert all(cell["start_sector"] < cell["end_sector"] for cell in cells)
+
+    assert vobus is not None
+    assert len(vobus) == 9703
+    assert vobus[:4] == [0, 52, 53, 54]
+    assert vobus[-4:] == [1901086, 1901138, 1901191, 1901245]
+    assert vobus == sorted(vobus)
+
+
+def test_get_active_pgc_streams(fixtures_dir: Path) -> None:
+    data = (fixtures_dir / "dvd_vts_01_0.ifo").read_bytes()
+
+    assert _get_active_pgc_streams(data) == (
+        {0x80, 0x81, 0x82},
+        {0x20, 0x21, 0x22},
+    )
+    assert _get_active_pgc_streams(data, 1) == (
+        {0x80, 0x81, 0x82},
+        {0x20, 0x21, 0x22},
+    )
+    assert _get_active_pgc_streams(data, 2) == (
+        {0x80, 0x81, 0x82},
+        {0x20, 0x21, 0x22},
+    )

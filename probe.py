@@ -86,59 +86,91 @@ def _probe_with_mkvmerge(path: Path) -> dict[str, Any] | None:
         if data.get("container", {}).get("duration"):
             duration = data["container"]["duration"] / 1_000_000_000.0
         return {"tracks": data.get("tracks", []), "duration": duration}
-    except Exception:
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        ValueError,
+        TypeError,
+        KeyError,
+    ):
         return None
+
+
+def _mkvmerge_stream_type(track_type: str) -> StreamType | None:
+    if track_type == "video":
+        return StreamType.VIDEO
+    if track_type == "audio":
+        return StreamType.AUDIO
+    if track_type == "subtitles":
+        return StreamType.SUBTITLE
+    return None
+
+
+def _stream_from_mkvmerge_track(
+    track: dict[str, Any], stream_type: StreamType, type_index: int
+) -> Stream:
+    properties = track.get("properties", {})
+    codec_name = track.get("codec", "")
+    codec = _MKVMERGE_CODEC_MAP.get(codec_name, codec_name)
+    stream = Stream(
+        index=track.get("id", 0),
+        stream_type=stream_type,
+        codec=codec or "unknown",
+        language=properties.get("language", "und"),
+        title=properties.get("track_name", ""),
+        is_default=properties.get("default_track", False),
+        is_forced=properties.get("forced_track", False),
+        type_index=type_index,
+    )
+
+    source_number = properties.get("number")
+    if source_number is not None:
+        stream.sub_id = source_number
+        stream.pid = source_number
+    return stream
+
+
+def _apply_mkvmerge_video_properties(
+    stream: Stream, properties: dict[str, Any]
+) -> None:
+    dimensions = properties.get("pixel_dimensions", "")
+    if "x" not in dimensions:
+        return
+    try:
+        width, height = dimensions.split("x")
+        stream.width = int(width)
+        stream.height = int(height)
+    except (ValueError, IndexError):
+        pass
+
+
+def _apply_mkvmerge_audio_properties(
+    stream: Stream, properties: dict[str, Any]
+) -> None:
+    channels = properties.get("audio_channels")
+    if channels is not None:
+        stream.channels = channels
+    sample_rate = properties.get("audio_sampling_frequency")
+    if sample_rate is not None:
+        stream.sample_rate = str(sample_rate)
 
 
 def _parse_mkvmerge_streams(probe_data: dict[str, Any], title: Title) -> None:
     """Parse mkvmerge -J output into Stream objects, appending to title.streams."""
     type_counts = {StreamType.VIDEO: 0, StreamType.AUDIO: 0, StreamType.SUBTITLE: 0}
-    for td in probe_data.get("tracks", []):
-        mtype = td.get("type", "")
-        if mtype == "video":
-            st = StreamType.VIDEO
-        elif mtype == "audio":
-            st = StreamType.AUDIO
-        elif mtype == "subtitles":
-            st = StreamType.SUBTITLE
-        else:
+    for track in probe_data.get("tracks", []):
+        stream_type = _mkvmerge_stream_type(track.get("type", ""))
+        if stream_type is None:
             continue
 
-        props = td.get("properties", {})
-        codec = _MKVMERGE_CODEC_MAP.get(td.get("codec", ""), td.get("codec", ""))
-
-        stream = Stream(
-            index=td.get("id", 0),
-            stream_type=st,
-            codec=codec or "unknown",
-            language=props.get("language", "und"),
-            title=props.get("track_name", ""),
-            is_default=props.get("default_track", False),
-            is_forced=props.get("forced_track", False),
-            type_index=type_counts[st],
+        stream = _stream_from_mkvmerge_track(
+            track, stream_type, type_counts[stream_type]
         )
-
-        num = props.get("number")
-        if num is not None:
-            stream.sub_id = num
-            stream.pid = num
-
-        if st == StreamType.VIDEO:
-            dims = props.get("pixel_dimensions", "")
-            if "x" in dims:
-                try:
-                    w_str, h_str = dims.split("x")
-                    stream.width = int(w_str)
-                    stream.height = int(h_str)
-                except (ValueError, IndexError):
-                    pass
-        elif st == StreamType.AUDIO:
-            ch = props.get("audio_channels")
-            if ch is not None:
-                stream.channels = ch
-            sr = props.get("audio_sampling_frequency")
-            if sr is not None:
-                stream.sample_rate = str(sr)
+        properties = track.get("properties", {})
+        if stream_type == StreamType.VIDEO:
+            _apply_mkvmerge_video_properties(stream, properties)
+        elif stream_type == StreamType.AUDIO:
+            _apply_mkvmerge_audio_properties(stream, properties)
 
         title.streams.append(stream)
-        type_counts[st] += 1
+        type_counts[stream_type] += 1

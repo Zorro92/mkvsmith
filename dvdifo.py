@@ -2354,15 +2354,9 @@ def _build_main_edition_vobu_ranges(
     return runs
 
 
-def _lookup_pgc_cell_playback_sector_range(
-    ifo_data: bytes,
-    pgc_abs: int,
-    cell_count: int,
-    vobu_admap: list[int] | None,
-    vob_total_bytes: int,
-    angle_index: int,
-) -> tuple[int, int] | None:
-    """Recover a PGC sector range directly from CellPlaybackInfo entries."""
+def _pgc_cell_playback_table_base(
+    ifo_data: bytes, pgc_abs: int, cell_count: int
+) -> int | None:
     playback_offset = (
         _read_u16(
             ifo_data,
@@ -2371,41 +2365,57 @@ def _lookup_pgc_cell_playback_sector_range(
         if (pgc_abs + _PGCOffset.CELL_PLAYBACK_INFO_TABLE_OFFSET + 2 <= len(ifo_data))
         else 0
     )
-    if (
-        not playback_offset
-        or pgc_abs + playback_offset + cell_count * _PGCOffset.CELL_PLAYBACK_INFO_LEN
-        > len(ifo_data)
-    ):
+    if not playback_offset:
         return None
-
     playback_base = pgc_abs + playback_offset
+    if playback_base + cell_count * _PGCOffset.CELL_PLAYBACK_INFO_LEN > len(ifo_data):
+        return None
+    return playback_base
+
+
+def _angle_selected_cell_indexes(
+    ifo_data: bytes,
+    playback_base: int,
+    cell_count: int,
+    angle_index: int,
+) -> set[int]:
+    selected_cells: set[int] = set()
+    angle_block: list[int] | None = None
+    for cell_index in range(cell_count):
+        offset = _cell_playback_base(playback_base, cell_index + 1)
+        cell_type = (ifo_data[offset] >> 6) & 0x03
+        if cell_type == 0:
+            continue
+        if cell_type == 1:
+            angle_block = [cell_index]
+            continue
+        if cell_type not in (2, 3):
+            continue
+
+        if angle_block is None:
+            angle_block = []
+        angle_block.append(cell_index)
+        if cell_type == 3:
+            selected = _selected_angle_cell(angle_block, angle_index, cell_index)
+            selected_cells.add(selected)
+            angle_block = None
+    return selected_cells
+
+
+def _accumulate_pgc_playback_sectors(
+    ifo_data: bytes,
+    playback_base: int,
+    cell_count: int,
+    selected_cells: set[int],
+) -> tuple[int | None, int | None, int | None]:
     start_sector: int | None = None
     end_sector: int | None = None
     last_first_vobu: int | None = None
-    angle_block: list[int] | None = None
-    selected_angle_cells: set[int] = set()
 
     for cell_index in range(cell_count):
-        offset = playback_base + cell_index * _PGCOffset.CELL_PLAYBACK_INFO_LEN
-        if offset + _CELL_PB_LAST_SECTOR_OFF + 4 > len(ifo_data):
-            break
-
+        offset = _cell_playback_base(playback_base, cell_index + 1)
         cell_type = (ifo_data[offset] >> 6) & 0x03
-        if cell_type == 0:
-            pass
-        elif cell_type == 1:
-            angle_block = [cell_index]
-            continue
-        elif cell_type in (2, 3):
-            if angle_block is None:
-                angle_block = []
-            angle_block.append(cell_index)
-            if cell_type == 3:
-                selected = _selected_angle_cell(angle_block, angle_index, cell_index)
-                selected_angle_cells.add(selected)
-                angle_block = None
-            continue
-        if cell_index not in selected_angle_cells and cell_type != 0:
+        if cell_type != 0 and cell_index not in selected_cells:
             continue
 
         first_vobu = _read_u32(ifo_data, offset + _CELL_PB_FIRST_SECTOR_OFF)
@@ -2422,25 +2432,58 @@ def _lookup_pgc_cell_playback_sector_range(
         if last_vobu > 0 and (end_sector is None or last_vobu > end_sector):
             end_sector = last_vobu
 
+    return start_sector, end_sector, last_first_vobu
+
+
+def _resolve_pgc_playback_end_sector(
+    last_first_vobu: int,
+    vobu_admap: list[int] | None,
+    vob_total_bytes: int,
+) -> int | None:
+    if vobu_admap is not None:
+        for index, sector in enumerate(vobu_admap):
+            if sector >= last_first_vobu and index + 1 < len(vobu_admap):
+                end_sector = vobu_admap[index + 1] - 1
+                log_debug(
+                    "IFO cell trim: VOBU_ADMAP end after "
+                    f"sector {last_first_vobu} -> next VOBU start "
+                    f"{vobu_admap[index + 1]} -> end {end_sector}"
+                )
+                return end_sector
+
+    estimated_end = last_first_vobu + 150_000
+    total_sectors = vob_total_bytes // 2048
+    end_sector = min(estimated_end, total_sectors)
+    log_debug(
+        "IFO cell trim: PGC cell PB last_fvobu fallback "
+        f"sectors {last_first_vobu}+150000 -> {end_sector}"
+    )
+    return end_sector
+
+
+def _lookup_pgc_cell_playback_sector_range(
+    ifo_data: bytes,
+    pgc_abs: int,
+    cell_count: int,
+    vobu_admap: list[int] | None,
+    vob_total_bytes: int,
+    angle_index: int,
+) -> tuple[int, int] | None:
+    """Recover a PGC sector range directly from CellPlaybackInfo entries."""
+    playback_base = _pgc_cell_playback_table_base(ifo_data, pgc_abs, cell_count)
+    if playback_base is None:
+        return None
+
+    selected_cells = _angle_selected_cell_indexes(
+        ifo_data, playback_base, cell_count, angle_index
+    )
+    start_sector, end_sector, last_first_vobu = _accumulate_pgc_playback_sectors(
+        ifo_data, playback_base, cell_count, selected_cells
+    )
     if end_sector is None and last_first_vobu is not None:
-        if vobu_admap is not None:
-            for index, sector in enumerate(vobu_admap):
-                if sector >= last_first_vobu and index + 1 < len(vobu_admap):
-                    end_sector = vobu_admap[index + 1] - 1
-                    log_debug(
-                        "IFO cell trim: VOBU_ADMAP end after "
-                        f"sector {last_first_vobu} -> next VOBU start "
-                        f"{vobu_admap[index + 1]} -> end {end_sector}"
-                    )
-                    break
-        if end_sector is None:
-            estimated_end = last_first_vobu + 150_000
-            total_sectors = vob_total_bytes // 2048
-            end_sector = min(estimated_end, total_sectors)
-            log_debug(
-                "IFO cell trim: PGC cell PB last_fvobu fallback "
-                f"sectors {last_first_vobu}+150000 -> {end_sector}"
-            )
+        end_sector = _resolve_pgc_playback_end_sector(
+            last_first_vobu, vobu_admap, vob_total_bytes
+        )
 
     if start_sector is None or end_sector is None or end_sector <= start_sector:
         return None

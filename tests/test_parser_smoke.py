@@ -222,3 +222,23 @@ def test_parse_pgc_stream_languages_offset_mode(
         {0x81: "en", 0x82: "fr"},
         {0x21: "es"},
     )
+
+
+def test_find_main_pgc_falls_back_to_longest_then_most_cells(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = bytearray(0x200)
+    data[:12] = b"DVDVIDEO-VTS"
+    pgcs = [
+        (1, 0x100, 50.0, 2),
+        (2, 0x180, 75.0, 3),
+        (3, 0x200, 75.0, 4),
+    ]
+    monkeypatch.setattr(dvdifo, "_vts_ttn1_pgc_abs", lambda _data: None)
+    monkeypatch.setattr(dvdifo, "_enumerate_vts_pgcs", lambda _data: pgcs)
+
+    assert dvdifo._find_main_pgc(bytes(data)) == (0x200, 75.0, 4)
+    assert dvdifo._find_main_pgc(bytes(data), 1) == (0x100, 50.0, 2)
+
+    monkeypatch.setattr(dvdifo, "_enumerate_vts_pgcs", lambda _data: [])
+    assert dvdifo._find_main_pgc(bytes(data)) is None

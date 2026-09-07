@@ -18,6 +18,8 @@ import pytest
 
 from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from dvdifo import (
+    _enumerate_vts_pgcs,
+    _find_main_pgc,
     _get_active_pgc_streams,
     _parse_pgc_stream_languages,
     _parse_vmg_ifo,
@@ -220,3 +222,26 @@ def test_get_active_pgc_streams(fixtures_dir: Path) -> None:
         {0x80, 0x81, 0x82},
         {0x20, 0x21, 0x22},
     )
+
+
+def test_find_main_pgc_and_enumerate_vts_pgcs(fixtures_dir: Path) -> None:
+    data = (fixtures_dir / "dvd_vts_01_0.ifo").read_bytes()
+
+    assert _find_main_pgc(data) == (4408, 4484.433766666667, 71)
+    assert _find_main_pgc(data, 1) == (4408, 4484.433766666667, 71)
+    assert _find_main_pgc(data, 2) == (7128, 12.0, 1)
+    assert _find_main_pgc(data, 3) == (7722, 32.033366666666666, 1)
+    assert _find_main_pgc(data, 99) is None
+
+    pgcs = _enumerate_vts_pgcs(data)
+    assert len(pgcs) == 38
+    assert pgcs[:3] == [
+        (1, 4408, 4484.433766666667, 71),
+        (2, 7128, 12.0, 1),
+        (3, 7722, 32.033366666666666, 1),
+    ]
+    assert pgcs[-3:] == [
+        (36, 19316, 201.16683333333333, 4),
+        (37, 19722, 63.266933333333334, 2),
+        (38, 20072, 1104.4337666666668, 14),
+    ]

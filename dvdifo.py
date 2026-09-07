@@ -1076,69 +1076,60 @@ def _enumerate_vts_pgcs(ifo_data: bytes) -> list[tuple[int, int, float, int]]:
     return result
 
 
-def _find_main_pgc(
-    ifo_data: bytes,
-    pgc_number: int | None = None,
-) -> tuple[int, float, int] | None:
-    """Find a Program Chain in a VTS IFO.
+_PgcSelection = tuple[int, float, int]
 
-    When ``pgc_number`` is given (1-indexed, matching VTS_PTT_SRPT's
-    ``pgcn`` field), that exact PGC is returned directly - used to rip a
-    specific alternate edition on seamless-branching discs (see
-    ``_enumerate_vts_pgcs``).
 
-    Otherwise, prefers the PGC that VTS_TTN 1 (the disc's own default title
-    designation) actually uses, per VTS_PTT_SRPT - this is the
-    spec-authoritative way to identify "the movie" for a title set and
-    correctly handles discs with multiple seamless-branching editions where
-    a bonus/extended cut has a longer declared duration than the default
-    title (a pure "longest PGC" heuristic would pick the wrong one there).
+def _find_explicit_pgc(ifo_data: bytes, pgc_number: int) -> _PgcSelection | None:
+    for number, pgc_abs, duration, cell_count in _enumerate_vts_pgcs(ifo_data):
+        if number == pgc_number:
+            return pgc_abs, duration, cell_count
+    return None
 
-    Falls back to scanning every PGC in the VTS_PGCIT and returning the one
-    with the longest playback duration (cell count as tiebreaker) when the
-    VTS_TTN 1 lookup fails - e.g. for VMGM/menu-domain IFOs that have no
-    VTS_PTT_SRPT of their own.
 
-    Returns ``(pgc_abs_offset, duration_seconds, num_cells)`` or None when the
-    IFO is malformed, the PGCIT is missing, or no valid PGC is found.
-
-    This helper eliminates duplicated PGC-selection logic across chapter parsing,
-    active-stream detection, PGC language extraction, and byte-range lookup,
-    ensuring all four pick the *same* PGC.
-    """
-    if len(ifo_data) < 0x200 or ifo_data[:12] != _VTS_IFO_IDENT:
+def _find_designated_pgc(ifo_data: bytes) -> _PgcSelection | None:
+    pgc_abs = _vts_ttn1_pgc_abs(ifo_data)
+    if pgc_abs is None or pgc_abs + 4 > len(ifo_data):
         return None
 
-    if pgc_number is not None:
-        for num, pgc_abs, duration, n_cells in _enumerate_vts_pgcs(ifo_data):
-            if num == pgc_number:
-                return pgc_abs, duration, n_cells
+    duration = _bcd_playback_seconds(ifo_data, pgc_abs + _PGCOffset.PLAYBACK_TIME)
+    cell_count = ifo_data[pgc_abs + _PGCOffset.NB_CELLS]
+    if cell_count <= 0:
         return None
+    return pgc_abs, duration, cell_count
 
-    ttn1_pgc_abs = _vts_ttn1_pgc_abs(ifo_data)
-    if ttn1_pgc_abs is not None and ttn1_pgc_abs + 4 <= len(ifo_data):
-        duration = _bcd_playback_seconds(
-            ifo_data, ttn1_pgc_abs + _PGCOffset.PLAYBACK_TIME
-        )
-        n_cells = ifo_data[ttn1_pgc_abs + _PGCOffset.NB_CELLS]
-        if n_cells > 0:
-            return ttn1_pgc_abs, duration, n_cells
 
+def _find_longest_pgc(ifo_data: bytes) -> _PgcSelection | None:
     best_pgc_abs: int | None = None
     best_duration = 0.0
     best_cells = 0
-    for _num, pgc_abs, duration, n_cells in _enumerate_vts_pgcs(ifo_data):
-        # Primary criterion: duration. Tiebreaker: cell count.
+    for _number, pgc_abs, duration, cell_count in _enumerate_vts_pgcs(ifo_data):
         if duration > best_duration or (
-            duration == best_duration and n_cells > best_cells
+            duration == best_duration and cell_count > best_cells
         ):
             best_duration = duration
-            best_cells = n_cells
+            best_cells = cell_count
             best_pgc_abs = pgc_abs
 
     if best_pgc_abs is None:
         return None
     return best_pgc_abs, best_duration, best_cells
+
+
+def _find_main_pgc(
+    ifo_data: bytes,
+    pgc_number: int | None = None,
+) -> _PgcSelection | None:
+    """Find the selected, designated, or longest valid VTS Program Chain.
+
+    An explicit ``pgc_number`` is returned directly. Otherwise VTS_TTN 1 is
+    preferred as the disc's own designation; malformed title sets fall back to
+    the longest PGC with cell count as the tiebreaker.
+    """
+    if len(ifo_data) < 0x200 or ifo_data[:12] != _VTS_IFO_IDENT:
+        return None
+    if pgc_number is not None:
+        return _find_explicit_pgc(ifo_data, pgc_number)
+    return _find_designated_pgc(ifo_data) or _find_longest_pgc(ifo_data)
 
 
 def _pgc_cell_position_signature(

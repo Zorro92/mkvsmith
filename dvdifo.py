@@ -968,67 +968,80 @@ def _ifo_audio_title(attrs: _IFOAudioAttrs | None) -> str | None:
 # =============================================================================
 
 
-def _vts_ttn1_pgc_abs(ifo_data: bytes) -> int | None:
-    """Return the absolute offset of the PGC used by VTS_TTN 1 (chapter 1).
-
-    Parses VTS_PTT_SRPT (Title/Chapter -> PGC map) to find the PGC number
-    that VTS_TTN 1's first PTT (chapter) uses. This is the DVD's own
-    authoritative, spec-defined "default title" designation for a VTS -
-    exactly what real DVD players and MakeMKV use to pick the primary
-    edition for a title set. This must take priority over any
-    duration-based heuristic: on discs with multiple seamless-branching
-    editions (e.g. a theatrical cut plus a longer "Special Edition" cut
-    sharing footage via interleaved cells), the bonus/extended edition can
-    have a *longer* declared PGC duration than the actual default/theatrical
-    title, which would cause a "pick the longest PGC" heuristic to silently
-    select the wrong edition.
-
-    Returns None on any parse failure (callers fall back to the
-    duration-based heuristic, which is still needed for menu PGCs and other
-    non-title contexts that have no VTS_TTN of their own).
-    """
+def _vts_ptt_srpt_base(ifo_data: bytes) -> int | None:
     if len(ifo_data) < _VTS_PTR_PTT_SRPT + 4:
         return None
     srpt_sector = _read_u32(ifo_data, _VTS_PTR_PTT_SRPT)
     if srpt_sector == 0:
         return None
+
     srpt_base = srpt_sector * 2048
     if srpt_base + 8 > len(ifo_data):
         return None
-    nr_of_srpts = _read_u16(ifo_data, srpt_base)
-    if nr_of_srpts < 1:
+    if _read_u16(ifo_data, srpt_base) < 1:
         return None
-    # First 4-byte TTU offset (relative to srpt_base) is VTS_TTN 1.
-    ttu_off_pos = srpt_base + 8
-    if ttu_off_pos + 4 > len(ifo_data):
-        return None
-    ttu_off = _read_u32(ifo_data, ttu_off_pos)
-    ttu_abs = srpt_base + ttu_off
-    if ttu_abs + 4 > len(ifo_data):
-        return None
-    nr_of_ptts = _read_u16(ifo_data, ttu_abs)
-    if nr_of_ptts < 1:
-        return None
-    # First PTT (chapter 1): ptt_info_t { pgcn: u16, pgn: u16 }.
-    ptt_off = ttu_abs + 2
-    if ptt_off + 4 > len(ifo_data):
-        return None
-    pgcn = _read_u16(ifo_data, ptt_off)
-    if pgcn < 1:
+    return srpt_base
+
+
+def _vts_title_unit_base(ifo_data: bytes, srpt_base: int) -> int | None:
+    ttu_offset_position = srpt_base + 8
+    if ttu_offset_position + 4 > len(ifo_data):
         return None
 
+    ttu_offset = _read_u32(ifo_data, ttu_offset_position)
+    ttu_base = srpt_base + ttu_offset
+    if ttu_base + 4 > len(ifo_data):
+        return None
+    if _read_u16(ifo_data, ttu_base) < 1:
+        return None
+    return ttu_base
+
+
+def _vts_ttn1_pgc_number(ifo_data: bytes, ttu_base: int) -> int | None:
+    ptt_offset = ttu_base + 2
+    if ptt_offset + 4 > len(ifo_data):
+        return None
+
+    pgc_number = _read_u16(ifo_data, ptt_offset)
+    if pgc_number < 1:
+        return None
+    return pgc_number
+
+
+def _vts_pgc_absolute_offset(ifo_data: bytes, pgc_number: int) -> int | None:
     pgcit_sector = _read_u32(ifo_data, _VTS_PTR_PGCIT)
     if pgcit_sector == 0:
         return None
+
     pgcit_base = pgcit_sector * 2048
-    entry = pgcit_base + 8 + (pgcn - 1) * 8
+    entry = pgcit_base + 8 + (pgc_number - 1) * 8
     if entry + 8 > len(ifo_data):
         return None
-    pgc_off = _read_u32(ifo_data, entry + 4) & 0x7FFFFFFF
-    pgc_abs = pgcit_base + pgc_off
+
+    pgc_offset = _read_u32(ifo_data, entry + 4) & 0x7FFFFFFF
+    pgc_abs = pgcit_base + pgc_offset
     if pgc_abs + 8 > len(ifo_data):
         return None
     return pgc_abs
+
+
+def _vts_ttn1_pgc_abs(ifo_data: bytes) -> int | None:
+    """Return the absolute offset of the PGC used by VTS_TTN 1, chapter 1.
+
+    VTS_PTT_SRPT is the DVD's authoritative default-title designation. A
+    malformed or missing table returns None so callers can use their
+    longest-PGC fallback.
+    """
+    srpt_base = _vts_ptt_srpt_base(ifo_data)
+    if srpt_base is None:
+        return None
+    ttu_base = _vts_title_unit_base(ifo_data, srpt_base)
+    if ttu_base is None:
+        return None
+    pgc_number = _vts_ttn1_pgc_number(ifo_data, ttu_base)
+    if pgc_number is None:
+        return None
+    return _vts_pgc_absolute_offset(ifo_data, pgc_number)
 
 
 def _enumerate_vts_pgcs(ifo_data: bytes) -> list[tuple[int, int, float, int]]:

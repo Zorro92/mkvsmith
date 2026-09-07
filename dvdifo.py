@@ -645,22 +645,49 @@ class VmgInfo(TypedDict, total=False):
     title_map: dict[int, tuple[int, int]]
 
 
+def _parse_vmg_text_metadata(ifo_data: bytes) -> tuple[str | None, str | None]:
+    """Return the VMG disc name and barcode, when present."""
+    txtdt_sector = _read_u32(ifo_data, _VMG_PTR_TXTDT_MG)
+    if not txtdt_sector:
+        return None, None
+
+    base_offset = txtdt_sector * 2048
+    disc_name = _extract_vmg_disc_name(ifo_data, base_offset)
+    barcode = _extract_vmg_barcode(ifo_data, base_offset)
+    return disc_name, barcode
+
+
+def _parse_vmg_provider_id(ifo_data: bytes) -> str:
+    raw_provider_id = ifo_data[
+        _VMG_PROVIDER_ID : _VMG_PROVIDER_ID + _VMG_PROVIDER_ID_LEN
+    ]
+    return raw_provider_id.split(b"\x00")[0].decode("ascii", "ignore").strip()
+
+
+def _parse_vmg_title_map(ifo_data: bytes) -> dict[int, tuple[int, int]]:
+    tt_srpt_sector = _read_u32(ifo_data, _VMG_PTR_TT_SRPT)
+    title_map: dict[int, tuple[int, int]] = {}
+    if not tt_srpt_sector:
+        return title_map
+
+    tt_base = tt_srpt_sector * 2048
+    if tt_base + 4 > len(ifo_data):
+        return title_map
+
+    title_count = _read_u16(ifo_data, tt_base)
+    for index in range(title_count):
+        entry_offset = tt_base + 4 + index * _VMG_TT_SRPT_ENTRY_LEN
+        if entry_offset + _VMG_TT_SRPT_ENTRY_LEN > len(ifo_data):
+            break
+        _title_type, vts_ttn = _VMG_TT_SRPT_ENTRY.unpack_from(ifo_data, entry_offset)
+        vts_number = vts_ttn >> 8
+        if vts_number > 0:
+            title_map[index + 1] = (vts_number, vts_ttn & 0xFF)
+    return title_map
+
+
 def _parse_vmg_ifo(vmg_path: Path) -> VmgInfo:
-    """Parse VIDEO_TS.IFO (VMG) to extract disc metadata.
-
-    Reads the VMG IFO's Provider ID, VMG_TXTDT_MG disc name, and
-    Title Search Pointer Table (TT_SRPT) to map logical titles to
-    their VTS numbers.
-
-    Returns a dict with keys:
-      provider_id : str  (trimmed Provider ID string, or "")
-      disc_name   : str | None  from VMG_TXTDT_MG (first non-empty text)
-      barcode     : str | None  UPC/EAN barcode from VMG_TXTDT_MG
-      title_map   : dict[int, tuple[int,int]]  title_idx -> (vts_num, ttl_num)
-
-    Returns an empty dict on any error (caller should fall through
-    without failing).
-    """
+    """Parse VIDEO_TS.IFO provider, text, and title-search metadata."""
     try:
         ifo_data = vmg_path.read_bytes()
     except Exception:
@@ -671,47 +698,20 @@ def _parse_vmg_ifo(vmg_path: Path) -> VmgInfo:
         raise DvdIfoError(f"VMG IFO ident mismatch: got {ifo_data[:12]!r}")
 
     result: VmgInfo = {}
+    disc_name, barcode = _parse_vmg_text_metadata(ifo_data)
+    if disc_name:
+        result["disc_name"] = disc_name
+    if barcode:
+        result["barcode"] = barcode
 
-    # --- VMG_TXTDT_MG: Text Data Management Area (sector pointer at 0xD4) ---
-    # Extracts both the disc name (first text entry) and UPC/EAN barcode
-    # (subsequent text entries with 12-13 digit patterns).
-    txtdt_sector = _read_u32(ifo_data, _VMG_PTR_TXTDT_MG)
-    disc_name: str | None = None
-    if txtdt_sector:
-        base_off = txtdt_sector * 2048
-        disc_name = _extract_vmg_disc_name(ifo_data, base_off)
-        if disc_name:
-            result["disc_name"] = disc_name
-        barcode = _extract_vmg_barcode(ifo_data, base_off)
-        if barcode:
-            result["barcode"] = barcode
-
-    # --- Provider ID (32 bytes at offset 0x0040) ---
-    raw_pid = ifo_data[_VMG_PROVIDER_ID : _VMG_PROVIDER_ID + _VMG_PROVIDER_ID_LEN]
-    pid = raw_pid.split(b"\x00")[0].decode("ascii", "ignore").strip()
-    result["provider_id"] = pid
-
-    # --- TT_SRPT: Title Search Pointer Table (sector pointer at 0xC4) ---
-    tt_srpt_sector = _read_u32(ifo_data, _VMG_PTR_TT_SRPT)
-    title_map: dict[int, tuple[int, int]] = {}
-    if tt_srpt_sector:
-        tt_base = tt_srpt_sector * 2048
-        if tt_base + 4 <= len(ifo_data):
-            n_titles = _read_u16(ifo_data, tt_base)
-            for i in range(n_titles):
-                entry_off = tt_base + 4 + i * _VMG_TT_SRPT_ENTRY_LEN
-                if entry_off + _VMG_TT_SRPT_ENTRY_LEN > len(ifo_data):
-                    break
-                title_type, vts_ttn = _VMG_TT_SRPT_ENTRY.unpack_from(
-                    ifo_data, entry_off
-                )
-                vts_num = vts_ttn >> 8  # bits 15-8 = VTS number (1-99)
-                if vts_num > 0:
-                    title_map[i + 1] = (vts_num, vts_ttn & 0xFF)
+    provider_id = _parse_vmg_provider_id(ifo_data)
+    result["provider_id"] = provider_id
+    title_map = _parse_vmg_title_map(ifo_data)
     result["title_map"] = title_map
 
     log_debug(
-        f"VMG IFO: provider='{pid}' disc_name={disc_name} titles={len(title_map)}"
+        f"VMG IFO: provider='{provider_id}' disc_name={disc_name} "
+        f"titles={len(title_map)}"
     )
     return result
 

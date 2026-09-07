@@ -1476,34 +1476,37 @@ def _parse_vts_pgc_info(
 # =============================================================================
 
 
-def _active_pgc_audio_streams(
-    ifo_data: bytes, pgc_abs: int, offset_mode: bool
-) -> set[int]:
+def _pgc_offset_table_base(
+    ifo_data: bytes, pgc_abs: int, control_offset: int
+) -> int | None:
+    if pgc_abs + control_offset + 2 > len(ifo_data):
+        return None
+    table_offset = _read_u16(ifo_data, pgc_abs + control_offset)
+    if not table_offset:
+        return None
+    return pgc_abs + table_offset
+
+
+def _active_pgc_audio_streams_offset_mode(ifo_data: bytes, pgc_abs: int) -> set[int]:
+    asct_base = _pgc_offset_table_base(ifo_data, pgc_abs, _PGCOffset.AST_CTL)
+    if asct_base is None:
+        return set()
+
     audio_active: set[int] = set()
-
-    if offset_mode:
-        # Offset mode: PGC+0x0C points to an 8-byte ASCT per VTS audio stream.
+    audio_count = min(_read_vts_audio_count(ifo_data), _PGCOffset.NUM_AST_ENTRIES)
+    for index in range(audio_count):
+        offset = asct_base + index * _PGCOffset.AST_NORMAL_ENTRY_LEN
+        if offset + 6 > len(ifo_data):
+            break
+        stream_number = _read_u16(ifo_data, offset)
         # Bit 15 marks availability; 0xFFFF means no stream.
-        asct_offset = (
-            _read_u16(ifo_data, pgc_abs + _PGCOffset.AST_CTL)
-            if pgc_abs + _PGCOffset.AST_CTL + 2 <= len(ifo_data)
-            else 0
-        )
-        if not asct_offset:
-            return audio_active
+        if stream_number != 0xFFFF:
+            audio_active.add(0x80 + (stream_number & 0x7FFF))
+    return audio_active
 
-        asct_base = pgc_abs + asct_offset
-        audio_count = min(_read_vts_audio_count(ifo_data), _PGCOffset.NUM_AST_ENTRIES)
-        for index in range(audio_count):
-            offset = asct_base + index * _PGCOffset.AST_NORMAL_ENTRY_LEN
-            if offset + 6 > len(ifo_data):
-                break
-            stream_number = _read_u16(ifo_data, offset)
-            if stream_number != 0xFFFF:
-                audio_active.add(0x80 + (stream_number & 0x7FFF))
-        return audio_active
 
-    # Simplified mode: eight inline 2-byte entries at PGC+0x0C.
+def _active_pgc_audio_streams_inline(ifo_data: bytes, pgc_abs: int) -> set[int]:
+    audio_active: set[int] = set()
     ast_base = pgc_abs + _PGCOffset.AST_CTL
     for index in range(_PGCOffset.NUM_AST_ENTRIES):
         offset = ast_base + index * 2
@@ -1517,22 +1520,25 @@ def _active_pgc_audio_streams(
     return audio_active
 
 
+def _active_pgc_audio_streams(
+    ifo_data: bytes, pgc_abs: int, offset_mode: bool
+) -> set[int]:
+    if offset_mode:
+        return _active_pgc_audio_streams_offset_mode(ifo_data, pgc_abs)
+    return _active_pgc_audio_streams_inline(ifo_data, pgc_abs)
+
+
 def _active_pgc_subpicture_streams(
     ifo_data: bytes, pgc_abs: int, offset_mode: bool
 ) -> set[int]:
     if offset_mode:
-        spst_offset = (
-            _read_u16(ifo_data, pgc_abs + _PGCOffset.SPST_CTL)
-            if pgc_abs + _PGCOffset.SPST_CTL + 2 <= len(ifo_data)
-            else 0
-        )
-        spst_base = pgc_abs + spst_offset if spst_offset else 0
+        spst_base = _pgc_offset_table_base(ifo_data, pgc_abs, _PGCOffset.SPST_CTL)
+        if spst_base is None:
+            return set()
     else:
         spst_base = pgc_abs + _PGCOffset.SPST_CTL
 
     subpicture_active: set[int] = set()
-    if not spst_base:
-        return subpicture_active
 
     for index in range(_PGCOffset.NUM_SPST_ENTRIES):
         entry_offset = spst_base + index * _PGCOffset.SPST_ENTRY_LEN
@@ -1572,99 +1578,89 @@ def _get_active_pgc_streams(
     )
 
 
+def _pgc_control_language(ifo_data: bytes, offset: int) -> str | None:
+    if offset + 2 > len(ifo_data):
+        return None
+    raw = ifo_data[offset : offset + 2]
+    if raw == b"\x00\x00" or not all(
+        97 <= byte <= 122 or 65 <= byte <= 90 for byte in raw
+    ):
+        return None
+    return raw.decode("ascii", "ignore")
+
+
+def _pgc_audio_languages_offset_mode(ifo_data: bytes, pgc_abs: int) -> dict[int, str]:
+    asct_base = _pgc_offset_table_base(ifo_data, pgc_abs, _PGCOffset.AST_CTL)
+    if asct_base is None:
+        return {}
+
+    audio_languages: dict[int, str] = {}
+    audio_count = min(_read_vts_audio_count(ifo_data), _PGCOffset.NUM_AST_ENTRIES)
+    for index in range(audio_count):
+        offset = asct_base + index * _PGCOffset.AST_NORMAL_ENTRY_LEN
+        if offset + 6 > len(ifo_data):
+            break
+        stream_number = _read_u16(ifo_data, offset)
+        if stream_number == 0xFFFF or not (stream_number & 0x8000):
+            continue
+
+        actual_stream = stream_number & 0x7FFF
+        language = _pgc_control_language(ifo_data, offset + 2)
+        if language:
+            audio_languages[0x80 + actual_stream] = language
+    return audio_languages
+
+
+def _pgc_subpicture_languages_offset_mode(
+    ifo_data: bytes, pgc_abs: int
+) -> dict[int, str]:
+    spst_base = _pgc_offset_table_base(ifo_data, pgc_abs, _PGCOffset.SPST_CTL)
+    if spst_base is None:
+        return {}
+
+    subpicture_languages: dict[int, str] = {}
+    for index in range(_PGCOffset.NUM_SPST_ENTRIES):
+        entry_offset = spst_base + index * _PGCOffset.SPST_ENTRY_LEN
+        if entry_offset + 4 > len(ifo_data):
+            break
+        stream_number = _read_u16(ifo_data, entry_offset)
+        if stream_number == 0xFFFF or not (stream_number & 0x8000):
+            continue
+
+        actual_stream = stream_number & 0x7FFF
+        if actual_stream > 0x1F:
+            continue
+        language = _pgc_control_language(ifo_data, entry_offset + 2)
+        if language:
+            subpicture_languages[0x20 + actual_stream] = language
+    return subpicture_languages
+
+
 def _parse_pgc_stream_languages(
     ifo_data: bytes,
     pgc_number: int | None = None,
 ) -> tuple[dict[int, str], dict[int, str]]:
-    """Extract audio/subpicture language codes from the longest PGC's stream control tables.
+    """Extract per-PGC audio/subpicture language overrides, when present.
 
-    The PGC's Subpicture Stream Control Table (SPSCT) and (in offset mode) Audio
-    Stream Control Table (ASCT) can carry per-PGC language codes that differ from
-    the global VTS attribute table. Some discs store correct per-PGC language
-    metadata here even when the VTS attribute table has placeholder values.
-
-    When a language code is non-zero, it overrides the VTS attribute table value.
-    Returns ``(audio_by_id, sub_by_id)`` keyed by MPEG sub-stream ID
-    (audio 0x80-0x87, subpicture 0x20-0x3F). Empty dicts on failure.
+    Offset-mode ASCT and SPSCT entries may carry two-letter language codes.
+    Inline-mode stream-control entries contain display-format assignments but
+    no languages, so callers use the VTS attribute-table languages instead.
     """
     if len(ifo_data) < 0x200 or ifo_data[0:12] != _VTS_IFO_IDENT:
         return {}, {}
     main = _find_main_pgc(ifo_data, pgc_number)
     if main is None:
         return {}, {}
+
     pgc_abs = main[0]
-
-    # Determine stream control table mode from PGC category bit 1.
     pgc_category = _read_u16(ifo_data, pgc_abs)
-    offset_mode = bool(pgc_category & 0x0002)
+    if not pgc_category & 0x0002:
+        return {}, {}
 
-    audio_by_id: dict[int, str] = {}
-    sub_by_id: dict[int, str] = {}
-
-    def _extract_lang(off: int) -> str | None:
-        if off + 2 > len(ifo_data):
-            return None
-        raw = ifo_data[off : off + 2]
-        if raw == b"\x00\x00" or not all(97 <= b <= 122 or 65 <= b <= 90 for b in raw):
-            return None
-        return raw.decode("ascii", "ignore")
-
-    # --- Audio Stream Control Table (language codes only in offset mode) ---
-    if offset_mode:
-        asct_off = (
-            _read_u16(ifo_data, pgc_abs + _PGCOffset.AST_CTL)
-            if pgc_abs + _PGCOffset.AST_CTL + 2 <= len(ifo_data)
-            else 0
-        )
-        if asct_off:
-            asct_base = pgc_abs + asct_off
-            n_audio = min(_read_vts_audio_count(ifo_data), _PGCOffset.NUM_AST_ENTRIES)
-            for i in range(n_audio):
-                off = asct_base + i * _PGCOffset.AST_NORMAL_ENTRY_LEN
-                if off + 6 > len(ifo_data):
-                    break
-                stream_num = _read_u16(ifo_data, off)
-                if stream_num == 0xFFFF or not (stream_num & 0x8000):
-                    continue
-                # Bit 15 = available; low bits = stream number (0-7)
-                actual_stream = stream_num & 0x7FFF
-                lang = _extract_lang(off + 2)
-                if lang:
-                    audio_by_id[0x80 + actual_stream] = lang
-
-    # --- Subpicture Stream Control Table ---
-    # Language codes at offset+2 are only valid in offset mode. In
-    # simplified mode the 4-byte inline entries at PGC+0x1C have NO
-    # language codes — byte2 is the stream number for letterbox display
-    # and byte3 for pan/scan. See dvdutils_vts SubpictureStreamControl
-    # and http://www.mpucoder.com/DVD/pgc.html
-    if offset_mode:
-        spst_off = (
-            _read_u16(ifo_data, pgc_abs + _PGCOffset.SPST_CTL)
-            if pgc_abs + _PGCOffset.SPST_CTL + 2 <= len(ifo_data)
-            else 0
-        )
-        if spst_off:
-            spst_base = pgc_abs + spst_off
-            for i in range(_PGCOffset.NUM_SPST_ENTRIES):
-                entry_off = spst_base + i * _PGCOffset.SPST_ENTRY_LEN
-                if entry_off + 4 > len(ifo_data):
-                    break
-                stream_num = _read_u16(ifo_data, entry_off)
-                # Bit 15 = available flag. 0xFFFF = no stream.
-                if stream_num == 0xFFFF or not (stream_num & 0x8000):
-                    continue
-                actual_stream = stream_num & 0x7FFF
-                if actual_stream > 0x1F:
-                    continue
-                lang = _extract_lang(entry_off + 2)
-                if lang:
-                    sub_by_id[0x20 + actual_stream] = lang
-    # In simplified mode the inline SPST entries carry only display-
-    # format stream number assignments (4:3/wide/letterbox/pan_scan)
-    # with no language codes. VTS attribute table languages are used.
-
-    return audio_by_id, sub_by_id
+    return (
+        _pgc_audio_languages_offset_mode(ifo_data, pgc_abs),
+        _pgc_subpicture_languages_offset_mode(ifo_data, pgc_abs),
+    )
 
 
 # =============================================================================

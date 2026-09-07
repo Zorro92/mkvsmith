@@ -15,13 +15,18 @@ from __future__ import annotations
 from pathlib import Path
 import struct
 
+import dvdifo
+import pytest
+
 from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from dvdifo import (
     _active_pgc_audio_streams,
     _active_pgc_subpicture_streams,
     _parse_vts_ifo_languages,
+    _parse_pgc_stream_languages,
     _parse_vts_pgc_info,
     _parse_vts_vobu_admap,
+    _pgc_offset_table_base,
 )
 
 
@@ -157,3 +162,63 @@ def test_active_pgc_subpicture_streams_inline_and_offset_modes() -> None:
     assert _active_pgc_subpicture_streams(bytes(offset), pgc_abs, offset_mode=True) == {
         0x24
     }
+
+
+def test_pgc_offset_table_base_rejects_missing_or_truncated_pointers() -> None:
+    valid = bytearray(0x210)
+    valid[0x20C:0x20E] = struct.pack(">H", 0x10)
+    assert _pgc_offset_table_base(bytes(valid), 0x200, 0x0C) == 0x210
+
+    zero_pointer = bytearray(valid)
+    zero_pointer[0x20C:0x20E] = b"\x00\x00"
+    assert _pgc_offset_table_base(bytes(zero_pointer), 0x200, 0x0C) is None
+    assert _pgc_offset_table_base(b"\x00" * 0x20D, 0x200, 0x0C) is None
+
+
+def test_parse_pgc_stream_languages_offset_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = bytearray(0x700)
+    data[:12] = b"DVDVIDEO-VTS"
+    data[0x202:0x204] = struct.pack(">H", 2)
+    pgc_abs = 0x300
+    data[pgc_abs : pgc_abs + 2] = struct.pack(">H", 0x0002)
+
+    asct_base = pgc_abs + 0x40
+    data[pgc_abs + 0x0C : pgc_abs + 0x0E] = struct.pack(">H", 0x40)
+    data[asct_base : asct_base + 24] = (
+        struct.pack(">H", 0x8001)
+        + b"en"
+        + b"\x00" * 4
+        + struct.pack(">H", 0x8002)
+        + b"fr"
+        + b"\x00" * 4
+        + struct.pack(">H", 0x0003)
+        + b"de"
+        + b"\x00" * 4
+    )
+
+    spst_base = pgc_abs + 0x80
+    data[pgc_abs + 0x1C : pgc_abs + 0x1E] = struct.pack(">H", 0x80)
+    data[spst_base : spst_base + 12] = (
+        struct.pack(">H", 0x8001)
+        + b"es"
+        + b"\x00" * 0
+        + struct.pack(">H", 0x0002)
+        + b"it"
+        + b"\x00" * 0
+        + struct.pack(">H", 0x8020)
+        + b"xx"
+        + b"\x00" * 0
+    )
+
+    monkeypatch.setattr(
+        dvdifo,
+        "_find_main_pgc",
+        lambda _data, _pgc_number: (pgc_abs, 100.0, 1),
+    )
+
+    assert _parse_pgc_stream_languages(bytes(data)) == (
+        {0x81: "en", 0x82: "fr"},
+        {0x21: "es"},
+    )

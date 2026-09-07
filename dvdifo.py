@@ -2354,6 +2354,104 @@ def _build_main_edition_vobu_ranges(
     return runs
 
 
+def _lookup_pgc_cell_playback_sector_range(
+    ifo_data: bytes,
+    pgc_abs: int,
+    cell_count: int,
+    vobu_admap: list[int] | None,
+    vob_total_bytes: int,
+    angle_index: int,
+) -> tuple[int, int] | None:
+    """Recover a PGC sector range directly from CellPlaybackInfo entries."""
+    playback_offset = (
+        _read_u16(
+            ifo_data,
+            pgc_abs + _PGCOffset.CELL_PLAYBACK_INFO_TABLE_OFFSET,
+        )
+        if (pgc_abs + _PGCOffset.CELL_PLAYBACK_INFO_TABLE_OFFSET + 2 <= len(ifo_data))
+        else 0
+    )
+    if (
+        not playback_offset
+        or pgc_abs + playback_offset + cell_count * _PGCOffset.CELL_PLAYBACK_INFO_LEN
+        > len(ifo_data)
+    ):
+        return None
+
+    playback_base = pgc_abs + playback_offset
+    start_sector: int | None = None
+    end_sector: int | None = None
+    last_first_vobu: int | None = None
+    angle_block: list[int] | None = None
+    selected_angle_cells: set[int] = set()
+
+    for cell_index in range(cell_count):
+        offset = playback_base + cell_index * _PGCOffset.CELL_PLAYBACK_INFO_LEN
+        if offset + _CELL_PB_LAST_SECTOR_OFF + 4 > len(ifo_data):
+            break
+
+        cell_type = (ifo_data[offset] >> 6) & 0x03
+        if cell_type == 0:
+            pass
+        elif cell_type == 1:
+            angle_block = [cell_index]
+            continue
+        elif cell_type in (2, 3):
+            if angle_block is None:
+                angle_block = []
+            angle_block.append(cell_index)
+            if cell_type == 3:
+                selected = _selected_angle_cell(angle_block, angle_index, cell_index)
+                selected_angle_cells.add(selected)
+                angle_block = None
+            continue
+        if cell_index not in selected_angle_cells and cell_type != 0:
+            continue
+
+        first_vobu = _read_u32(ifo_data, offset + _CELL_PB_FIRST_SECTOR_OFF)
+        last_vobu = _read_u32(ifo_data, offset + _CELL_PB_LAST_SECTOR_OFF)
+        if first_vobu == 0 and last_vobu == 0:
+            if start_sector is None:
+                # Some discs zero both fields in a content cell.
+                start_sector = 0
+            continue
+        if start_sector is None or first_vobu < start_sector:
+            start_sector = first_vobu
+        if first_vobu > 0:
+            last_first_vobu = first_vobu
+        if last_vobu > 0 and (end_sector is None or last_vobu > end_sector):
+            end_sector = last_vobu
+
+    if end_sector is None and last_first_vobu is not None:
+        if vobu_admap is not None:
+            for index, sector in enumerate(vobu_admap):
+                if sector >= last_first_vobu and index + 1 < len(vobu_admap):
+                    end_sector = vobu_admap[index + 1] - 1
+                    log_debug(
+                        "IFO cell trim: VOBU_ADMAP end after "
+                        f"sector {last_first_vobu} -> next VOBU start "
+                        f"{vobu_admap[index + 1]} -> end {end_sector}"
+                    )
+                    break
+        if end_sector is None:
+            estimated_end = last_first_vobu + 150_000
+            total_sectors = vob_total_bytes // 2048
+            end_sector = min(estimated_end, total_sectors)
+            log_debug(
+                "IFO cell trim: PGC cell PB last_fvobu fallback "
+                f"sectors {last_first_vobu}+150000 -> {end_sector}"
+            )
+
+    if start_sector is None or end_sector is None or end_sector <= start_sector:
+        return None
+    log_debug(
+        "IFO cell trim: PGC cell playback table fallback "
+        f"sectors {start_sector}-{end_sector} "
+        f"({(end_sector - start_sector) * 2048 / 1e9:.1f} GB)"
+    )
+    return start_sector, end_sector
+
+
 def _lookup_main_feature_range(
     ifo_data: bytes,
     vob_total_bytes: int,
@@ -2461,108 +2559,16 @@ def _lookup_main_feature_range(
         end_sector = None
 
     if start_sector is None or end_sector is None or end_sector <= start_sector:
-        # === Fallback: use the PGC cell playback table directly. ===
-        # Each CellPlaybackInfo entry (24 B, starting at PGC+0xE8) contains
-        # the first and last VOBU start sectors for that cell, which gives
-        # us the exact byte range without needing the C_ADT at all.
-        pb_off_raw = (
-            _read_u16(ifo_data, pgc_abs + _PGCOffset.CELL_PLAYBACK_INFO_TABLE_OFFSET)
-            if pgc_abs + _PGCOffset.CELL_PLAYBACK_INFO_TABLE_OFFSET + 2 <= len(ifo_data)
-            else 0
+        sector_range = _lookup_pgc_cell_playback_sector_range(
+            ifo_data,
+            pgc_abs,
+            n_cells,
+            vobu_admap,
+            vob_total_bytes,
+            angle_idx_lmr,
         )
-        if (
-            pb_off_raw
-            and pgc_abs + pb_off_raw + n_cells * _PGCOffset.CELL_PLAYBACK_INFO_LEN
-            <= len(ifo_data)
-        ):
-            pb_base = pgc_abs + pb_off_raw
-            pb_start: int | None = None
-            pb_end: int | None = None
-            last_fvobu: int | None = None
-            _lmr_block: list[int] | None = None
-            _lmr_sel: set[int] = set()
-            for cell_idx in range(n_cells):
-                off = pb_base + cell_idx * _PGCOffset.CELL_PLAYBACK_INFO_LEN
-                if off + _CELL_PB_LAST_SECTOR_OFF + 4 > len(ifo_data):
-                    break
-                # Skip cells not belonging to this PGC's angle.
-                # Track position within interleaved blocks.
-                cell_type = (ifo_data[off] >> 6) & 0x03
-                if cell_type == 0:
-                    pass  # normal cell - always include
-                elif cell_type == 1:
-                    _lmr_block = [cell_idx]  # start new block
-                    continue
-                elif cell_type in (2, 3):
-                    if _lmr_block is None:
-                        _lmr_block = []
-                    _lmr_block.append(cell_idx)
-                    if cell_type == 3:
-                        # End of block - select angle-appropriate cell
-                        sel = (
-                            _lmr_block[min(angle_idx_lmr, len(_lmr_block) - 1)]
-                            if _lmr_block
-                            else cell_idx
-                        )
-                        _lmr_sel.add(sel)
-                        _lmr_block = None
-                    continue
-                if cell_idx not in _lmr_sel and cell_type != 0:
-                    continue
-                # First VOBU start (first_sector, 4 bytes at +8) and the
-                # cell's true end (last_sector, 4 bytes at +0x14).  Do NOT
-                # use +0x0C (first_ilvu_end_sector) here — that field only
-                # covers the first interleaved unit and is unrelated to the
-                # cell's actual end, which produced wrong ranges on this
-                # seamless-branching (interleaved) disc.
-                fvobu = _read_u32(ifo_data, off + _CELL_PB_FIRST_SECTOR_OFF)
-                lvobu = _read_u32(ifo_data, off + _CELL_PB_LAST_SECTOR_OFF)
-                if fvobu == 0 and lvobu == 0:
-                    if pb_start is None:
-                        # First content cell with fvobu=0: sector 0 is the start
-                        # (some discs set both first/last VOBU to 0 but the
-                        # cell still has content, e.g. Jackie Chan DVD).
-                        pb_start = 0
-                    continue
-                if pb_start is None or fvobu < pb_start:
-                    pb_start = fvobu
-                if fvobu > 0:
-                    last_fvobu = fvobu
-                if lvobu > 0 and (pb_end is None or lvobu > pb_end):
-                    pb_end = lvobu
-            # Use VOBU_ADMAP or fallback padding to find the end boundary
-            # when no cell provides a last-VOBU sector.
-            if pb_end is None and last_fvobu is not None:
-                # Attempt precise VOBU_ADMAP lookup first.
-                if vobu_admap is not None:
-                    for i, vs in enumerate(vobu_admap):
-                        if vs >= last_fvobu:
-                            # Next VOBU's start minus 1 is the last sector.
-                            if i + 1 < len(vobu_admap):
-                                pb_end = vobu_admap[i + 1] - 1
-                                log_debug(
-                                    "IFO cell trim: VOBU_ADMAP end after "
-                                    f"sector {last_fvobu} -> next VOBU start {vobu_admap[i + 1]} -> end {pb_end}"
-                                )
-                            break
-                if pb_end is None:
-                    # Fallback padding (~300 MB) when neither lvobu nor VOBU_ADMAP
-                    # provides the end boundary.
-                    est_end = last_fvobu + 150000
-                    vob_total_sectors = vob_total_bytes // 2048
-                    pb_end = min(est_end, vob_total_sectors)
-                    log_debug(
-                        "IFO cell trim: PGC cell PB last_fvobu fallback "
-                        f"sectors {last_fvobu}+150000 -> {pb_end}"
-                    )
-            if pb_start is not None and pb_end is not None and pb_end > pb_start:
-                start_sector = pb_start
-                end_sector = pb_end
-                log_debug(
-                    "IFO cell trim: PGC cell playback table fallback "
-                    f"sectors {start_sector}-{end_sector} "
-                    f"({(end_sector - start_sector) * 2048 / 1e9:.1f} GB)"
-                )
+        if sector_range is not None:
+            start_sector, end_sector = sector_range
 
     if start_sector is None or end_sector is None or end_sector <= start_sector:
         # Last resort: use all C_ADT entries that belong to VOB 1.

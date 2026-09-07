@@ -1333,107 +1333,125 @@ def _detect_episode_pgcs(
 # =============================================================================
 
 
+_PgcProgramTables = tuple[int, int, int, int]
+
+
+def _pgc_program_tables(ifo_data: bytes, pgc_abs: int) -> _PgcProgramTables | None:
+    if pgc_abs + 0xEA > len(ifo_data):
+        return None
+
+    program_count = ifo_data[pgc_abs + _PGCOffset.NB_PROGRAMS]
+    cell_count = ifo_data[pgc_abs + _PGCOffset.NB_CELLS]
+    if not (0 < program_count <= cell_count <= 255):
+        return None
+
+    program_map = pgc_abs + _read_u16(ifo_data, pgc_abs + _PGCOffset.PROGRAM_MAP_OFFSET)
+    cell_table = pgc_abs + _read_u16(
+        ifo_data,
+        pgc_abs + _PGCOffset.CELL_PLAYBACK_INFO_TABLE_OFFSET,
+    )
+    if program_map + program_count > len(ifo_data):
+        return None
+    if cell_table + cell_count * _PGCOffset.CELL_PLAYBACK_INFO_LEN > len(ifo_data):
+        return None
+    return program_map, cell_table, program_count, cell_count
+
+
+def _pgc_program_cell_range(
+    ifo_data: bytes,
+    program_map: int,
+    program: int,
+    program_count: int,
+    cell_count: int,
+) -> tuple[int, int] | None:
+    entry_cell = ifo_data[program_map + program]
+    if program < program_count - 1:
+        exit_cell = ifo_data[program_map + program + 1] - 1
+    else:
+        exit_cell = cell_count
+    if not (1 <= entry_cell <= exit_cell <= cell_count):
+        return None
+    return entry_cell, exit_cell
+
+
+def _trim_trailing_menu_programs(
+    chapters: list[float], program_durations: list[float], cumulative: float
+) -> tuple[list[float], float]:
+    minimum_real_program_seconds = 10.0
+    while len(chapters) > 1 and program_durations[-1] < minimum_real_program_seconds:
+        chapters.pop()
+        program_durations.pop()
+        cumulative = (
+            chapters[-1] + program_durations[-1] if program_durations else cumulative
+        )
+    return chapters, cumulative
+
+
 def _pgc_chapters_and_duration(
     ifo_data: bytes, pgc_abs: int
 ) -> tuple[list[float], float]:
-    """Return (chapter start times, total duration) for one PGC.
+    """Return chapter start times and duration for one PGC.
 
-    Uses the per-program cell iteration approach (inspired by pyparsedvd's
-    VTS_PGCI parser): for each program, read the program map to find the entry
-    cell and exit cell, then sum the durations of the cells in that range.
-    This is more spec-compliant than iterating all cells linearly and matching
-    against a set of program-start cells, because it correctly skips orphan
-    cells that don't belong to any program and handles degenerate program maps.
-
-    Only normal cells (cell_type 0) and first-of-angle-block cells (cell_type 1)
-    advance the timeline. Both represent sequentially-playing cells: type 0 is a
-    standard sequential cell, while type 1 is the default view of a multi-angle
-    block. Middle/last angle-block cells (types 2/3) are alternative camera
-    angles that play concurrently rather than sequentially and are excluded.
-
-    Returns ([], 0.0) if the PGC structure is malformed.
+    Programs define chapter boundaries. Normal and first angle-block cells
+    advance the timeline; the selected angle cell from completed interleaved
+    blocks is used for multi-angle content.
     """
-    if pgc_abs + 0xEA > len(ifo_data):
+    tables = _pgc_program_tables(ifo_data, pgc_abs)
+    if tables is None:
         return [], 0.0
-    n_programs = ifo_data[pgc_abs + _PGCOffset.NB_PROGRAMS]
-    n_cells = ifo_data[pgc_abs + _PGCOffset.NB_CELLS]
-    if not (0 < n_programs <= n_cells <= 255):
-        return [], 0.0
-    prog_map = pgc_abs + _read_u16(ifo_data, pgc_abs + _PGCOffset.PROGRAM_MAP_OFFSET)
-    cell_table = pgc_abs + _read_u16(
-        ifo_data, pgc_abs + _PGCOffset.CELL_PLAYBACK_INFO_TABLE_OFFSET
-    )
-    if prog_map + n_programs > len(ifo_data):
-        return [], 0.0
-    if cell_table + n_cells * _PGCOffset.CELL_PLAYBACK_INFO_LEN > len(ifo_data):
-        return [], 0.0
+    program_map, cell_table, program_count, cell_count = tables
 
     # Detect angle from pre-commands for angle-aware cell duration filtering.
     pgc_angle = _pgc_angle_from_commands(ifo_data, pgc_abs)
-    angle_idx = pgc_angle - 1  # 0-based position within block
+    angle_index = pgc_angle - 1
 
     chapters: list[float] = []
-    prog_durations: list[float] = []
+    program_durations: list[float] = []
     cumulative = 0.0
-    # Iterate per-program: each program maps to a cell range [entry, exit].
-    # entry_cell = program_map[program]; exit_cell = program_map[program+1] - 1
-    # (or n_cells for the last program). A chapter boundary is placed at the
-    # cumulative time at the start of each program.
-    for program in range(n_programs):
-        entry_cell = ifo_data[prog_map + program]
-        if program < n_programs - 1:
-            exit_cell = ifo_data[prog_map + program + 1] - 1
-        else:
-            exit_cell = n_cells
-        if not (1 <= entry_cell <= exit_cell <= n_cells):
+    for program in range(program_count):
+        cell_range = _pgc_program_cell_range(
+            ifo_data, program_map, program, program_count, cell_count
+        )
+        if cell_range is None:
             continue
+        entry_cell, exit_cell = cell_range
+
         chapters.append(round(cumulative, 3))
-        prog_start = cumulative
-        # Walk cells, tracking interleaved blocks for angle selection.
-        _chap_block: list[int] | None = None
+        program_start = cumulative
+        angle_cells: list[int] | None = None
         for cell in range(entry_cell, exit_cell + 1):
             cell_base = cell_table + (cell - 1) * _PGCOffset.CELL_PLAYBACK_INFO_LEN
             cell_type = (ifo_data[cell_base] >> 6) & 0x03
             if cell_type == 0:
-                # Normal cell
-                _chap_block = None
+                angle_cells = None
                 cumulative += _bcd_playback_seconds(
-                    ifo_data, cell_base + _PGCOffset.CELL_DURATION_OFFSET
+                    ifo_data,
+                    cell_base + _PGCOffset.CELL_DURATION_OFFSET,
                 )
             elif cell_type == 1:
-                _chap_block = [cell]
+                angle_cells = [cell]
             elif cell_type in (2, 3):
-                if _chap_block is None:
-                    _chap_block = []
-                _chap_block.append(cell)
+                if angle_cells is None:
+                    angle_cells = []
+                angle_cells.append(cell)
                 if cell_type == 3:
-                    # End of block - select angle-appropriate cell
-                    sel = (
-                        _chap_block[min(angle_idx, len(_chap_block) - 1)]
-                        if _chap_block
+                    selected_cell = (
+                        angle_cells[min(angle_index, len(angle_cells) - 1)]
+                        if angle_cells
                         else cell
                     )
-                    sel_base = (
-                        cell_table + (sel - 1) * _PGCOffset.CELL_PLAYBACK_INFO_LEN
+                    selected_base = (
+                        cell_table
+                        + (selected_cell - 1) * _PGCOffset.CELL_PLAYBACK_INFO_LEN
                     )
                     cumulative += _bcd_playback_seconds(
-                        ifo_data, sel_base + _PGCOffset.CELL_DURATION_OFFSET
+                        ifo_data,
+                        selected_base + _PGCOffset.CELL_DURATION_OFFSET,
                     )
-                    _chap_block = None
-        prog_durations.append(cumulative - prog_start)
-    # Drop degenerate trailing chapters (sub-second programs, e.g. per-chapter
-    # thumbnail/keyframe cells used by a scene-selection menu that technically
-    # belong to this PGC but aren't meant to be played as movie content - see
-    # the matching trim in _build_main_edition_vobu_ranges). Keep popping from
-    # the end while the trailing program is tiny, then snap the reported total
-    # duration back to the last real chapter's end so it matches the actual
-    # (trimmed) muxed content instead of including the dropped tail.
-    _MIN_REAL_PROGRAM_SECONDS = 10.0
-    while len(chapters) > 1 and prog_durations[-1] < _MIN_REAL_PROGRAM_SECONDS:
-        chapters.pop()
-        prog_durations.pop()
-        cumulative = chapters[-1] + prog_durations[-1] if prog_durations else cumulative
-    return chapters, cumulative
+                    angle_cells = None
+        program_durations.append(cumulative - program_start)
+
+    return _trim_trailing_menu_programs(chapters, program_durations, cumulative)
 
 
 def _parse_vts_pgc_chapters(ifo_data: bytes) -> list[float]:

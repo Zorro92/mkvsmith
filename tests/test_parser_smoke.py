@@ -31,6 +31,9 @@ from dvdifo import (
     _vts_ptt_srpt_base,
     _vts_title_unit_base,
     _vts_ttn1_pgc_number,
+    _pgc_program_cell_range,
+    _pgc_program_tables,
+    _trim_trailing_menu_programs,
 )
 
 
@@ -290,3 +293,31 @@ def test_vts_ttn1_pointer_stages_reject_invalid_entries() -> None:
     zero_pgcit = bytearray(_vts_ttn1_pointer_buffer())
     zero_pgcit[0xCC:0xD0] = b"\x00" * 4
     assert _vts_pgc_absolute_offset(bytes(zero_pgcit), 2) is None
+
+
+def test_pgc_program_tables_and_ranges() -> None:
+    data = bytearray(0x500)
+    pgc_abs = 0x200
+    data[pgc_abs + 2] = 2  # programs
+    data[pgc_abs + 3] = 3  # cells
+    data[pgc_abs + 0xE6 : pgc_abs + 0xE8] = struct.pack(">H", 0x120)
+    data[pgc_abs + 0xE8 : pgc_abs + 0xEA] = struct.pack(">H", 0x200)
+    data[0x320:0x323] = bytes([1, 2, 3])
+    parsed = bytes(data)
+
+    assert _pgc_program_tables(parsed, pgc_abs) == (0x320, 0x400, 2, 3)
+    assert _pgc_program_cell_range(parsed, 0x320, 0, 2, 3) == (1, 1)
+    assert _pgc_program_cell_range(parsed, 0x320, 1, 2, 3) == (2, 3)
+
+    invalid = bytearray(data)
+    invalid[pgc_abs + 3] = 1
+    assert _pgc_program_tables(bytes(invalid), pgc_abs) is None
+
+
+def test_trim_trailing_menu_programs_stops_at_real_program() -> None:
+    chapters = [0.0, 100.0, 110.0]
+    durations = [100.0, 10.0, 1.0]
+
+    result = _trim_trailing_menu_programs(chapters, durations, 111.0)
+
+    assert result == ([0.0, 100.0], 110.0)

@@ -13,9 +13,16 @@ tests alongside these (see the ``parser-regression-test`` skill).
 from __future__ import annotations
 
 from pathlib import Path
+import struct
 
 from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
-from dvdifo import _parse_vts_ifo_languages, _parse_vts_pgc_info
+from dvdifo import (
+    _active_pgc_audio_streams,
+    _active_pgc_subpicture_streams,
+    _parse_vts_ifo_languages,
+    _parse_vts_pgc_info,
+    _parse_vts_vobu_admap,
+)
 
 
 # --- CLPI ------------------------------------------------------------------
@@ -68,3 +75,85 @@ def test_parse_vts_ifo_languages_empty_returns_empty_dicts() -> None:
 
 def test_parse_vts_pgc_info_empty_returns_empty_chapters_zero_duration() -> None:
     assert _parse_vts_pgc_info(b"") == ([], 0.0)
+
+
+def _vobu_admap_buffer(entries: list[int]) -> bytes:
+    # Point VTSI_MAT+0xE4 at sector 1. The table begins with a four-byte end
+    # address followed by big-endian 32-bit VOBU start sectors.
+    data = bytearray(0x800)
+    data[0xE4:0xE8] = struct.pack(">I", 1)
+    data.extend(struct.pack(">I", 0x804))
+    data.extend(b"".join(struct.pack(">I", entry) for entry in entries))
+    return bytes(data)
+
+
+def test_parse_vts_vobu_admap_keeps_leading_zero_before_nonzero_entry() -> None:
+    assert _parse_vts_vobu_admap(_vobu_admap_buffer([0, 52])) == [0, 52]
+
+
+def test_parse_vts_vobu_admap_stops_at_trailing_zero_padding() -> None:
+    assert _parse_vts_vobu_admap(_vobu_admap_buffer([52, 53, 0, 99])) == [52, 53]
+
+
+def test_parse_vts_vobu_admap_all_zero_entries_returns_none() -> None:
+    assert _parse_vts_vobu_admap(_vobu_admap_buffer([0, 0])) is None
+
+
+def test_parse_vts_vobu_admap_rejects_missing_or_truncated_table() -> None:
+    assert _parse_vts_vobu_admap(b"\x00" * 0xE8) is None
+    truncated = bytearray(_vobu_admap_buffer([52]))
+    assert _parse_vts_vobu_admap(bytes(truncated[:-3])) is None
+
+
+def test_active_pgc_audio_streams_inline_mode() -> None:
+    data = bytearray(0x300)
+    data[0x202:0x204] = struct.pack(">H", 2)
+    pgc_abs = 0x200
+
+    # PGC+0x0C contains eight 2-byte inline audio entries. Bit 7 marks an
+    # entry available; bits 0-2 select stream 0-7.
+    data[pgc_abs + 0x0C : pgc_abs + 0x0C + 6] = bytes([0x80, 0, 0x81, 0, 0x00, 0])
+
+    assert _active_pgc_audio_streams(bytes(data), pgc_abs, offset_mode=False) == {
+        0x80,
+        0x81,
+    }
+
+
+def test_active_pgc_audio_streams_offset_mode() -> None:
+    data = bytearray(0x600)
+    data[0x202:0x204] = struct.pack(">H", 2)
+    pgc_abs = 0x400
+    asct_base = pgc_abs + 0x40
+
+    data[pgc_abs + 0x0C : pgc_abs + 0x0E] = struct.pack(">H", 0x40)
+    data[asct_base : asct_base + 16] = (
+        struct.pack(">H", 0x8001)
+        + b"\x00" * 6
+        + struct.pack(">H", 0x8002)
+        + b"\x00" * 6
+    )
+
+    assert _active_pgc_audio_streams(bytes(data), pgc_abs, offset_mode=True) == {
+        0x81,
+        0x82,
+    }
+
+
+def test_active_pgc_subpicture_streams_inline_and_offset_modes() -> None:
+    inline = bytearray(0x300)
+    inline[0x200 + 0x1C : 0x200 + 0x1C + 8] = bytes([0x82, 0, 0, 0, 0x83, 0, 0, 0])
+    assert _active_pgc_subpicture_streams(bytes(inline), 0x200, offset_mode=False) == {
+        0x22,
+        0x23,
+    }
+
+    offset = bytearray(0x600)
+    pgc_abs = 0x400
+    spst_base = pgc_abs + 0x80
+    offset[pgc_abs + 0x1C : pgc_abs + 0x1E] = struct.pack(">H", 0x80)
+    offset[spst_base : spst_base + 8] = bytes([0x84, 0, 0, 0, 0x9F, 5, 0, 0])
+
+    assert _active_pgc_subpicture_streams(bytes(offset), pgc_abs, offset_mode=True) == {
+        0x24
+    }

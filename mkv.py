@@ -35,8 +35,10 @@ import sys
 import tempfile
 import threading
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, final
+from typing import IO, TYPE_CHECKING, Any, TypedDict, final
+from collections.abc import Callable
 
 from dvdifo import (
     _AUDIO_CHANNEL_TITLES,
@@ -51,7 +53,7 @@ from vobsub import (
     _extract_dvd_vobsubs,
 )
 from models import (
-    CONFIG,
+    Config,
     EditionSpec,
     StreamType,
     Stream,
@@ -62,14 +64,9 @@ from models import (
     log_info,
     log_warn,
     log_debug,
-    _TEMP_FILES,
     _HAS_MKVMERGE,
-    register_active_muxer,
-    unregister_active_muxer,
-    register_active_output,
-    unregister_active_output,
-    finish_progress_line,
-    set_progress_active,
+    RuntimeState,
+    RUNTIME_STATE,
 )
 from probe import _MKVMERGE_CODEC_MAP
 from i18n import tr
@@ -83,67 +80,90 @@ if TYPE_CHECKING:
 # =============================================================================
 
 
-def select_streams(title: Title, force: list[str] | None = None) -> list[Stream]:
+def select_streams(
+    title: Title,
+    force: list[str] | None = None,
+    config: Config | None = None,
+) -> list[Stream]:
+    effective_config = config or RUNTIME_STATE.config
     if force:
         return _select_explicit(title, force)
     sel: list[Stream] = [title.video_streams[0]] if title.video_streams else []
     sel.extend(
         s
         for s in title.audio_streams
-        if CONFIG.keep_all_audio or s.language in CONFIG.preferred_languages
+        if effective_config.keep_all_audio
+        or s.language in effective_config.preferred_languages
     )
     sel.extend(
         s
         for s in title.subtitle_streams
-        if CONFIG.keep_all_subtitles and (CONFIG.include_forced or not s.is_forced)
+        if effective_config.keep_all_subtitles
+        and (effective_config.include_forced or not s.is_forced)
     )
     return sel
 
 
-def _select_explicit(title: Title, sids: list[str]) -> list[Stream]:
-    sel: list[Stream] = []
-    type_map = {
-        "v:all": StreamType.VIDEO,
-        "a:all": StreamType.AUDIO,
-        "s:all": StreamType.SUBTITLE,
-    }
-    for sid in sids:
-        if sid in type_map:
-            sel.extend([s for s in title.streams if s.stream_type == type_map[sid]])
-        elif ":" in sid:
-            p, i = sid.split(":", 1)
-            st = {
-                "v": StreamType.VIDEO,
-                "a": StreamType.AUDIO,
-                "s": StreamType.SUBTITLE,
-            }.get(p)
-            if st:
-                if i.isalpha() and len(i) == 3:
-                    sel.extend(
-                        [
-                            s
-                            for s in title.streams
-                            if s.stream_type == st and s.language == i
-                        ]
-                    )
-                else:
-                    try:
-                        sel.extend(
-                            [
-                                s
-                                for s in title.streams
-                                if s.stream_type == st and s.type_index == int(i)
-                            ]
-                        )
-                    except ValueError:
-                        pass
-    seen: set[int] = set()
-    out: list[Stream] = []
-    for s in sel:
-        if s.index not in seen:
-            seen.add(s.index)
-            out.append(s)
-    return out
+_SELECTOR_STREAM_TYPES: dict[str, StreamType] = {
+    "v": StreamType.VIDEO,
+    "a": StreamType.AUDIO,
+    "s": StreamType.SUBTITLE,
+}
+
+_ALL_SELECTOR_SUFFIX = "all"
+
+
+def _streams_of_type(title: Title, stream_type: StreamType) -> list[Stream]:
+    return [stream for stream in title.streams if stream.stream_type == stream_type]
+
+
+def _streams_for_selector(
+    title: Title, stream_type: StreamType, value: str
+) -> list[Stream]:
+    if value == _ALL_SELECTOR_SUFFIX:
+        return _streams_of_type(title, stream_type)
+    if value.isalpha() and len(value) == 3:
+        return [
+            stream
+            for stream in title.streams
+            if stream.stream_type == stream_type and stream.language == value
+        ]
+    try:
+        type_index = int(value)
+    except ValueError:
+        return []
+    return [
+        stream
+        for stream in title.streams
+        if stream.stream_type == stream_type and stream.type_index == type_index
+    ]
+
+
+def _select_streams_for_selector(title: Title, selector: str) -> list[Stream]:
+    prefix, separator, value = selector.partition(":")
+    if not separator:
+        return []
+    stream_type = _SELECTOR_STREAM_TYPES.get(prefix)
+    if stream_type is None:
+        return []
+    return _streams_for_selector(title, stream_type, value)
+
+
+def _deduplicate_streams(streams: list[Stream]) -> list[Stream]:
+    seen_indexes: set[int] = set()
+    unique: list[Stream] = []
+    for stream in streams:
+        if stream.index not in seen_indexes:
+            seen_indexes.add(stream.index)
+            unique.append(stream)
+    return unique
+
+
+def _select_explicit(title: Title, selectors: list[str]) -> list[Stream]:
+    selected: list[Stream] = []
+    for selector in selectors:
+        selected.extend(_select_streams_for_selector(title, selector))
+    return _deduplicate_streams(selected)
 
 
 # CICP (ISO/IEC 23001-8) numeric codes for mkvmerge's --color-* options.
@@ -189,47 +209,58 @@ def _chroma_siting_for_codec(codec: str) -> str | None:
     return None
 
 
-def _resolve_video_color(stream: Stream) -> tuple[str, str, str, str] | None:
-    """Return (primaries, transfer, matrix, range) to apply to a video stream.
+_SDTV_COLOR_HEIGHTS = (480, 576)
+_HD_COLOR_HEIGHTS = (720, 1080, 2160)
 
-    Uses the source's own signalling when present (scan-time CLPI/STN colour
-    metadata for Blu-ray, IFO standard for DVD). When nothing is set, infers
-    from the resolution: HD (720p/1080p) and unmarked UHD (2160p) are BT.709
-    end-to-end (SDR — HDR is only inferred at scan time when the STN table
-    marks the stream hdr10/dolby_vision, in which case the fields are already
-    set and this fallback never runs), and SD (480/576-line) video falls back
-    to the standard-definition defaults (BT.601 NTSC/PAL, limited range) -
-    otherwise the muxer writes no colour tags at all and players guess.
-    """
-    primaries = stream.color_primaries
-    transfer = stream.color_transfer
-    matrix = stream.color_space
-    rng = stream.color_range or "tv"
 
-    if primaries is None and stream.height in (480, 576, 720, 1080, 2160):
-        if stream.height in (720, 1080, 2160):
-            # HD Blu-ray/AVC is virtually always BT.709 end-to-end, and UHD
-            # without explicit HDR signalling defaults to SDR BT.709 as well.
-            primaries = transfer = matrix = "bt709"
-        else:
-            # SDTV/DVD defaults per V4L2_COLORSPACE_SMPTE170M: BT.601
-            # primaries + Y'CbCr matrix, but the BT.709 transfer function
-            # (the SMPTE 170M and Rec.709 OETF curves are defined to be
-            # identical; see the V4L2 detailed colorspace docs, sect. 2.6.1).
-            transfer = "bt709"
-            if stream.height == 576:  # PAL/SECAM
-                primaries = matrix = "bt470bg"
-            else:  # NTSC / 480-line
-                primaries = matrix = "smpte170m"
+def _infer_video_color_fields(height: int | None) -> tuple[str, str, str] | None:
+    if height in _HD_COLOR_HEIGHTS:
+        # HD Blu-ray/AVC is virtually always BT.709 end-to-end, and UHD without
+        # explicit HDR signalling defaults to SDR BT.709 as well.
+        return "bt709", "bt709", "bt709"
+    if height in _SDTV_COLOR_HEIGHTS:
+        # SDTV/DVD defaults use BT.601 primaries/matrix with the BT.709 transfer
+        # function; SMPTE 170M and Rec.709 define identical OETF curves.
+        if height == 576:  # PAL/SECAM
+            return "bt470bg", "bt709", "bt470bg"
+        return "smpte170m", "bt709", "smpte170m"  # NTSC / 480-line
+    return None
 
+
+def _finalize_video_color(
+    primaries: str | None,
+    transfer: str | None,
+    matrix: str | None,
+    color_range: str,
+) -> tuple[str, str, str, str] | None:
     if primaries is None and transfer is None and matrix is None:
         return None
     return (
         primaries or "unknown",
         transfer or "unknown",
         matrix or "unknown",
-        rng or "tv",
+        color_range,
     )
+
+
+def _resolve_video_color(stream: Stream) -> tuple[str, str, str, str] | None:
+    """Return colour fields to apply to a video stream.
+
+    Source signalling is preferred. When primaries are absent and resolution is
+    known, standard DVD/Blu-ray defaults are inferred; partial signalling is
+    padded with ``unknown`` so the muxer still writes explicit fields.
+    """
+    primaries = stream.color_primaries
+    transfer = stream.color_transfer
+    matrix = stream.color_space
+    color_range = stream.color_range or "tv"
+
+    if primaries is None:
+        inferred = _infer_video_color_fields(stream.height)
+        if inferred is not None:
+            primaries, transfer, matrix = inferred
+
+    return _finalize_video_color(primaries, transfer, matrix, color_range)
 
 
 # _AUDIO_CHANNEL_TITLES now lives in dvdifo.py (imported explicitly above).
@@ -440,52 +471,792 @@ def _write_tags_xml_mkvmerge(
     out_path.write_bytes(xml_bytes)
 
 
+class MappedStream(TypedDict):
+    input_id: int
+    type: str
+    stream: Stream
+    ident_channels: int | None
+
+
+def _ident_tracks_by_position(
+    ident_tracks: list[dict[str, Any]],
+) -> dict[tuple[str, int], dict[str, Any]]:
+    type_counter: dict[str, int] = {}
+    tracks_by_position: dict[tuple[str, int], dict[str, Any]] = {}
+    for track in ident_tracks:
+        track_type = track.get("type", "")
+        type_index = type_counter.get(track_type, 0)
+        tracks_by_position[(track_type, type_index)] = track
+        type_counter[track_type] = type_index + 1
+    return tracks_by_position
+
+
+def _ident_track_for_source_id(
+    stream: Stream, ident_tracks: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    source_id = stream.pid or stream.sub_id
+    if source_id is None:
+        return None
+    return next(
+        (
+            track
+            for track in ident_tracks
+            if track.get("properties", {}).get("number") == source_id
+        ),
+        None,
+    )
+
+
+def _positional_ident_track(
+    stream: Stream,
+    tracks_by_position: dict[tuple[str, int], dict[str, Any]],
+) -> dict[str, Any] | None:
+    track_type = stream.stream_type.value
+    if track_type == "subtitle":
+        track_type = "subtitles"
+    candidate = tracks_by_position.get((track_type, stream.type_index))
+    if candidate is not None and (stream.pid or stream.sub_id) is not None:
+        source_id = stream.pid or stream.sub_id
+        assert source_id is not None
+        log_debug(
+            f"  Positional fallback for {stream.display_id}: "
+            f"id=0x{source_id:x} matched track {candidate['id']} "
+            f"by type={track_type} index={stream.type_index}"
+        )
+    return candidate
+
+
+def _unmapped_stream(stream: Stream) -> MappedStream:
+    source_id = stream.pid or stream.sub_id
+    if source_id is not None:
+        log_debug(
+            f"  Dropping stream: {stream.display_id} "
+            f"(id=0x{source_id:x}) not found in source"
+        )
+    return {
+        "input_id": -1,
+        "type": stream.stream_type.value,
+        "stream": stream,
+        "ident_channels": None,
+    }
+
+
+def _refine_stream_codec(stream: Stream, ident_track: dict[str, Any]) -> None:
+    ident_codec = ident_track.get("codec", "")
+    mapped_codec = _MKVMERGE_CODEC_MAP.get(ident_codec)
+    if mapped_codec and mapped_codec != stream.codec:
+        log_debug(
+            f"  Codec override for {stream.display_id}: "
+            f"{stream.codec} -> {mapped_codec} (from mkvmerge -J)"
+        )
+        stream.codec = mapped_codec
+
+
+def _mapped_stream(stream: Stream, ident_track: dict[str, Any]) -> MappedStream:
+    _refine_stream_codec(stream, ident_track)
+    properties = ident_track.get("properties", {})
+    ident_channel_count = properties.get("audio_channels")
+    return {
+        "input_id": int(ident_track["id"]),
+        "type": str(ident_track["type"]),
+        "stream": stream,
+        "ident_channels": (
+            int(ident_channel_count) if ident_channel_count is not None else None
+        ),
+    }
+
+
+def _map_streams_to_ident_tracks(
+    streams: list[Stream], ident_tracks: list[dict[str, Any]]
+) -> list[MappedStream]:
+    tracks_by_position = _ident_tracks_by_position(ident_tracks)
+    mapped: list[MappedStream] = []
+    for stream in streams:
+        ident_track = _ident_track_for_source_id(stream, ident_tracks)
+        if ident_track is None:
+            ident_track = _positional_ident_track(stream, tracks_by_position)
+        if ident_track is None:
+            mapped.append(_unmapped_stream(stream))
+        else:
+            mapped.append(_mapped_stream(stream, ident_track))
+
+    if ident_tracks:
+        mapped.sort(key=lambda entry: entry["input_id"])
+    return mapped
+
+
+def _prepare_mux_tags(
+    title: Title,
+    tag_opts: TagOptions | None,
+    temp_files: list[Path],
+) -> tuple[MovieMetadata | None, list[ArtAttachment]]:
+    if tag_opts is None or not tag_opts.enabled:
+        return None, []
+
+    from tagger import _prepare_tagging
+
+    try:
+        metadata, art = _prepare_tagging(title.name, tag_opts, temp_files)
+    except Exception as exc:
+        log_warn(tr("Tagging failed (ripping without tags): {err}", err=exc))
+        return None, []
+
+    if metadata is None:
+        return None, art
+
+    metadata.custom_properties["ENCODER"] = "mkvsmith"
+    if title.disc_barcode:
+        metadata.custom_properties["BARCODE"] = title.disc_barcode
+
+    source_name = title.source_file.name.lower()
+    iso_paths = title.iso_internal_paths
+    if any(path.upper().startswith("BDMV") for path in iso_paths):
+        metadata.custom_properties["ORIGINAL_MEDIA_TYPE"] = "Blu-ray"
+    elif any(path.upper().startswith("VIDEO_TS") for path in iso_paths):
+        metadata.custom_properties["ORIGINAL_MEDIA_TYPE"] = "DVD"
+    elif source_name.endswith(".vob"):
+        metadata.custom_properties["ORIGINAL_MEDIA_TYPE"] = "DVD"
+    elif source_name.endswith(".m2ts"):
+        metadata.custom_properties["ORIGINAL_MEDIA_TYPE"] = "Blu-ray"
+    return metadata, art
+
+
+def _mapped_input_ids(mapped: list[MappedStream], *track_types: str) -> list[str]:
+    return [
+        str(entry["input_id"])
+        for entry in mapped
+        if entry["input_id"] >= 0 and entry["type"] in track_types
+    ]
+
+
+def _should_use_audio_filter(ident_tracks: list[dict[str, Any]], title: Title) -> bool:
+    scanned_audio_count = sum(
+        1 for track in ident_tracks if track.get("type") == "audio"
+    )
+    ifo_audio_count = len(title.audio_streams)
+    use_audio_filter = not (
+        ifo_audio_count > 0
+        and scanned_audio_count < ifo_audio_count
+        and title.dvd_ifo_data is not None
+    )
+    if not use_audio_filter:
+        log_debug(
+            f"DVD audio stream fallback: mkvmerge -J found "
+            f"{scanned_audio_count}/{ifo_audio_count} audio tracks, "
+            "omitting --audio-tracks filter"
+        )
+    return use_audio_filter
+
+
+def _track_filter_options(
+    ident_tracks: list[dict[str, Any]],
+    mapped: list[MappedStream],
+    title: Title,
+) -> list[str]:
+    if not ident_tracks or not mapped:
+        return []
+
+    video_ids = _mapped_input_ids(mapped, "video")
+    audio_ids = _mapped_input_ids(mapped, "audio")
+    subtitle_ids = _mapped_input_ids(mapped, "subtitle", "subtitles")
+    use_audio_filter = _should_use_audio_filter(ident_tracks, title)
+
+    options: list[str] = []
+    if video_ids:
+        options += ["--video-tracks", ",".join(video_ids)]
+    if use_audio_filter and audio_ids:
+        options += ["--audio-tracks", ",".join(audio_ids)]
+    if subtitle_ids:
+        options += ["--subtitle-tracks", ",".join(subtitle_ids)]
+    return options
+
+
+def _append_track_state_options(cmd: list[str], input_id: int, stream: Stream) -> None:
+    cmd += ["--language", f"{input_id}:{stream.language}"]
+    cmd += [
+        "--default-track",
+        f"{input_id}:{'yes' if stream.is_default else 'no'}",
+    ]
+    if stream.is_forced:
+        cmd += ["--forced-track", f"{input_id}:yes"]
+    if stream.is_hearing_impaired:
+        cmd += ["--hearing-impaired-flag", f"{input_id}:yes"]
+    if stream.is_commentary:
+        cmd += ["--commentary-flag", f"{input_id}:yes"]
+
+
+def _append_video_track_options(cmd: list[str], input_id: int, stream: Stream) -> None:
+    color_info = _resolve_video_color(stream)
+    if color_info is not None:
+        primaries, transfer, matrix, range_ = color_info
+        color_options = (
+            ("--color-primaries", _COLOR_CICP.get(primaries)),
+            (
+                "--color-transfer-characteristics",
+                _COLOR_CICP.get(transfer),
+            ),
+            ("--color-matrix-coefficients", _COLOR_CICP.get(matrix)),
+            ("--color-range", _COLOR_RANGE.get(range_)),
+        )
+        for option, code in color_options:
+            if code is not None:
+                cmd += [option, f"{input_id}:{code}"]
+
+    siting = _chroma_siting_for_codec(stream.codec)
+    if siting is not None:
+        cmd += ["--chroma-siting", f"{input_id}:{siting}"]
+
+
+def _track_name_for_stream(entry: MappedStream) -> str:
+    stream = entry["stream"]
+    track_name = stream.title
+    if not track_name and stream.stream_type == StreamType.AUDIO:
+        track_name = _audio_title(stream, entry.get("ident_channels")) or ""
+    return track_name
+
+
+def _append_track_options(cmd: list[str], mapped: list[MappedStream]) -> None:
+    for entry in mapped:
+        stream = entry["stream"]
+        input_id = entry["input_id"]
+        if input_id < 0:
+            log_debug(
+                f"  No input track ID for {stream.display_id}; "
+                "track properties may be misaligned."
+            )
+            continue
+
+        _append_track_state_options(cmd, input_id, stream)
+        if stream.stream_type == StreamType.VIDEO:
+            _append_video_track_options(cmd, input_id, stream)
+
+        track_name = _track_name_for_stream(entry)
+        if track_name:
+            cmd += ["--track-name", f"{input_id}:{track_name}"]
+
+
+@dataclass
+class _DvdTrimResult:
+    inputs: list[Path]
+    vobu_parts: list[Path] | None
+    vobu_part_sizes: list[int] | None
+
+
+def _is_dvd_vob_input(streams: list[Stream], inputs: list[Path]) -> bool:
+    video_stream = next(
+        (stream for stream in streams if stream.stream_type == StreamType.VIDEO),
+        None,
+    )
+    return (
+        video_stream is not None
+        and video_stream.codec == "mpeg2video"
+        and bool(inputs)
+        and inputs[0].suffix.lower() == ".vob"
+    )
+
+
+@dataclass
+class _MuxInputPlan:
+    inputs: list[Path]
+    cleanup: list[Path]
+    is_dvd_vob: bool
+    vobu_parts: list[Path] | None
+    vobu_part_sizes: list[int] | None
+
+
+@dataclass
+class _PreparedMuxTracks:
+    ident_tracks: list[dict[str, Any]]
+    mapped: list[MappedStream]
+    subtitle_fallback: Path | None
+    fallback_tracks: list[dict[str, Any]]
+    unmatched_ifo_subs: list[Stream]
+
+
+def _output_file_for_title(output_dir: Path, title: Title) -> Path:
+    # Strip Windows-reserved path characters and unusual Unicode symbols from
+    # the filename only; container title metadata keeps the original formatting.
+    safe_name = re.sub(r'[<>:"/\\|?*]', "_", title.name)
+    safe_name = re.sub(r"[^\w\s\-.]", "", safe_name)
+    safe_name = re.sub(r"\s+", " ", safe_name).strip()
+    return output_dir / f"{safe_name}_t{title.index:02d}.mkv"
+
+
+def _find_dvd_trim_range(title: Title, inputs: list[Path]) -> tuple[int, int] | None:
+    trim_range: tuple[int, int] | None = None
+    if title.dvd_ifo_data is not None:
+        try:
+            total_size = sum(path.stat().st_size for path in inputs)
+            trim_range = _lookup_main_feature_range(
+                title.dvd_ifo_data,
+                total_size,
+                title.dvd_pgc_number,
+            )
+            if trim_range:
+                log_debug(
+                    f"IFO cell trim: extracting bytes {trim_range[0]}-{trim_range[1]}"
+                )
+        except Exception as exc:
+            log_debug(f"IFO cell table failed ({exc}); trying PTS scan")
+            trim_range = None
+
+    if trim_range is None:
+        try:
+            trim_range = _dvd_main_content_range(inputs)
+        except Exception as exc:
+            log_debug(f"DVD PTS cell scan failed ({exc}); muxing raw VOBs")
+            trim_range = None
+    return trim_range
+
+
+def _temp_vob_path(directory: Path | None) -> Path:
+    return Path(
+        tempfile.NamedTemporaryFile(
+            suffix=".vob",
+            delete=False,
+            dir=str(directory) if directory else None,
+        ).name
+    )
+
+
+def _register_temp_file(
+    path: Path, cleanup: list[Path], temp_files: list[Path]
+) -> None:
+    temp_files.append(path)
+    cleanup.append(path)
+
+
+def _main_edition_vobu_ranges(
+    title: Title, inputs: list[Path]
+) -> list[tuple[int, int]] | None:
+    if title.dvd_ifo_data is None:
+        return None
+    try:
+        admap = _parse_vts_vobu_admap(title.dvd_ifo_data)
+        if not admap:
+            return None
+        return _build_main_edition_vobu_ranges(
+            title.dvd_ifo_data,
+            admap,
+            inputs,
+            title.dvd_pgc_number,
+        )
+    except Exception:
+        return None
+
+
+def _write_vobu_trim(
+    inputs: list[Path],
+    ranges: list[tuple[int, int]],
+    output: Path,
+    temp_directory: Path | None,
+    cleanup: list[Path],
+    temp_files: list[Path],
+) -> tuple[list[Path], list[int]]:
+    total_vobu = sum(end - start for start, end in ranges)
+    log_info(
+        f"Trimming DVD main edition ({len(ranges)} VOBU run(s), "
+        f"{total_vobu / 1e9:.1f} GB)..."
+    )
+    parts: list[Path] = []
+    for start, end in ranges:
+        part = _temp_vob_path(temp_directory)
+        _register_temp_file(part, cleanup, temp_files)
+        _extract_concat_range(inputs, start, end, part)
+        parts.append(part)
+    with output.open("wb") as output_file:
+        for part in parts:
+            output_file.write(part.read_bytes())
+    return parts, [end - start for start, end in ranges]
+
+
+def _prepare_dvd_inputs(
+    title: Title,
+    inputs: list[Path],
+    temp_base: Path | None,
+    cleanup: list[Path],
+    temp_files: list[Path],
+) -> _DvdTrimResult:
+    trim_range = _find_dvd_trim_range(title, inputs)
+    if trim_range is None:
+        log_warn(
+            "DVD cell trimming failed; muxing raw VOBs. "
+            "Output duration may be incorrect. "
+            "Run with --debug to see why trimming was skipped."
+        )
+        return _DvdTrimResult(inputs, None, None)
+
+    start, end = trim_range
+    temp_directory = temp_base
+    output = _temp_vob_path(temp_directory)
+    _register_temp_file(output, cleanup, temp_files)
+
+    vobu_ranges = _main_edition_vobu_ranges(title, inputs)
+    if vobu_ranges:
+        parts, part_sizes = _write_vobu_trim(
+            inputs, vobu_ranges, output, temp_directory, cleanup, temp_files
+        )
+        vobu_parts = parts if len(parts) > 1 else None
+        return _DvdTrimResult(
+            [output],
+            vobu_parts,
+            part_sizes if vobu_parts else None,
+        )
+
+    log_info(f"Trimming DVD to main feature ({(end - start) / 1e9:.1f} GB)...")
+    _extract_concat_range(inputs, start, end, output)
+    return _DvdTrimResult([output], None, None)
+
+
+def _append_input_files(
+    cmd: list[str], inputs: list[Path], track_filter_opts: list[str]
+) -> None:
+    # ``--append-mode track`` gives each track its own timestamp offset. This
+    # avoids cumulative video gaps when audio extends slightly beyond video in
+    # seamless-branching segments. The filter is repeated before each appended
+    # input so clips carrying a later-starting PID remain valid append sources.
+    if len(inputs) > 1:
+        cmd += ["--append-mode", "track"]
+    cmd.append(str(inputs[0]))
+    for clip in inputs[1:]:
+        cmd += ["+"]
+        cmd += track_filter_opts
+        cmd.append(str(clip))
+
+
+def _create_mux_tags_file(
+    title: Title,
+    metadata: MovieMetadata | None,
+    cleanup: list[Path],
+    temp_files: list[Path],
+) -> Path | None:
+    if metadata is None and not title.editions:
+        return None
+    tags_file = Path(tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name)
+    temp_files.append(tags_file)
+    cleanup.append(tags_file)
+    _write_tags_xml_mkvmerge(tags_file, md=metadata, editions=title.editions)
+    return tags_file
+
+
+def _append_art_attachments(
+    cmd: list[str], art_attachments: list[ArtAttachment]
+) -> None:
+    for art in art_attachments:
+        cmd += [
+            "--attachment-name",
+            art["filename"],
+            "--attachment-mime-type",
+            art["mime"],
+            "--attachment-description",
+            art["label"],
+            str(art["path"]),
+        ]
+
+
+def _build_mkvmerge_command(
+    title: Title,
+    out_file: Path,
+    inputs: list[Path],
+    mapped: list[MappedStream],
+    ident_tracks: list[dict[str, Any]],
+    metadata: MovieMetadata | None,
+    art_attachments: list[ArtAttachment],
+    subtitle_fallback: Path | None,
+    fallback_tracks: list[dict[str, Any]],
+    unmatched_ifo_subs: list[Stream],
+    cleanup: list[Path],
+    temp_files: list[Path],
+) -> list[str]:
+    cmd = ["mkvmerge", "-o", str(out_file)]
+    container_title = (
+        metadata.title
+        if metadata and metadata.title
+        else (title.disc_name or title.name)
+    )
+    cmd += ["--title", container_title]
+
+    chapters_file = _create_chapters_file(title, cleanup, temp_files)
+    if chapters_file is not None:
+        cmd += ["--chapters", str(chapters_file)]
+
+    track_filter_opts = _track_filter_options(ident_tracks, mapped, title)
+    cmd += track_filter_opts
+    need_positional_fallback = not (ident_tracks and mapped)
+    _append_track_options(cmd, mapped)
+    if need_positional_fallback:
+        log_warn(
+            "mkvmerge track identification unavailable; "
+            "track properties (language, name) may not be applied correctly."
+        )
+
+    tags_file = _create_mux_tags_file(title, metadata, cleanup, temp_files)
+    if tags_file is not None:
+        cmd += ["--global-tags", str(tags_file)]
+    _append_art_attachments(cmd, art_attachments)
+    _append_input_files(cmd, inputs, track_filter_opts)
+
+    if subtitle_fallback is not None and fallback_tracks:
+        cmd += _dvd_subtitle_fallback_options(
+            unmatched_ifo_subs, fallback_tracks, ident_tracks
+        )
+        cleanup.append(subtitle_fallback)
+        cmd.append(str(subtitle_fallback))
+    return cmd
+
+
+def _subtitle_fallback_track_name(ifo_stream: Stream) -> str:
+    track_name = ifo_stream.title
+    if not track_name and ifo_stream.language != "und":
+        language_name = get_language_name(ifo_stream.language)
+        if language_name:
+            track_name = f"Subtitles ({language_name})"
+    return track_name
+
+
+def _dvd_subtitle_fallback_options_for_track(
+    track_id: int, ifo_stream: Stream
+) -> list[str]:
+    options: list[str] = []
+    _append_track_state_options(options, track_id, ifo_stream)
+    track_name = _subtitle_fallback_track_name(ifo_stream)
+    if track_name:
+        options += ["--track-name", f"{track_id}:{track_name}"]
+    return options
+
+
+def _dvd_subtitle_fallback_options(
+    unmatched_ifo_subs: list[Stream],
+    fallback_tracks: list[dict[str, Any]],
+    ident_tracks: list[dict[str, Any]],
+) -> list[str]:
+    options: list[str] = []
+    if not ident_tracks:
+        log_debug(
+            "Cannot apply language tags to DVD subtitle fallback "
+            "(no mkvmerge track identification data)"
+        )
+        return options
+
+    for track_id, ifo_stream in enumerate(unmatched_ifo_subs):
+        if track_id >= len(fallback_tracks):
+            log_debug(
+                f"  Sub fallback: {len(fallback_tracks)} extracted tracks "
+                f"< {len(unmatched_ifo_subs)} IFO streams; stopping"
+            )
+            break
+        log_debug(
+            f"  Sub fallback: {ifo_stream.display_id} -> "
+            f".idx track {track_id} ({ifo_stream.language})"
+        )
+        options += _dvd_subtitle_fallback_options_for_track(track_id, ifo_stream)
+    return options
+
+
+def _extract_dvd_subtitle_fallback(
+    title: Title,
+    mapped: list[MappedStream],
+    inputs: list[Path],
+    vobu_parts: list[Path] | None,
+    vobu_part_sizes: list[int] | None,
+    temp_files: list[Path],
+    debug: bool = False,
+) -> tuple[Path | None, list[dict[str, Any]], list[Stream]]:
+    unmatched_subs = [
+        entry["stream"]
+        for entry in mapped
+        if entry["input_id"] < 0 and entry["stream"].stream_type == StreamType.SUBTITLE
+    ]
+    if not unmatched_subs:
+        return None, [], unmatched_subs
+
+    language_by_id: dict[int, str] = {}
+    forced_by_id: dict[int, bool] = {}
+    for stream in unmatched_subs:
+        if stream.sub_id is not None:
+            language_by_id[stream.sub_id] = stream.language
+            forced_by_id[stream.sub_id] = stream.is_forced
+
+    log_debug(
+        "DVD subtitle fallback: %d IFO subs (%s), scanning %d VOB(s)"
+        % (
+            len(unmatched_subs),
+            ", ".join(
+                "0x%02x=%s" % (sub_id, language_by_id.get(sub_id, "?"))
+                for sub_id in sorted(language_by_id)
+            ),
+            len(inputs),
+        )
+    )
+    palette: list[tuple[int, int, int]] | None = None
+    if title.dvd_ifo_data is not None:
+        palette = _extract_dvd_ifo_palette(title.dvd_ifo_data, None)
+
+    result = _extract_dvd_vobsubs(
+        inputs,
+        language_by_id,
+        forced_by_id,
+        ifo_palette=palette,
+        vobu_parts=vobu_parts,
+        vobu_part_sizes=vobu_part_sizes if vobu_parts else None,
+        total_duration=title.duration_seconds,
+        temp_files=temp_files,
+        debug=debug,
+    )
+    if result is None:
+        return None, [], unmatched_subs
+
+    fallback_path, fallback_tracks = result
+    log_debug(
+        "DVD subtitle fallback: %d extracted track(s) for %d IFO stream(s)"
+        % (len(fallback_tracks), len(unmatched_subs))
+    )
+    return fallback_path, fallback_tracks, unmatched_subs
+
+
+def _create_chapters_file(
+    title: Title, cleanup: list[Path], temp_files: list[Path]
+) -> Path | None:
+    if title.editions:
+        chapters_file = Path(
+            tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name
+        )
+        temp_files.append(chapters_file)
+        cleanup.append(chapters_file)
+        _write_multi_edition_chapters_xml(title.editions, chapters_file)
+        for edition in title.editions:
+            log_debug(
+                f"  Edition {edition.uid} '{edition.name}'"
+                f"{' (default)' if edition.is_default else ''}: "
+                f"{len(edition.atoms)} atoms, {edition.duration:.0f}s"
+            )
+        return chapters_file
+
+    if not title.chapters:
+        return None
+
+    chapters = list(title.chapters)
+    if len(chapters) > 1 and title.duration_seconds > 0:
+        if chapters[-1] >= title.duration_seconds - 0.5:
+            chapters = chapters[:-1]
+            log_debug(f"Filtered trailing end-of-movie chapter; {len(chapters)} remain")
+    if not chapters:
+        return None
+
+    chapters_file = Path(tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name)
+    temp_files.append(chapters_file)
+    cleanup.append(chapters_file)
+    _write_chapters_xml(chapters, chapters_file)
+    log_debug(f"Loaded {len(chapters)} chapters")
+    return chapters_file
+
+
+@dataclass
+class _MkvmergeTimeoutState:
+    timed_out: bool = False
+
+
+def _kill_mkvmerge_process(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except OSError:
+            process.kill()
+
+
+def _start_mkvmerge_watchdog(
+    process: subprocess.Popen[str],
+    timeout_state: _MkvmergeTimeoutState,
+    timeout: int,
+) -> threading.Timer:
+    def on_timeout() -> None:
+        timeout_state.timed_out = True
+        _kill_mkvmerge_process(process)
+
+    watchdog = threading.Timer(timeout, on_timeout)
+    watchdog.daemon = True
+    watchdog.start()
+    return watchdog
+
+
+def _parse_mkvmerge_progress(data: str) -> int | None:
+    match = re.search(r"Progress:\s*(\d+)%", data)
+    if match is None:
+        return None
+    return min(100, int(match.group(1)))
+
+
+def _read_mkvmerge_output(stdout: IO[str], on_progress: Callable[[int], None]) -> str:
+    chunks: list[str] = []
+    carry = ""
+    last_percentage = -1
+    while True:
+        chunk = stdout.read(512)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        data = carry + chunk
+        percentage = _parse_mkvmerge_progress(data)
+        if percentage is not None and percentage != last_percentage:
+            last_percentage = percentage
+            on_progress(percentage)
+        carry = data[-64:]
+    return "".join(chunks)
+
+
 @final
 class MKVCreator:
-    def __init__(self, out: Path, tag_opts: TagOptions | None = None):
+    def __init__(
+        self,
+        out: Path,
+        tag_opts: TagOptions | None = None,
+        config: Config | None = None,
+        runtime_state: RuntimeState | None = None,
+    ):
+        state = runtime_state or RUNTIME_STATE
         self.out = out
         self.tag_opts = tag_opts
+        self.config = config or state.config
+        state.logger.configure(self.config)
+        self.logger = state.logger
+        self.cleanup = state.cleanup
+        self.active_processes = state.active_processes
         self.out.mkdir(parents=True, exist_ok=True)
 
-    def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path:
+    def select_streams(
+        self, title: Title, force: list[str] | None = None
+    ) -> list[Stream]:
+        return select_streams(title, force, self.config)
+
+    def _prepare_inputs(self, title: Title, streams: list[Stream]) -> _MuxInputPlan:
         from disc_reader import _extract_full_for_muxing, temp_base_for_title
-        from tagger import _prepare_tagging, _write_tag_xml
 
-        if not streams:
-            streams = select_streams(title)
-        if not streams:
-            raise RipError(message="No streams selected", title=title, streams=streams)
-
-        # Build a filesystem-safe filename: strip Windows path chars and any
-        # non-alphanumeric/non-ASCII characters (e.g. ™, ©, newlines) from the
-        # filename only — the movie name metadata keeps its original formatting.
-        safe_name = re.sub(r'[<>:"/\\|?*]', "_", title.name)
-        safe_name = re.sub(r"[^\w\s\-.]", "", safe_name)
-        safe_name = re.sub(r"\s+", " ", safe_name).strip()
-        out_file = self.out / f"{safe_name}_t{title.index:02d}.mkv"
-
-        # Ordered input files. ISO sources are extracted up front; a
-        # seamless-branching playlist contributes its segments as appended inputs.
-        is_iso = title.iso_internal_paths and title.source_file.suffix.lower() == ".iso"
-        # Estimate the on-disk footprint of this title's raw streams so the
-        # RAM-backed temp dir can spill oversized titles to disk. ISO sizes were
-        # captured at scan time; for folder/device sources we stat the inputs.
-        est = title.estimated_size_bytes
-        if not est and not is_iso:
+        is_iso = bool(
+            title.iso_internal_paths and title.source_file.suffix.lower() == ".iso"
+        )
+        estimated_size = title.estimated_size_bytes
+        if not estimated_size and not is_iso:
             try:
-                est = sum(
-                    f.stat().st_size
-                    for f in (title.source_file, *title.append_clips)
-                    if f.is_file()
+                estimated_size = sum(
+                    path.stat().st_size
+                    for path in (title.source_file, *title.append_clips)
+                    if path.is_file()
                 )
-            except Exception:
-                est = 0
-        _extract_temp_base = temp_base_for_title(est)
+            except OSError:
+                estimated_size = 0
+
+        extract_temp_base = temp_base_for_title(estimated_size, self.config)
         if is_iso:
             inputs = _extract_full_for_muxing(
                 title.source_file,
                 title.iso_internal_paths,
-                temp_base=_extract_temp_base,
+                temp_base=extract_temp_base,
+                temp_dirs=self.cleanup.temp_dirs,
+                symlinks=self.cleanup.symlinks,
             )
             cleanup = list(inputs)
         else:
@@ -495,715 +1266,201 @@ class MKVCreator:
         if not inputs:
             raise RipError(message="No source files", title=title, streams=streams)
 
-        # DVD cell trimming: many discs store warning/intro PGCs interleaved
-        # with the movie in the same VOBs, each resetting its PTS to ~0. Copying
-        # the raw VOBs then splices those cards in front of the movie and breaks
-        # A/V sync. When that is detected we extract only the movie's cells (the
-        # longest PTS-continuous run) into a temp file and mux from that instead.
-        video_stream_scan = next(
-            (s for s in streams if s.stream_type == StreamType.VIDEO), None
+        is_dvd_vob = _is_dvd_vob_input(streams, inputs)
+        dvd_trim = (
+            _prepare_dvd_inputs(
+                title,
+                inputs,
+                extract_temp_base,
+                cleanup,
+                self.cleanup.temp_files,
+            )
+            if is_dvd_vob
+            else _DvdTrimResult(inputs, None, None)
         )
-        is_dvd_vob = (
-            video_stream_scan is not None
-            and video_stream_scan.codec == "mpeg2video"
-            and inputs[0].suffix.lower() == ".vob"
+        return _MuxInputPlan(
+            inputs=dvd_trim.inputs,
+            cleanup=cleanup,
+            is_dvd_vob=is_dvd_vob,
+            vobu_parts=dvd_trim.vobu_parts,
+            vobu_part_sizes=dvd_trim.vobu_part_sizes,
         )
-        _vobu_trim_parts: list[Path] | None = None
-        _vobu_part_sizes: list[int] | None = None
-        if is_dvd_vob:
-            rng: tuple[int, int] | None = None
-            # Try IFO cell address table first (instant; no VOB scanning).
-            if title.dvd_ifo_data is not None:
-                try:
-                    total_size = sum(f.stat().st_size for f in inputs)
-                    rng = _lookup_main_feature_range(
-                        title.dvd_ifo_data,
-                        total_size,
-                        title.dvd_pgc_number,
-                    )
-                    if rng:
-                        log_debug(f"IFO cell trim: extracting bytes {rng[0]}-{rng[1]}")
-                except Exception as e:
-                    log_debug(f"IFO cell table failed ({e}); trying PTS scan")
-                    rng = None
-            # Fallback: PTS-based scanning (works on all discs).
-            if rng is None:
-                try:
-                    rng = _dvd_main_content_range(inputs)
-                except Exception as e:
-                    log_debug(f"DVD PTS cell scan failed ({e}); muxing raw VOBs")
-                    rng = None
-            if rng is not None:
-                start, end = rng
-                _vob_dir = str(_extract_temp_base) if _extract_temp_base else None
-                tmp = Path(
-                    tempfile.NamedTemporaryFile(
-                        suffix=".vob",
-                        delete=False,
-                        dir=_vob_dir,
-                    ).name
-                )
-                _TEMP_FILES.append(tmp)
-                cleanup.append(tmp)
 
-                # Try VOBU-level extraction for seamless branching discs.
-                # This scans each VOBU's own NAV pack to determine which
-                # edition it truly belongs to (matching the main PGC's own
-                # cells), skipping interleaved VOBUs from other editions
-                # that a contiguous byte range would otherwise capture.
-                _vobu_ranges: list[tuple[int, int]] | None = None
-                if title.dvd_ifo_data is not None:
-                    try:
-                        _admap = _parse_vts_vobu_admap(title.dvd_ifo_data)
-                        if _admap:
-                            _vobu_ranges = _build_main_edition_vobu_ranges(
-                                title.dvd_ifo_data,
-                                _admap,
-                                inputs,
-                                title.dvd_pgc_number,
-                            )
-                    except Exception:
-                        _vobu_ranges = None
-
-                if _vobu_ranges:
-                    _total_vobu = sum(e - s for s, e in _vobu_ranges)
-                    log_info(
-                        f"Trimming DVD main edition "
-                        f"({len(_vobu_ranges)} VOBU run(s), "
-                        f"{_total_vobu / 1e9:.1f} GB)..."
-                    )
-                    # Write each VOBU run to a separate temp file, then
-                    # concatenate into the final trimmed VOB.
-                    _parts: list[Path] = []
-                    for vs, ve in _vobu_ranges:
-                        _p = Path(
-                            tempfile.NamedTemporaryFile(
-                                suffix=".vob",
-                                delete=False,
-                                dir=_vob_dir,
-                            ).name
-                        )
-                        _TEMP_FILES.append(_p)
-                        cleanup.append(_p)
-                        _extract_concat_range(inputs, vs, ve, _p)
-                        _parts.append(_p)
-                    with open(tmp, "wb") as _out:
-                        for _p in _parts:
-                            _out.write(_p.read_bytes())
-                    inputs = [tmp]
-                    # Keep the per-run parts for subtitle PTS remapping.
-                    # On seamless-branching discs, the concatenated VOB has
-                    # PTS discontinuities at each run boundary; subtitle
-                    # extraction needs to remap timestamps per-run.
-                    _vobu_trim_parts = _parts if len(_parts) > 1 else None
-                    # Pass the total VOBU run byte sizes for proportional
-                    # duration allocation (the PGC's declared playback time
-                    # is authoritative, not raw PTS which can reset at cell
-                    # boundaries in interleaved blocks).
-                    _vobu_part_sizes = (
-                        [e - s for s, e in _vobu_ranges] if _vobu_trim_parts else None
-                    )
-                else:
-                    log_info(
-                        f"Trimming DVD to main feature "
-                        f"({(end - start) / 1e9:.1f} GB)..."
-                    )
-                    _extract_concat_range(inputs, start, end, tmp)
-                    inputs = [tmp]
-            else:
-                log_warn(
-                    "DVD cell trimming failed; muxing raw VOBs. "
-                    "Output duration may be incorrect. "
-                    "Run with --debug to see why trimming was skipped."
-                )
-        # mkvmerge enumerates DVD MPEG-PS streams by stream ID (not by first
-        # packet appearance like ffmpeg), so the scanned per-type indices and
-        # sub_ids from IFO data are authoritative.  No reconciliation step is
-        # needed — we map selected streams to mkvmerge track IDs below by
-        # matching sub_id (DVD) or pid (Blu-ray).
-        # Identify the actual track layout from the first input so we can map
-        # our selected Stream objects to the correct mkvmerge track IDs.
-        ident_tracks = _identify_input_tracks(inputs[0])
+    def _prepare_tracks(
+        self,
+        title: Title,
+        streams: list[Stream],
+        input_plan: _MuxInputPlan,
+    ) -> _PreparedMuxTracks:
+        # mkvmerge enumerates DVD MPEG-PS streams by stream ID rather than by
+        # first packet appearance. IFO sub_ids therefore remain authoritative;
+        # matching by sub_id or PID happens immediately after identification.
+        ident_tracks = _identify_input_tracks(input_plan.inputs[0])
         if not ident_tracks:
             log_debug(
                 "mkvmerge -J returned no tracks; muxing will include all streams "
                 "and per-stream properties may be incorrect."
             )
+        mapped = _map_streams_to_ident_tracks(streams, ident_tracks)
 
-        # Map selected streams to mkvmerge input track IDs.
-        # Strategy: first try matching by sub_id/pid (stream ID), then fall
-        # back to matching by stream type + position within type.  This handles
-        # cases where mkvmerge's -J output does not include a 'number' property
-        # that matches our sub_id (e.g. DVD video: IFO uses 0x1E0 but
-        # mkvmerge reports the raw PES stream ID 0xE0).
-        mapped: list[dict[str, Any]] = []  # {input_id, type, stream}
-
-        # Build a positional index of ident_tracks for fallback matching.
-        # Maps (type, type_index) -> track dict.
-        type_counter: dict[str, int] = {}
-        type_position: dict[tuple[str, int], dict[str, Any]] = {}
-        if ident_tracks:
-            for t in ident_tracks:
-                tt = t.get("type", "")
-                idx = type_counter.get(tt, 0)
-                type_position[(tt, idx)] = t
-                type_counter[tt] = idx + 1
-
-        for s in streams:
-            match_id = s.pid or s.sub_id
-            matched_track = None
-            if match_id is not None and ident_tracks:
-                # Pass 1: match by stream ID (sub_id / pid).
-                for t in ident_tracks:
-                    if t.get("properties", {}).get("number") == match_id:
-                        matched_track = t
-                        break
-
-            if matched_track is None and ident_tracks:
-                # Pass 2: match by stream type + position within type.
-                tt = s.stream_type.value
-                if tt == "subtitle":
-                    tt = "subtitles"  # mkvmerge uses "subtitles"
-                candidate = type_position.get((tt, s.type_index))
-                if candidate is not None:
-                    matched_track = candidate
-                    # Distinguish ID-based from positional matching in debug.
-                    if match_id is not None:
-                        log_debug(
-                            f"  Positional fallback for {s.display_id}: "
-                            f"id=0x{match_id:x} matched track {candidate['id']} "
-                            f"by type={tt} index={s.type_index}"
-                        )
-
-            if matched_track is not None:
-                ident_channels = matched_track.get("properties", {}).get(
-                    "audio_channels"
-                )
-                # Override the scan-time codec from mkvmerge's bitstream-level
-                # identification. Both the MPLS STN table and CLPI can contain
-                # authoring errors (e.g. some Disney discs label TrueHD as
-                # DTS-HD HR in both metadata sources). mkvmerge -J reads the
-                # actual codec from the M2TS bitstream, making it the only
-                # authoritative source for the codec identity.
-                ident_codec = matched_track.get("codec", "")
-                mapped_codec = _MKVMERGE_CODEC_MAP.get(ident_codec)
-                if mapped_codec and mapped_codec != s.codec:
-                    log_debug(
-                        f"  Codec override for {s.display_id}: "
-                        f"{s.codec} -> {mapped_codec} (from mkvmerge -J)"
-                    )
-                    s.codec = mapped_codec
-                mapped.append(
-                    {
-                        "input_id": matched_track["id"],
-                        "type": matched_track["type"],
-                        "stream": s,
-                        "ident_channels": ident_channels,
-                    }
-                )
-            else:
-                # No match found — will be handled by positional fallback below.
-                if match_id is not None:
-                    log_debug(
-                        f"  Dropping stream: {s.display_id} (id=0x{match_id:x}) not found in source"
-                    )
-                mapped.append(
-                    {
-                        "input_id": -1,
-                        "type": s.stream_type.value,
-                        "stream": s,
-                        "ident_channels": None,
-                    }
-                )
-
-        # If we have ident data, sort mapped by input_id for clean output track order.
-        if ident_tracks:
-            mapped.sort(key=lambda m: m["input_id"])
-
-        # ---- DVD subtitle extraction fallback ----
-        # mkvmerge's -J probe cannot detect DVD subpicture streams in VOB
-        # files (they only appear in later VOB segments, and mkvmerge's
-        # initial scan of the first VOB never finds them). We scan the
-        # MPEG-PS bitstream directly for private_stream_1 (0xBD) packets
-        # with sub_stream_id 0x20-0x3F, then write VobSub .idx/.sub files
-        # that mkvmerge CAN read natively.
-        _sub_fallback_mkv: Path | None = None
-        _sub_fallback_tracks: list[dict[str, Any]] = []
-        _unmatched_ifo_subs: list[Stream] = [
-            m["stream"]
-            for m in mapped
-            if m["input_id"] < 0 and m["stream"].stream_type == StreamType.SUBTITLE
-        ]
-        if _unmatched_ifo_subs and is_dvd_vob:
-            # Build language/forced maps from IFO subtitle stream attributes.
-            _sub_lang_by_id: dict[int, str] = {}
-            _sub_forced_by_id: dict[int, bool] = {}
-            for s in _unmatched_ifo_subs:
-                if s.sub_id is not None:
-                    _sub_lang_by_id[s.sub_id] = s.language
-                    _sub_forced_by_id[s.sub_id] = s.is_forced
-            _vobs_to_scan: list[Path] = inputs
-            log_debug(
-                "DVD subtitle fallback: %d IFO subs (%s), scanning %d VOB(s)"
-                % (
-                    len(_unmatched_ifo_subs),
-                    ", ".join(
-                        "0x%02x=%s" % (sid, _sub_lang_by_id.get(sid, "?"))
-                        for sid in sorted(_sub_lang_by_id)
-                    ),
-                    len(_vobs_to_scan),
+        # mkvmerge cannot detect sparse DVD subpictures from the first VOB.
+        # Scan the MPEG-PS bitstream directly and emit a VobSub fallback input.
+        if input_plan.is_dvd_vob:
+            fallback_path, fallback_tracks, unmatched_ifo_subs = (
+                _extract_dvd_subtitle_fallback(
+                    title,
+                    mapped,
+                    input_plan.inputs,
+                    input_plan.vobu_parts,
+                    input_plan.vobu_part_sizes,
+                    self.cleanup.temp_files,
+                    self.logger.debug_enabled,
                 )
             )
-            # Scan the SAME (already trimmed/cell-reordered) VOB that the
-            # video and audio tracks are muxed from, via ``inputs`` - not the
-            # original raw disc source. Subtitle SPU packets carry their own
-            # embedded PTS timestamps, and on discs where cell trimming
-            # reorders or drops content (seamless branching, menu/junk cell
-            # removal, etc.) those timestamps only line up with the actual
-            # muxed video/audio timeline if we re-derive them from that same
-            # trimmed byte stream. Scanning the untrimmed original source
-            # here produced subtitles timed against a completely different
-            # (raw, pre-trim) timeline, causing them to appear at the wrong
-            # time entirely (e.g. starting mid-sentence at the wrong spot).
-            # Try to extract the IFO PGC palette (discs with real luminance
-            # entries will use their intended colours; zeroed palettes will
-            # fall through to the default greyscale + custom colors).
-            _ifo_palette: list[tuple[int, int, int]] | None = None
-            if title.dvd_ifo_data is not None:
-                # Always use the default title PGC's palette (pgc_number=None)
-                # for subtitle rendering, even for alternate editions. Different
-                # PGCs may have different palettes, but subtitle colours should
-                # be consistent across editions of the same movie.
-                _ifo_palette = _extract_dvd_ifo_palette(
-                    title.dvd_ifo_data,
-                    None,
-                )
-            result = _extract_dvd_vobsubs(
-                _vobs_to_scan,
-                _sub_lang_by_id,
-                _sub_forced_by_id,
-                ifo_palette=_ifo_palette,
-                vobu_parts=_vobu_trim_parts,
-                vobu_part_sizes=_vobu_part_sizes if _vobu_trim_parts else None,
-                total_duration=title.duration_seconds,
-            )
-            if result is not None:
-                _sub_fallback_mkv, _sub_fallback_tracks = result
-                log_debug(
-                    "DVD subtitle fallback: %d extracted track(s) for %d IFO stream(s)"
-                    % (len(_sub_fallback_tracks), len(_unmatched_ifo_subs))
-                )
+        else:
+            fallback_path = None
+            fallback_tracks = []
+            unmatched_ifo_subs = []
 
-        # Metadata tagging (optional): fetch from TMDB up front so the tags and
-        # any cover art can be embedded directly in the mux command below. A
-        # tagging failure never aborts the rip; we just mux without tags.
-        tag_md: MovieMetadata | None = None
-        tag_art: list[ArtAttachment] = []
-        if self.tag_opts is not None and self.tag_opts.enabled:
+        return _PreparedMuxTracks(
+            ident_tracks=ident_tracks,
+            mapped=mapped,
+            subtitle_fallback=fallback_path,
+            fallback_tracks=fallback_tracks,
+            unmatched_ifo_subs=unmatched_ifo_subs,
+        )
+
+    def _validate_mux_result(
+        self,
+        title: Title,
+        streams: list[Stream],
+        command: list[str],
+        out_file: Path,
+        returncode: int,
+        output_text: str,
+        timed_out: bool,
+    ) -> None:
+        if timed_out:
+            raise RipError(
+                message="mkvmerge timed out after 3600s",
+                command=command,
+                stderr=output_text,
+                title=title,
+                streams=streams,
+            )
+        if returncode == 1:
+            log_warn("mkvmerge completed with warnings; check the output for details")
+            if self.logger.debug_enabled:
+                for line in output_text.split("\n"):
+                    stripped = line.strip()
+                    if (
+                        "Warning" in stripped or "warning" in stripped
+                    ) and "%" not in stripped:
+                        log_debug(f"  mkvmerge: {stripped}")
+        elif returncode != 0:
+            raise RipError(
+                message=f"mkvmerge failed ({returncode})",
+                command=command,
+                returncode=returncode,
+                stderr=output_text,
+                title=title,
+                streams=streams,
+            )
+        if not out_file.exists():
+            raise RipError(
+                message="Output missing",
+                command=command,
+                title=title,
+                streams=streams,
+            )
+
+    def _finish_created_output(
+        self,
+        out_file: Path,
+        metadata: MovieMetadata | None,
+        art_attachments: list[ArtAttachment],
+    ) -> None:
+        from tagger import _write_tag_xml
+
+        self._log_created(out_file)
+        if (
+            metadata is not None
+            and self.tag_opts is not None
+            and self.tag_opts.save_xml
+        ):
             try:
-                tag_md, tag_art = _prepare_tagging(title.name, self.tag_opts)
-            except Exception as e:
-                log_warn(tr("Tagging failed (ripping without tags): {err}", err=e))
-                tag_md, tag_art = None, []
+                xml_path = out_file.with_suffix(".xml")
+                _write_tag_xml(metadata, xml_path)
+                log_info(f"Tag XML written: {xml_path}")
+            except OSError as exc:
+                log_warn(tr("Could not write tag XML: {err}", err=exc))
+        if art_attachments:
+            labels = ", ".join(art["label"] for art in art_attachments)
+            log_info(f"Attached art: {labels}")
 
-        # Inject disc-level metadata tags into MovieMetadata so they are
-        # written alongside TMDB tags in the Matroska global-tags XML.
-        if tag_md is not None:
-            tag_md.custom_properties["ENCODER"] = "mkvsmith"
-            if title.disc_barcode:
-                tag_md.custom_properties["BARCODE"] = title.disc_barcode
-            # ORIGINAL_MEDIA_TYPE: infer from title source file extension or
-            # ISO content path.
-            src_name = title.source_file.name.lower()
-            iso_paths = title.iso_internal_paths
-            if any(p.upper().startswith("BDMV") for p in iso_paths):
-                tag_md.custom_properties["ORIGINAL_MEDIA_TYPE"] = "Blu-ray"
-            elif any(p.upper().startswith("VIDEO_TS") for p in iso_paths):
-                tag_md.custom_properties["ORIGINAL_MEDIA_TYPE"] = "DVD"
-            elif src_name.endswith(".vob"):
-                tag_md.custom_properties["ORIGINAL_MEDIA_TYPE"] = "DVD"
-            elif src_name.endswith(".m2ts"):
-                tag_md.custom_properties["ORIGINAL_MEDIA_TYPE"] = "Blu-ray"
+    def _execute_mux(
+        self,
+        title: Title,
+        streams: list[Stream],
+        command: list[str],
+        out_file: Path,
+        metadata: MovieMetadata | None,
+        art_attachments: list[ArtAttachment],
+    ) -> Path:
+        log_info(tr("Muxing: {name}...", name=out_file.name))
+        # Track the in-progress output so Ctrl+C deletes the partial file
+        # instead of leaving a truncated mkv next to completed rips.
+        self.active_processes.register_output(out_file)
+        returncode, output_text, timed_out = self._run_mkvmerge(
+            command, out_file.name, title.duration_seconds
+        )
+        self._validate_mux_result(
+            title,
+            streams,
+            command,
+            out_file,
+            returncode,
+            output_text,
+            timed_out,
+        )
+        self._finish_created_output(out_file, metadata, art_attachments)
+        return out_file
 
-        chapters_file: Path | None = None
-        tags_file: Path | None = None
+    def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path:
+        if not streams:
+            streams = self.select_streams(title)
+        if not streams:
+            raise RipError(message="No streams selected", title=title, streams=streams)
+
+        out_file = _output_file_for_title(self.out, title)
+        input_plan = self._prepare_inputs(title, streams)
+        prepared_tracks = self._prepare_tracks(title, streams, input_plan)
+        tag_md, tag_art = _prepare_mux_tags(
+            title, self.tag_opts, self.cleanup.temp_files
+        )
+
         try:
-            cmd = ["mkvmerge", "-o", str(out_file)]
-
-            # Container-level title. Prefer the canonical TMDB title when we
-            # have it; otherwise fall back to the disc name from disc metadata
-            # (bdmt.xml / VMG IFO), and only then to the inferred title name.
-            container_title = (
-                tag_md.title
-                if (tag_md and tag_md.title)
-                else (title.disc_name or title.name)
+            command = _build_mkvmerge_command(
+                title,
+                out_file,
+                input_plan.inputs,
+                prepared_tracks.mapped,
+                prepared_tracks.ident_tracks,
+                tag_md,
+                tag_art,
+                prepared_tracks.subtitle_fallback,
+                prepared_tracks.fallback_tracks,
+                prepared_tracks.unmatched_ifo_subs,
+                input_plan.cleanup,
+                self.cleanup.temp_files,
             )
-            cmd += ["--title", container_title]
-
-            # Chapters as Matroska Chapters XML.
-            if title.editions:
-                # Multi-edition rip: one ordered edition per playlist cut.
-                chapters_file = Path(
-                    tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name
-                )
-                _TEMP_FILES.append(chapters_file)
-                cleanup.append(chapters_file)
-                _write_multi_edition_chapters_xml(title.editions, chapters_file)
-                cmd += ["--chapters", str(chapters_file)]
-                for ed in title.editions:
-                    log_debug(
-                        f"  Edition {ed.uid} '{ed.name}'"
-                        f"{' (default)' if ed.is_default else ''}: "
-                        f"{len(ed.atoms)} atoms, {ed.duration:.0f}s"
-                    )
-            elif title.chapters:
-                chapters = list(title.chapters)
-                # Drop trailing chapter if it matches the title duration
-                # (MakeMKV convention: final chapter-at-end-of-movie is omitted).
-                if len(chapters) > 1 and title.duration_seconds > 0:
-                    dur = title.duration_seconds
-                    if chapters[-1] >= dur - 0.5:
-                        chapters = chapters[:-1]
-                        log_debug(
-                            f"Filtered trailing end-of-movie chapter; {len(chapters)} remain"
-                        )
-                if chapters:
-                    chapters_file = Path(
-                        tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name
-                    )
-                    _TEMP_FILES.append(chapters_file)
-                    cleanup.append(chapters_file)
-                    _write_chapters_xml(chapters, chapters_file)
-                    cmd += ["--chapters", str(chapters_file)]
-                    log_debug(f"Loaded {len(chapters)} chapters")
-
-            # Track selection: only mux the streams the user chose.
-            # Only include entries with valid (non-negative) input IDs.
-            #
-            # The filter is captured into ``track_filter_opts`` so it can be
-            # repeated before each appended file (``+ clip``). Without this,
-            # mkvmerge reads ALL tracks from appended files and the default
-            # append mapping fails when an appended clip has a track that the
-            # first clip lacks (common on BD: the opening clip may omit an
-            # audio PID that later clips carry). MPEG-TS track IDs are
-            # PID-based, so the same IDs select the same streams across all
-            # clips in a playlist.
-            track_filter_opts: list[str] = []
-            if ident_tracks and mapped:
-                video_ids = [
-                    str(m["input_id"])
-                    for m in mapped
-                    if m["input_id"] >= 0 and m["type"] == "video"
-                ]
-                audio_ids = [
-                    str(m["input_id"])
-                    for m in mapped
-                    if m["input_id"] >= 0 and m["type"] == "audio"
-                ]
-                sub_ids = [
-                    str(m["input_id"])
-                    for m in mapped
-                    if m["input_id"] >= 0 and m["type"] in ("subtitle", "subtitles")
-                ]
-                if video_ids:
-                    track_filter_opts += ["--video-tracks", ",".join(video_ids)]
-                n_scan_audio = sum(1 for t in ident_tracks if t.get("type") == "audio")
-                n_ifo_audio = len(title.audio_streams) if title.audio_streams else 0
-                use_audio_filter = not (
-                    n_ifo_audio > 0
-                    and n_scan_audio < n_ifo_audio
-                    and title.dvd_ifo_data is not None
-                )
-                if not use_audio_filter:
-                    log_debug(
-                        f"DVD audio stream fallback: mkvmerge -J found "
-                        f"{n_scan_audio}/{n_ifo_audio} audio tracks, "
-                        "omitting --audio-tracks filter"
-                    )
-                if use_audio_filter and audio_ids:
-                    track_filter_opts += ["--audio-tracks", ",".join(audio_ids)]
-                if sub_ids:
-                    track_filter_opts += ["--subtitle-tracks", ",".join(sub_ids)]
-            cmd += track_filter_opts
-
-            # Fallback: no ident data — include all tracks and set language
-            # per-stream using output renumbering (less precise).
-            # mkvmerge will use all tracks from the source by default.
-            need_positional_fallback = not (ident_tracks and mapped)
-
-            # Per-stream language, default/forced, and track name.
-            for m in mapped:
-                s = m["stream"]
-                input_id = m["input_id"]
-
-                if need_positional_fallback or input_id < 0:
-                    # Without ident data or for unmatched streams, skip
-                    # per-track property setting (unreliable without IDs).
-                    log_debug(
-                        f"  No input track ID for {s.display_id}; "
-                        "track properties may be misaligned."
-                    )
-                    continue
-
-                cmd += ["--language", f"{input_id}:{s.language}"]
-
-                # Explicitly set --default-track to match the source; passing
-                # neither 'yes' nor 'no' lets mkvmerge apply its own defaults,
-                # which often marks the first track of each type as default
-                # even when the source had no such flag.
-                if s.is_default:
-                    cmd += ["--default-track", f"{input_id}:yes"]
-                else:
-                    cmd += ["--default-track", f"{input_id}:no"]
-
-                if s.is_forced:
-                    cmd += ["--forced-track", f"{input_id}:yes"]
-
-                if s.is_hearing_impaired:
-                    cmd += ["--hearing-impaired-flag", f"{input_id}:yes"]
-
-                if s.is_commentary:
-                    cmd += ["--commentary-flag", f"{input_id}:yes"]
-
-                # Colour signalling: forward scan-time colour metadata
-                # (CLPI/STN for Blu-ray, IFO standard for DVD) so the output
-                # carries explicit primaries/transfer/matrix even when the
-                # bitstream declares none (common for DVD MPEG-2 and some
-                # BD AVC streams).
-                if s.stream_type == StreamType.VIDEO:
-                    color_info = _resolve_video_color(s)
-                    if color_info is not None:
-                        c_primaries, c_transfer, c_matrix, c_range = color_info
-                        for opt, code in (
-                            ("--color-primaries", _COLOR_CICP.get(c_primaries)),
-                            (
-                                "--color-transfer-characteristics",
-                                _COLOR_CICP.get(c_transfer),
-                            ),
-                            (
-                                "--color-matrix-coefficients",
-                                _COLOR_CICP.get(c_matrix),
-                            ),
-                            ("--color-range", _COLOR_RANGE.get(c_range)),
-                        ):
-                            if code is not None:
-                                cmd += [opt, f"{input_id}:{code}"]
-                    # Chroma siting: only for codecs with no bitstream
-                    # signalling of their own (see _chroma_siting_for_codec).
-                    siting = _chroma_siting_for_codec(s.codec)
-                    if siting is not None:
-                        cmd += ["--chroma-siting", f"{input_id}:{siting}"]
-
-                # Track name: prefer explicit title, otherwise synthesize
-                # for audio from channel count + codec. Use the accurate channel
-                # count from mkvmerge's identification when available (the
-                # scan-time CLPI count can be wrong, e.g. 5.0 stored as 5.1).
-                track_name = s.title or ""
-                if not track_name and s.stream_type == StreamType.AUDIO:
-                    track_name = _audio_title(s, m.get("ident_channels")) or ""
-                if track_name:
-                    cmd += ["--track-name", f"{input_id}:{track_name}"]
-
-            # Log a warning when we have no ident data to match against.
-            if need_positional_fallback:
-                log_warn(
-                    "mkvmerge track identification unavailable; "
-                    "track properties (language, name) may not be applied correctly."
-                )
-
-            # File-level Matroska Tags (TMDB metadata and/or edition names).
-            # Edition TITLE tags are required for multi-edition rips even when
-            # TMDB tagging is off — they are how players name the editions.
-            if tag_md is not None or title.editions:
-                tags_file = Path(
-                    tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name
-                )
-                _TEMP_FILES.append(tags_file)
-                cleanup.append(tags_file)
-                _write_tags_xml_mkvmerge(tags_file, md=tag_md, editions=title.editions)
-                cmd += ["--global-tags", str(tags_file)]
-
-            # Cover art as Matroska attachments.
-            for art in tag_art:
-                cmd += [
-                    "--attachment-name",
-                    art["filename"],
-                    "--attachment-mime-type",
-                    art["mime"],
-                    "--attachment-description",
-                    art["label"],
-                    str(art["path"]),
-                ]
-
-            # NOTE: We deliberately do *not* force --default-duration based on
-            # the IFO's declared video_attr_t.film_mode bit here. That bit is
-            # a disc-authoring declaration, not a measurement, and is known to
-            # be unreliable on real discs. Forcing a *wrong* constant frame
-            # rate onto content that is actually soft-telecined/VFR (or vice
-            # versa) doesn't just mislabel the output - it corrupts
-            # mkvmerge's internal timing model and can silently truncate a
-            # large fraction of the video with no warning (confirmed: forcing
-            # 30000/1001fps onto genuine 23.976fps pulldown content dropped
-            # ~20% of the video track while audio/container duration looked
-            # unaffected). mkvmerge's own frame-rate autodetection from the
-            # MPEG-2 sequence headers is reliable once the source is cleanly
-            # trimmed to a single edition (see cell/VOBU trimming above) and
-            # should be trusted instead.
-
-            # Input files (with append syntax for seamless branching).
-            # --append-mode track is essential for M2TS/VOB segments that are
-            # parts of one continuous timeline (seamless-branching playlists,
-            # multi-VOB DVD titles). The default 'file' mode offsets ALL tracks
-            # in the appended file by the single highest timestamp across ALL
-            # tracks in the previous file. Since audio (TrueHD especially) runs
-            # slightly longer than video in each segment, 'file' mode offsets
-            # the appended video by audio_end rather than video_end, creating a
-            # tiny video gap at every segment boundary (~0.5ms each, compounding
-            # to tens of ms over a heavily-branched title like Monsters
-            # University with 130+ segments). 'track' mode gives each track its
-            # own offset, keeping video and audio each continuous.
-            #
-            # track_filter_opts is repeated before each appended file so that
-            # mkvmerge only reads the selected tracks from it. Without this,
-            # clips that carry a PID absent from the first clip (e.g. an audio
-            # track that starts later) cause the default append mapping to fail.
-            if len(inputs) > 1:
-                cmd += ["--append-mode", "track"]
-            cmd.append(str(inputs[0]))
-            for clip in inputs[1:]:
-                cmd += ["+"]
-                if track_filter_opts:
-                    cmd += track_filter_opts
-                cmd.append(str(clip))
-
-            # DVD subtitle fallback (.idx): add as a separate input file
-            # (not appended) so its tracks are included in the output, and apply
-            # language/default/forced from the IFO subtitle stream attributes.
-            #
-            # IMPORTANT: Options for the .idx input must come AFTER the main VOB
-            # files but BEFORE the .idx filename in the mkvmerge command.
-            # mkvmerge applies options to the NEXT input file.  If we placed
-            # --language 4:en before the VOB, mkvmerge would look for track 4
-            # in the VOB (which only has tracks 0-3).  Instead, we use the .idx
-            # file's internal track IDs (0, 1, 2) placed just before the .idx.
-            if _sub_fallback_mkv is not None and _sub_fallback_tracks:
-                # Collect subtitle fallback options (applied just before .idx).
-                _sub_opts: list[str] = []
-                if ident_tracks:
-                    for i, ifo_stream in enumerate(_unmatched_ifo_subs):
-                        if i >= len(_sub_fallback_tracks):
-                            log_debug(
-                                f"  Sub fallback: {len(_sub_fallback_tracks)} extracted tracks "
-                                f"< {len(_unmatched_ifo_subs)} IFO streams; stopping"
-                            )
-                            break
-                        # Use .idx internal track IDs (0, 1, 2) not global IDs.
-                        idx_track_id = i
-                        log_debug(
-                            f"  Sub fallback: {ifo_stream.display_id} -> "
-                            f".idx track {idx_track_id} ({ifo_stream.language})"
-                        )
-                        _sub_opts += [
-                            "--language",
-                            f"{idx_track_id}:{ifo_stream.language}",
-                        ]
-                        if ifo_stream.is_default:
-                            _sub_opts += ["--default-track", f"{idx_track_id}:yes"]
-                        else:
-                            _sub_opts += ["--default-track", f"{idx_track_id}:no"]
-                        if ifo_stream.is_forced:
-                            _sub_opts += ["--forced-track", f"{idx_track_id}:yes"]
-                        if ifo_stream.is_hearing_impaired:
-                            _sub_opts += [
-                                "--hearing-impaired-flag",
-                                f"{idx_track_id}:yes",
-                            ]
-                        if ifo_stream.is_commentary:
-                            _sub_opts += ["--commentary-flag", f"{idx_track_id}:yes"]
-                        # Synthesise a track name from the IFO language.
-                        track_name = ifo_stream.title or ""
-                        if not track_name and ifo_stream.language != "und":
-                            lang_name = get_language_name(ifo_stream.language)
-                            if lang_name:
-                                track_name = f"Subtitles ({lang_name})"
-                        if track_name:
-                            _sub_opts += [
-                                "--track-name",
-                                f"{idx_track_id}:{track_name}",
-                            ]
-                else:
-                    log_debug(
-                        "Cannot apply language tags to DVD subtitle fallback "
-                        "(no mkvmerge track identification data)"
-                    )
-
-                # Add subtitle options (they apply to the .idx file which follows).
-                cmd += _sub_opts
-                cleanup.append(_sub_fallback_mkv)
-                cmd.append(str(_sub_fallback_mkv))
-
-            log_info(tr("Muxing: {name}...", name=out_file.name))
-            # Track the in-progress output so Ctrl+C deletes the partial file
-            # instead of leaving a truncated mkv next to completed rips.
-            register_active_output(out_file)
-            rc, output_text, timed_out = self._run_mkvmerge(
-                cmd, out_file.name, title.duration_seconds
-            )
-            if timed_out:
-                raise RipError(
-                    message="mkvmerge timed out after 3600s",
-                    command=cmd,
-                    stderr=output_text,
-                    title=title,
-                    streams=streams,
-                )
-            if rc == 1:
-                log_warn(
-                    "mkvmerge completed with warnings; check the output for details"
-                )
-                # Show mkvmerge warnings to help debug subtitle issues
-                if CONFIG.debug:
-                    for _line in output_text.split("\n"):
-                        stripped = _line.strip()
-                        if "Warning" in stripped or "warning" in stripped:
-                            if "%" not in stripped:  # skip progress lines
-                                log_debug(f"  mkvmerge: {stripped}")
-            elif rc != 0:
-                raise RipError(
-                    message=f"mkvmerge failed ({rc})",
-                    command=cmd,
-                    returncode=rc,
-                    stderr=output_text,
-                    title=title,
-                    streams=streams,
-                )
-            if not out_file.exists():
-                raise RipError(
-                    message="Output missing", command=cmd, title=title, streams=streams
-                )
-
-            self._log_created(out_file)
-            if (
-                tag_md is not None
-                and self.tag_opts is not None
-                and self.tag_opts.save_xml
-            ):
-                try:
-                    xml_path = out_file.with_suffix(".xml")
-                    _write_tag_xml(tag_md, xml_path)
-                    log_info(f"Tag XML written: {xml_path}")
-                except Exception as e:
-                    log_warn(tr("Could not write tag XML: {err}", err=e))
-            if tag_art:
-                labels = ", ".join(a["label"] for a in tag_art)
-                log_info(f"Attached art: {labels}")
-            return out_file
+            return self._execute_mux(title, streams, command, out_file, tag_md, tag_art)
         finally:
-            unregister_active_output(out_file)
-            for f in cleanup:
+            self.active_processes.unregister_output(out_file)
+            for path in input_plan.cleanup:
                 try:
-                    f.unlink()
-                except Exception:
+                    path.unlink()
+                except OSError:
                     pass
 
     @staticmethod
@@ -1224,25 +1481,19 @@ class MKVCreator:
                 return
             display /= 1024
 
-    @staticmethod
-    def _show_progress(label: str, pct: int) -> None:
+    def _show_progress(self, label: str, pct: int) -> None:
         name = label if len(label) <= 24 else label[:21] + "..."
         filled = max(0, min(20, pct // 5))
         bar = "█" * filled + "░" * (20 - filled)
-        set_progress_active(True)
+        self.active_processes.set_progress_active(True)
         sys.stderr.write(f"\rMuxing {name} {bar} {pct:3d}%")
         sys.stderr.flush()
 
     def _run_mkvmerge(
         self, cmd: list[str], label: str, duration: float, timeout: int = 3600
     ) -> tuple[int, str, bool]:
-        """Run mkvmerge, showing live progress parsed from its output.
-
-        mkvmerge writes progress to stderr as ``Progress: N%`` (using ``\r``
-        carriage returns, not newlines). We merge stderr into stdout and read
-        in 512-byte chunks, searching for the ``Progress: N%`` pattern.
-        """
-        proc = subprocess.Popen(
+        """Run mkvmerge, showing live progress parsed from its output."""
+        process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1251,57 +1502,27 @@ class MKVCreator:
         )
         # mkvmerge runs in its own session, so the terminal's Ctrl+C never
         # reaches it. Track its pgid (== its pid under start_new_session) so
-        # the signal handler can kill it instead of relying on a broken-pipe
+        # the signal handler can kill it instead of relying on broken-pipe
         # death after we exit.
-        register_active_muxer(proc.pid)
-        chunks: list[str] = []
-        last_pct = -1
-        carry = ""
-        timed_out = False
-
-        def _kill_tree() -> None:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except Exception:
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except Exception:
-                    proc.kill()
-
-        def _on_timeout() -> None:
-            nonlocal timed_out
-            timed_out = True
-            _kill_tree()
-
-        watchdog = threading.Timer(timeout, _on_timeout)
-        watchdog.daemon = True
-        watchdog.start()
+        self.active_processes.register_muxer(process.pid)
+        timeout_state = _MkvmergeTimeoutState()
+        watchdog = _start_mkvmerge_watchdog(process, timeout_state, timeout)
         try:
-            assert proc.stdout is not None
-            while True:
-                chunk = proc.stdout.read(512)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                # mkvmerge progress: "Progress: 42%" (uses \r not \n)
-                data = carry + chunk
-                m = re.search(r"Progress:\s*(\d+)%", data)
-                if m:
-                    pct = min(100, int(m.group(1)))
-                    if pct != last_pct:
-                        last_pct = pct
-                        self._show_progress(label, pct)
-                carry = data[-64:]
-        except KeyboardInterrupt:
-            _kill_tree()
-            proc.wait()
-            finish_progress_line()
+            assert process.stdout is not None
+            output = _read_mkvmerge_output(
+                process.stdout,
+                lambda percentage: self._show_progress(label, percentage),
+            )
+        except BaseException as exc:
+            _kill_mkvmerge_process(process)
+            if isinstance(exc, KeyboardInterrupt):
+                process.wait()
+                self.active_processes.finish_progress_line()
             raise
         finally:
             watchdog.cancel()
-            unregister_active_muxer(proc.pid)
-        rc = proc.wait()
-        finish_progress_line()
-        return rc, "".join(chunks), timed_out
+            self.active_processes.unregister_muxer(process.pid)
+
+        returncode = process.wait()
+        self.active_processes.finish_progress_line()
+        return returncode, output, timeout_state.timed_out

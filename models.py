@@ -59,25 +59,46 @@ class _Console:
             self._inner.print(*args, **kwargs)
 
 
-# =============================================================================
-# Global mutable state
-# =============================================================================
+@dataclass
+class RuntimeLogger:
+    """Owns log verbosity and console rendering for one runtime state."""
 
-_TEMP_DIRS: list[Path] = []
-_TEMP_FILES: list[Path] = []
-_DIRECT_MOUNT_CLEANUP: list[Path] = []
-_SYMLINK_CLEANUP: list[Path] = []
-# Process-group IDs of in-flight muxers and the output files they are
-# writing. mkvmerge is started in its own session (start_new_session=True),
-# so a terminal Ctrl+C never reaches it directly; the SIGINT/SIGTERM handler
-# kills it from these registries and deletes the partial output before
-# cleaning up the tracked temp files.
-_ACTIVE_MUXER_PGIDS: list[int] = []
-_ACTIVE_OUTPUT_FILES: list[Path] = []
-# True while a carriage-return progress line (the muxing bar) is on screen
-# without a trailing newline; the signal handler finishes the line so the
-# shell prompt does not appear mid-line after Ctrl+C.
-_progress_active = False
+    console: _Console = field(default_factory=_Console)
+    debug_enabled: bool = False
+
+    def configure(self, config: Config) -> None:
+        # Config is declared later; runtime annotations defer resolution.
+        self.debug_enabled = config.debug
+
+    def set_debug(self, enabled: bool) -> None:
+        self.debug_enabled = enabled
+
+    def info(self, message: str) -> None:
+        if HAS_RICH:
+            self.console.print(f"[green][INFO][/green] {message}")
+        else:
+            print(f"[INFO] {message}")
+
+    def warn(self, message: str) -> None:
+        if HAS_RICH:
+            self.console.print(f"[yellow][WARN][/yellow] {message}")
+        else:
+            print(f"[WARN] {message}", file=sys.stderr)
+
+    def error(self, message: str) -> None:
+        if HAS_RICH:
+            self.console.print(f"[red][ERROR][/red] {message}")
+        else:
+            print(f"[ERROR] {message}", file=sys.stderr)
+
+    def debug(self, message: str) -> None:
+        if not self.debug_enabled:
+            return
+        if HAS_RICH:
+            self.console.print(f"[blue][DEBUG][/blue] {message}")
+        else:
+            print(f"[DEBUG] {message}")
+
 
 # Check at module level whether mkvmerge is on PATH.
 _HAS_MKVMERGE: bool = shutil.which("mkvmerge") is not None
@@ -135,109 +156,74 @@ class _VTSSectorOffset:
 # =============================================================================
 
 
-def cleanup_temp_dirs(*, interrupt: bool = False) -> None:
-    """Delete tracked temp dirs/files, unmount direct mounts, remove symlinks.
+def _remove_temp_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
-    ``interrupt=True`` is used from the signal handler, where cleanup must
-    never block waiting on a ``sudo`` password prompt.
-    """
-    for d in _TEMP_DIRS:
-        try:
-            for f in d.iterdir():
-                f.unlink(missing_ok=True)
-            d.rmdir()
-        except Exception:
-            pass
-    for f in _TEMP_FILES:
-        try:
-            f.unlink(missing_ok=True)
-        except Exception:
-            pass
-    for mnt in _DIRECT_MOUNT_CLEANUP:
-        try:
-            cmd = ["sudo", "umount", str(mnt)]
-            if interrupt:
-                # Fail immediately rather than prompting for a password while
-                # the user is waiting for Ctrl+C to shut the program down.
-                cmd.insert(1, "-n")
-            _ = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=30,
-                stdin=subprocess.DEVNULL if interrupt else None,
-            )
-            mnt.rmdir()
-        except Exception:
-            pass
-    for s in _SYMLINK_CLEANUP:
-        try:
-            s.unlink()
-        except Exception:
-            pass
+
+def _unmount_direct_mount(mountpoint: Path, *, interrupt: bool) -> None:
+    command = ["sudo", "umount", str(mountpoint)]
+    if interrupt:
+        # Fail immediately rather than prompting for a password while the user
+        # waits for Ctrl+C shutdown cleanup.
+        command.insert(1, "-n")
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL if interrupt else None,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if result.returncode != 0:
+        return
+    try:
+        mountpoint.rmdir()
+    except OSError:
+        pass
+
+
+def cleanup_temp_dirs(*, interrupt: bool = False) -> None:
+    """Delete tracked resources using the process runtime state."""
+    RUNTIME_STATE.cleanup.cleanup(interrupt=interrupt)
 
 
 def register_active_muxer(pgid: int) -> None:
     """Track a running muxer process group so SIGINT/SIGTERM can kill it."""
-    _ACTIVE_MUXER_PGIDS.append(pgid)
+    RUNTIME_STATE.active_processes.register_muxer(pgid)
 
 
 def unregister_active_muxer(pgid: int) -> None:
     """Stop tracking *pgid* (mux finished, failed, or was already killed)."""
-    try:
-        _ACTIVE_MUXER_PGIDS.remove(pgid)
-    except ValueError:
-        pass
+    RUNTIME_STATE.active_processes.unregister_muxer(pgid)
 
 
 def register_active_output(out_file: Path) -> None:
     """Track an in-progress output file so Ctrl+C deletes the partial mux."""
-    _ACTIVE_OUTPUT_FILES.append(out_file)
+    RUNTIME_STATE.active_processes.register_output(out_file)
 
 
 def unregister_active_output(out_file: Path) -> None:
     """Stop tracking *out_file* (mux completed)."""
-    try:
-        _ACTIVE_OUTPUT_FILES.remove(out_file)
-    except ValueError:
-        pass
+    RUNTIME_STATE.active_processes.unregister_output(out_file)
 
 
 def _kill_active_muxers() -> None:
     """SIGKILL in-flight muxers and delete their partial output files."""
-    for pgid in _ACTIVE_MUXER_PGIDS:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except OSError:
-            try:
-                os.kill(pgid, signal.SIGKILL)
-            except OSError:
-                pass
-    _ACTIVE_MUXER_PGIDS.clear()
-    for out in _ACTIVE_OUTPUT_FILES:
-        try:
-            out.unlink(missing_ok=True)
-        except Exception:
-            pass
-    _ACTIVE_OUTPUT_FILES.clear()
+    RUNTIME_STATE.active_processes.kill_muxers()
 
 
 def set_progress_active(active: bool) -> None:
     """Mark whether a carriage-return progress line is currently on screen."""
-    global _progress_active
-    _progress_active = active
+    RUNTIME_STATE.active_processes.set_progress_active(active)
 
 
 def finish_progress_line() -> None:
     """Terminate an on-screen progress line with a newline, if any."""
-    global _progress_active
-    if not _progress_active:
-        return
-    try:
-        sys.stderr.write("\n")
-        sys.stderr.flush()
-    except Exception:
-        pass
-    _progress_active = False
+    RUNTIME_STATE.active_processes.finish_progress_line()
 
 
 _ = atexit.register(cleanup_temp_dirs)
@@ -436,8 +422,8 @@ class Stream:
     height: int | None = None
     type_index: int = 0
     # MPEG sub-stream ID for DVD/PS sources (audio 0x80-0x8F, subpicture
-    # 0x20-0x3F). ffmpeg enumerates PS streams by first packet appearance, NOT
-    # by ID, so the per-type index above does NOT correspond to the DVD stream
+    # 0x20-0x3F). some media tools enumerate PS streams by first packet
+    # appearance, not by ID, so the per-type index above does NOT correspond to the DVD stream
     # number - we keep the ID to look up the authoritative IFO language.
     sub_id: int | None = None
     # Blu-ray stream PID (e.g. 0x1011 for video, 0x1100+ for audio, 0x1200+ for
@@ -556,9 +542,9 @@ class Title:
     # or from bdmt_eng.xml (<catalogNumber>) for Blu-ray.
     disc_barcode: str | None = None
     # DVD VTS .IFO stream-ID -> language maps. Set during DVD scanning so the
-    # muxer can label streams correctly: ffmpeg enumerates PS streams by first
-    # packet appearance (not by ID), so per-type positional order is wrong and
-    # we must look languages up by the MPEG sub-stream ID ffmpeg reports.
+    # muxer can label streams correctly: some media tools enumerate PS streams by
+    # first packet appearance (not by ID), so per-type positional order is
+    # wrong and we must look languages up by the MPEG sub-stream ID.
     dvd_audio_lang: dict[int, str] = field(default_factory=dict)
     dvd_sub_lang: dict[int, str] = field(default_factory=dict)
     # DVD VTS .IFO stream attributes (codec, channels, Dolby Surround)
@@ -647,10 +633,11 @@ class Title:
 # =============================================================================
 
 
+@dataclass
 class Config:
     output_dir: Path = Path(".")
     temp_dir: Path | None = None
-    preferred_languages: list[str] = ["eng", "en", "und"]
+    preferred_languages: list[str] = field(default_factory=lambda: ["eng", "en", "und"])
     keep_all_audio: bool = True
     keep_all_subtitles: bool = True
     include_forced: bool = True
@@ -706,45 +693,139 @@ class TagOptions:
 
 
 # =============================================================================
-# Global instances
-# =============================================================================
-
-CONFIG = Config()
-TAG_OPTS = TagOptions()
-
-_console = _Console()
-
-
-# =============================================================================
-# Logging
+# Runtime state
 # =============================================================================
 
 
-def log_info(msg: str) -> None:
-    if HAS_RICH:
-        _console.print(f"[green][INFO][/green] {msg}")
-    else:
-        print(f"[INFO] {msg}")
+@dataclass
+class RuntimeCleanup:
+    """Owns temporary filesystem resources and their shutdown cleanup."""
+
+    temp_dirs: list[Path] = field(default_factory=list)
+    temp_files: list[Path] = field(default_factory=list)
+    direct_mounts: list[Path] = field(default_factory=list)
+    symlinks: list[Path] = field(default_factory=list)
+
+    def register_temp_dir(self, path: Path) -> Path:
+        self.temp_dirs.append(path)
+        return path
+
+    def register_temp_file(self, path: Path) -> Path:
+        self.temp_files.append(path)
+        return path
+
+    def register_direct_mount(self, path: Path) -> Path:
+        self.direct_mounts.append(path)
+        return path
+
+    def unregister_direct_mount(self, path: Path) -> None:
+        try:
+            self.direct_mounts.remove(path)
+        except ValueError:
+            pass
+
+    def register_symlink(self, path: Path) -> Path:
+        self.symlinks.append(path)
+        return path
+
+    def cleanup(self, *, interrupt: bool = False) -> None:
+        """Delete tracked resources; interrupt mode never prompts for sudo."""
+        for directory in dict.fromkeys(self.temp_dirs):
+            shutil.rmtree(directory, ignore_errors=True)
+        for file_path in dict.fromkeys(self.temp_files):
+            _remove_temp_file(file_path)
+        for mountpoint in dict.fromkeys(self.direct_mounts):
+            _unmount_direct_mount(mountpoint, interrupt=interrupt)
+        for symlink in dict.fromkeys(self.symlinks):
+            _remove_temp_file(symlink)
 
 
-def log_warn(msg: str) -> None:
-    if HAS_RICH:
-        _console.print(f"[yellow][WARN][/yellow] {msg}")
-    else:
-        print(f"[WARN] {msg}", file=sys.stderr)
+@dataclass
+class ActiveProcesses:
+    """Owns in-flight muxers, partial outputs, and progress-line state."""
+
+    muxer_pgids: list[int] = field(default_factory=list)
+    output_files: list[Path] = field(default_factory=list)
+    progress_active: bool = False
+
+    def register_muxer(self, pgid: int) -> None:
+        self.muxer_pgids.append(pgid)
+
+    def unregister_muxer(self, pgid: int) -> None:
+        try:
+            self.muxer_pgids.remove(pgid)
+        except ValueError:
+            pass
+
+    def register_output(self, out_file: Path) -> None:
+        self.output_files.append(out_file)
+
+    def unregister_output(self, out_file: Path) -> None:
+        try:
+            self.output_files.remove(out_file)
+        except ValueError:
+            pass
+
+    def kill_muxers(self) -> None:
+        """SIGKILL in-flight muxers and delete partial output files."""
+        for pgid in self.muxer_pgids:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                try:
+                    os.kill(pgid, signal.SIGKILL)
+                except OSError:
+                    pass
+        self.muxer_pgids.clear()
+        for out_file in self.output_files:
+            try:
+                out_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self.output_files.clear()
+
+    def set_progress_active(self, active: bool) -> None:
+        self.progress_active = active
+
+    def finish_progress_line(self) -> None:
+        if not self.progress_active:
+            return
+        try:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+        except OSError:
+            pass
+        self.progress_active = False
 
 
-def log_error(msg: str) -> None:
-    if HAS_RICH:
-        _console.print(f"[red][ERROR][/red] {msg}")
-    else:
-        print(f"[ERROR] {msg}", file=sys.stderr)
+@dataclass
+class RuntimeState:
+    """Mutable process-wide state, grouped for staged dependency injection."""
+
+    config: Config = field(default_factory=Config)
+    tag_options: TagOptions = field(default_factory=TagOptions)
+    logger: RuntimeLogger = field(default_factory=RuntimeLogger)
+    cleanup: RuntimeCleanup = field(default_factory=RuntimeCleanup)
+    active_processes: ActiveProcesses = field(default_factory=ActiveProcesses)
+
+    def __post_init__(self) -> None:
+        self.logger.configure(self.config)
 
 
-def log_debug(msg: str) -> None:
-    if not CONFIG.debug:
-        return
-    if HAS_RICH:
-        _console.print(f"[blue][DEBUG][/blue] {msg}")
-    else:
-        print(f"[DEBUG] {msg}")
+RUNTIME_STATE = RuntimeState()
+
+
+def log_info(message: str) -> None:
+    RUNTIME_STATE.logger.info(message)
+
+
+def log_warn(message: str) -> None:
+    RUNTIME_STATE.logger.warn(message)
+
+
+def log_error(message: str) -> None:
+    RUNTIME_STATE.logger.error(message)
+
+
+def log_debug(message: str) -> None:
+    RUNTIME_STATE.logger.debug(message)

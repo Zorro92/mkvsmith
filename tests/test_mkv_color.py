@@ -5,6 +5,8 @@ from mkv import (
     _COLOR_CICP,
     _COLOR_RANGE,
     _chroma_siting_for_codec,
+    _finalize_video_color,
+    _infer_video_color_fields,
     _resolve_video_color,
 )
 
@@ -121,3 +123,29 @@ def test_codecs_with_vui_signalling_get_no_chroma_siting() -> None:
     # could override a real bitstream value, so no option is emitted.
     for codec in ("h264", "h265", "hevc", "vc1", "mpeg1video"):
         assert _chroma_siting_for_codec(codec) is None, codec
+
+
+def test_infer_video_color_fields_covers_hd_sd_and_unknown_heights() -> None:
+    assert _infer_video_color_fields(2160) == ("bt709", "bt709", "bt709")
+    assert _infer_video_color_fields(576) == (
+        "bt470bg",
+        "bt709",
+        "bt470bg",
+    )
+    assert _infer_video_color_fields(480) == (
+        "smpte170m",
+        "bt709",
+        "smpte170m",
+    )
+    assert _infer_video_color_fields(None) is None
+    assert _infer_video_color_fields(400) is None
+
+
+def test_finalize_video_color_preserves_partial_fields() -> None:
+    assert _finalize_video_color(None, None, None, "tv") is None
+    assert _finalize_video_color("bt709", None, None, "pc") == (
+        "bt709",
+        "unknown",
+        "unknown",
+        "pc",
+    )

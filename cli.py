@@ -25,16 +25,22 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import final
 
 import dvdifo
 from models import (
-    CONFIG,
-    TAG_OPTS,
+    Config,
+    RuntimeState,
+    TagOptions,
+    RUNTIME_STATE,
     DEFAULT_TAG_METADATA,
+    Stream,
     StreamType,
     Title,
     RipError,
@@ -54,7 +60,7 @@ from i18n import (
 )
 from settings import SETTINGS_PATH, load_settings, save_settings
 from scan import Scanner, _get_notable_titles, pick_main_feature
-from mkv import MKVCreator, select_streams
+from mkv import MKVCreator
 
 __version__ = "0.1.0"  # keep in sync with pyproject.toml [project].version
 
@@ -67,14 +73,18 @@ __version__ = "0.1.0"  # keep in sync with pyproject.toml [project].version
 def get_terminal_width() -> int:
     try:
         return max(shutil.get_terminal_size().columns, 40)
-    except Exception:
+    except OSError:
         return 80
 
 
-def display_titles(titles: list[Title], disc_name: str | None = None) -> None:
+def display_titles(
+    titles: list[Title],
+    disc_name: str | None = None,
+    config: Config | None = None,
+) -> None:
     w = get_terminal_width()
-    visible, hidden = _get_notable_titles(titles)
-    main_idx = pick_main_feature(titles)
+    visible, hidden = _get_notable_titles(titles, config)
+    main_idx = pick_main_feature(titles, config)
     nw = max(w - 28, 10)
     rule_w = min(w, nw + 28)
     print("\n" + "═" * rule_w)
@@ -102,257 +112,358 @@ def display_titles(titles: list[Title], disc_name: str | None = None) -> None:
     print("═" * rule_w + f"\n{total_msg}\n")
 
 
+def _stream_flags(stream: Stream) -> str:
+    if not stream.is_default and not stream.is_forced:
+        return ""
+    labels = ",".join(
+        label
+        for label in (
+            "DEF" if stream.is_default else "",
+            "FOR" if stream.is_forced else "",
+        )
+        if label
+    )
+    return f" [{labels}]"
+
+
+def _video_stream_line(stream: Stream) -> str:
+    dimensions = f"{stream.width}x{stream.height}" if stream.width else "?"
+    return (
+        f"  {stream.codec_display:<14} {dimensions:<10} "
+        f"{stream.language_display}{_stream_flags(stream)}"
+    )
+
+
+def _subtitle_extension_info(title: Title, stream: Stream) -> str:
+    if stream.sub_id is None or stream.sub_id not in title.dvd_subp_attrs:
+        return ""
+    extension_label = title.dvd_subp_attrs[stream.sub_id].code_extension_label
+    if extension_label in ("", "unspecified", "normal"):
+        return ""
+    return f" ({extension_label})"
+
+
+def _non_video_stream_line(title: Title, stream: Stream) -> str:
+    channels = f"{stream.channels}ch" if stream.channels else "-"
+    stream_title = f" - {stream.title}" if stream.title else ""
+    return (
+        f"  {stream.display_id:<5} {stream.codec_display:<14} {channels:<6} "
+        f"{stream.language_display}{stream_title}"
+        f"{_subtitle_extension_info(title, stream)}{_stream_flags(stream)}"
+    )
+
+
+def _print_stream_group(
+    title: Title,
+    stream_type: StreamType,
+    streams: list[Stream],
+    label: str,
+) -> None:
+    if not streams:
+        return
+    print(f"[{label}]")
+    for stream in streams:
+        if stream_type == StreamType.VIDEO:
+            print(_video_stream_line(stream))
+        else:
+            print(_non_video_stream_line(title, stream))
+    print()
+
+
 def display_title_details(title: Title) -> None:
-    w = get_terminal_width()
+    width = get_terminal_width()
     print(
-        f"\n{'═' * min(w, 60)}\n  "
+        f"\n{'═' * min(width, 60)}\n  "
         + tr("Title {idx}: {name}", idx=title.index, name=title.name)
-        + f"\n{'═' * min(w, 60)}\n"
+        + f"\n{'═' * min(width, 60)}\n"
         + tr("Source: {name}", name=title.source_file.name)
         + "\n"
         + tr("Duration: {dur}", dur=title.duration_display)
         + "\n"
     )
-    for stype, streams, label in [
+    stream_groups = [
         (StreamType.VIDEO, title.video_streams, "VIDEO"),
         (StreamType.AUDIO, title.audio_streams, "AUDIO"),
         (StreamType.SUBTITLE, title.subtitle_streams, "SUBS"),
-    ]:
-        if not streams:
-            continue
-        print(f"[{label}]")
-        for s in streams:
-            flags = (
-                " ["
-                + ",".join(
-                    ["DEF" if s.is_default else "", "FOR" if s.is_forced else ""]
-                ).strip(",")
-                + "]"
-                if (s.is_default or s.is_forced)
-                else ""
-            )
-            if stype == StreamType.VIDEO:
-                print(
-                    f"  {s.codec_display:<14} {f'{s.width}x{s.height}' if s.width else '?':<10} {s.language_display}{flags}"
-                )
-            else:
-                # Append subpicture code extension label when meaningful.
-                ext_info = ""
-                if (
-                    stype == StreamType.SUBTITLE
-                    and s.sub_id is not None
-                    and s.sub_id in title.dvd_subp_attrs
-                ):
-                    ext_label = title.dvd_subp_attrs[s.sub_id].code_extension_label
-                    if ext_label not in ("", "unspecified", "normal"):
-                        ext_info = f" ({ext_label})"
-                print(
-                    f"  {s.display_id:<5} {s.codec_display:<14} {f'{s.channels}ch' if s.channels else '-':<6} {s.language_display}{' - ' + s.title if s.title else ''}{ext_info}{flags}"
-                )
-        print()
+    ]
+    for stream_type, streams, label in stream_groups:
+        _print_stream_group(title, stream_type, streams, label)
 
 
 # =============================================================================
 # CLI & Interactive
 # =============================================================================
-def interactive_mode(titles: list[Title], disc_name: str | None = None) -> None:
-    from tagger import (
-        _prompt_art_choice,
-        _resolve_tmdb_key,
-        _tag_confirm,
-    )
+@dataclass(frozen=True)
+class _InteractiveTagState:
+    tag_from_flag: bool
+    offer_tag: bool
+    art_from_flag: str | None
+    options: TagOptions = field(default_factory=lambda: RUNTIME_STATE.tag_options)
 
-    display_titles(titles, disc_name)
-    creator = MKVCreator(CONFIG.output_dir, TAG_OPTS)
-    # Whether tagging was enabled with --tag (always tag, no prompt).
-    tag_from_flag = TAG_OPTS.enabled
-    # Whether to OFFER tagging per-rip: a key is available and not opted out.
-    offer_tag = (not TAG_OPTS.no_tag) and bool(_resolve_tmdb_key(TAG_OPTS))
-    # Whether artwork was set on the CLI (None == not set) -> prompt otherwise.
-    art_from_flag = TAG_OPTS.art
-    if offer_tag and not tag_from_flag:
-        print(tr("TMDB tagging available (key found) -- you'll be asked per rip."))
-    print()
+    @classmethod
+    def from_options(cls, opts: TagOptions) -> "_InteractiveTagState":
+        from tagger import _resolve_tmdb_key
 
-    def prep_tag_for_rip() -> None:
-        """Decide per-rip whether to tag (and which art) in interactive mode."""
-        if tag_from_flag:
+        return cls(
+            tag_from_flag=opts.enabled,
+            offer_tag=(not opts.no_tag) and bool(_resolve_tmdb_key(opts)),
+            art_from_flag=opts.art,
+            options=opts,
+        )
+
+    def announce(self) -> None:
+        if self.offer_tag and not self.tag_from_flag:
+            print(tr("TMDB tagging available (key found) -- you'll be asked per rip."))
+
+    def prepare_for_rip(self) -> None:
+        """Decide per-rip whether to tag and which artwork to attach."""
+        from tagger import _prompt_art_choice, _tag_confirm
+
+        if self.tag_from_flag:
             want = True
-        elif offer_tag:
+        elif self.offer_tag:
             want = _tag_confirm(tr("Look up & tag this rip on TMDB?"))
         else:
             want = False
-        TAG_OPTS.enabled = want
-        if want and art_from_flag is None:
-            TAG_OPTS.art = _prompt_art_choice()
+        self.options.enabled = want
+        if want and self.art_from_flag is None:
+            self.options.art = _prompt_art_choice()
 
-    has_episodes = any(t.dvd_episode_number is not None for t in titles)
 
-    # Seamless-branching edition-group hints are experimental; only detected
-    # (and acted on) when --debug is set.
+def _interactive_edition_groups(titles: list[Title], debug: bool) -> list[list[Title]]:
     edition_groups: list[list[Title]] = []
-    if CONFIG.debug:
-        from scan import _detect_edition_groups
+    if not debug:
+        return edition_groups
 
-        edition_groups = _detect_edition_groups(titles)
-        for group in edition_groups:
-            idxs = ", ".join(str(titles.index(t)) for t in group)
-            print(
+    from scan import _detect_edition_groups
+
+    edition_groups = _detect_edition_groups(titles)
+    for group in edition_groups:
+        indices = ", ".join(str(titles.index(title)) for title in group)
+        print(
+            tr(
+                "Titles {idxs} look like editions of the same movie - "
+                "combine them with: me {idxs}",
+                idxs=indices,
+            )
+        )
+    return edition_groups
+
+
+@final
+class _InteractiveRipper:
+    def __init__(
+        self,
+        titles: list[Title],
+        creator: MKVCreator,
+        tagging: _InteractiveTagState,
+        edition_groups: list[list[Title]],
+        debug: bool,
+    ):
+        self.titles = titles
+        self.creator = creator
+        self.tagging = tagging
+        self.edition_groups = edition_groups
+        self.debug = debug
+
+    def rip_index(self, idx: int, stream_ids: list[str] | None = None) -> None:
+        if not 0 <= idx < len(self.titles):
+            log_warn(tr("Invalid: {idx}", idx=idx))
+            return
+        self.tagging.prepare_for_rip()
+        try:
+            self.creator.create_mkv(
+                self.titles[idx],
+                self.creator.select_streams(self.titles[idx], stream_ids),
+            )
+        except RipError as exc:
+            print(exc.format_verbose())
+
+    def multi_edition_indices(self, args: list[str]) -> list[int] | None:
+        if not args:
+            if not self.edition_groups:
+                log_error(tr("No edition groups detected; specify titles: me N N ..."))
+                return None
+            best = max(
+                self.edition_groups,
+                key=lambda group: sum(t.duration_seconds for t in group),
+            )
+            indices = [self.titles.index(title) for title in best]
+            log_info(
                 tr(
-                    "Titles {idxs} look like editions of the same movie - "
-                    "combine them with: me {idxs}",
-                    idxs=idxs,
+                    "Using detected edition group: {idxs}",
+                    idxs=", ".join(str(index) for index in indices),
                 )
             )
+            return indices
 
-    while True:
+        indices: list[int] = []
+        for token in args:
+            try:
+                indices.append(int(token))
+            except ValueError:
+                log_error(tr("Num required"))
+                return None
+        return indices
+
+    def rip_multi_edition(self, indices: list[int]) -> None:
+        if len(indices) < 2:
+            log_error(tr("Multi-edition needs at least two titles"))
+            return
+        try:
+            combined = _prepare_multi_edition(self.titles, indices)
+        except ValueError as exc:
+            log_error(str(exc))
+            return
+        names = _prompt_edition_names(self.titles, indices)
+        if names != _default_edition_names(self.titles, indices):
+            combined = _prepare_multi_edition(self.titles, indices, names)
+        self.tagging.prepare_for_rip()
+        try:
+            self.creator.create_mkv(combined, self.creator.select_streams(combined))
+        except RipError as exc:
+            print(exc.format_verbose())
+
+    def rip_collection(self, selected_titles: list[Title]) -> tuple[int, int]:
+        self.tagging.prepare_for_rip()
+        ok = failed = 0
+        for title in selected_titles:
+            try:
+                self.creator.create_mkv(title)
+                ok += 1
+            except RipError as exc:
+                print(exc.format_verbose())
+                failed += 1
+        return ok, failed
+
+    def _handle_rip_command(self, command: str, args: list[str]) -> None:
+        if command == "r":
+            if not args:
+                log_error(tr("Usage: r N  (e.g. 'r 1')"))
+                return
+            target, stream_args = args[0], args[1:]
+        else:
+            target, stream_args = command[1:], args
+        try:
+            idx = int(target)
+        except ValueError:
+            log_error(tr("Num required"))
+            return
+        self.rip_index(idx, stream_args if stream_args else None)
+
+    def _handle_main_feature(self) -> None:
+        idx = pick_main_feature(self.titles, self.creator.config)
+        if idx < 0:
+            log_warn(tr("No titles"))
+            return
+        log_info(
+            tr(
+                "Main feature: #{idx} {name}",
+                idx=idx,
+                name=self.titles[idx].name,
+            )
+        )
+        self.rip_index(idx)
+
+    def _handle_all(self) -> None:
+        ok, failed = self.rip_collection(self.titles)
+        print(tr("\nDone: {ok} ok, {fail} failed", ok=ok, fail=failed))
+
+    def _handle_episodes(self) -> None:
+        episode_titles = [
+            title for title in self.titles if title.dvd_episode_number is not None
+        ]
+        if not episode_titles:
+            log_warn(tr("No episodes detected on this disc"))
+            return
+        log_info(tr("Ripping {n} episode(s)...", n=len(episode_titles)))
+        ok, failed = self.rip_collection(episode_titles)
+        print(tr("\nDone: {ok} ok, {fail} failed", ok=ok, fail=failed))
+
+    def _dispatch(self, command: str, args: list[str]) -> bool:
+        if command in ("q", "quit", "exit"):
+            log_info(tr("Goodbye!"))
+            return False
+        if command.isdigit():
+            idx = int(command)
+            if 0 <= idx < len(self.titles):
+                display_title_details(self.titles[idx])
+            else:
+                log_warn(tr("Invalid: {idx}", idx=idx))
+        elif command == "r" or (command.startswith("r") and command[1:].isdigit()):
+            self._handle_rip_command(command, args)
+        elif command == "rm":
+            self._handle_main_feature()
+        elif command == "me" and self.debug:
+            indices = self.multi_edition_indices(args)
+            if indices:
+                self.rip_multi_edition(indices)
+        elif command == "ra":
+            self._handle_all()
+        elif command == "re":
+            self._handle_episodes()
+        else:
+            log_warn(tr("Unknown: {cmd}", cmd=command))
+        return True
+
+    def _print_prompt(self, has_episodes: bool) -> None:
         if has_episodes:
             print(
                 tr(
-                    "[n]=details  r N=rip title N  re=rip all episodes  ra=rip all  q=quit"
+                    "[n]=details  r N=rip title N  re=rip all episodes  "
+                    "ra=rip all  q=quit"
                 )
             )
         else:
             print(
                 tr("[n]=details  r N=rip title N  rm=main feature  ra=rip all  q=quit")
             )
-        if edition_groups:
+        if self.edition_groups:
             print(tr("me N N ...=multi-edition rip (no args = auto-detect)"))
-        try:
-            ci = input("mkvsmith> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not ci:
-            continue
-        p = ci.split()
-        c, a = p[0], p[1:]
-        if c in ("q", "quit", "exit"):
-            log_info(tr("Goodbye!"))
-            break
-        elif c.isdigit():
-            idx = int(c)
-            if 0 <= idx < len(titles):
-                display_title_details(titles[idx])
-            else:
-                log_warn(tr("Invalid: {idx}", idx=idx))
-        elif c == "r" or (c.startswith("r") and c[1:].isdigit()):
-            if c == "r":
-                if not a:
-                    log_error(tr("Usage: r N  (e.g. 'r 1')"))
-                    continue
-                num_str, rest = a[0], a[1:]
-            else:
-                num_str, rest = c[1:], a
+
+    def run(self) -> None:
+        has_episodes = any(
+            title.dvd_episode_number is not None for title in self.titles
+        )
+        while True:
+            self._print_prompt(has_episodes)
             try:
-                idx = int(num_str)
-            except ValueError:
-                log_error(tr("Num required"))
+                command_line = input("mkvsmith> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if not command_line:
                 continue
-            if 0 <= idx < len(titles):
-                prep_tag_for_rip()
-                try:
-                    creator.create_mkv(
-                        titles[idx], select_streams(titles[idx], rest if rest else None)
-                    )
-                except RipError as e:
-                    print(e.format_verbose())
-            else:
-                log_warn(tr("Invalid: {idx}", idx=idx))
-        elif c == "rm":
-            idx = pick_main_feature(titles)
-            if idx < 0:
-                log_warn(tr("No titles"))
-                continue
-            log_info(tr("Main feature: #{idx} {name}", idx=idx, name=titles[idx].name))
-            prep_tag_for_rip()
-            try:
-                creator.create_mkv(titles[idx], select_streams(titles[idx]))
-            except RipError as e:
-                print(e.format_verbose())
-        elif c == "me" and CONFIG.debug:
-            if not a:
-                if not edition_groups:
-                    log_error(
-                        tr("No edition groups detected; specify titles: me N N ...")
-                    )
-                    continue
-                # Auto-detect: use the largest group.
-                best = max(
-                    edition_groups, key=lambda g: sum(t.duration_seconds for t in g)
-                )
-                indices = [titles.index(t) for t in best]
-                log_info(
-                    tr(
-                        "Using detected edition group: {idxs}",
-                        idxs=", ".join(str(i) for i in indices),
-                    )
-                )
-            else:
-                indices = []
-                for tok in a:
-                    try:
-                        indices.append(int(tok))
-                    except ValueError:
-                        log_error(tr("Num required"))
-                        indices = []
-                        break
-                if not indices:
-                    continue
-            if len(indices) < 2:
-                log_error(tr("Multi-edition needs at least two titles"))
-                continue
-            # Validate and build with default names first so bad selections
-            # fail before the user types anything.
-            try:
-                combined = _prepare_multi_edition(titles, indices)
-            except ValueError as e:
-                log_error(str(e))
-                continue
-            names = _prompt_edition_names(titles, indices)
-            if names != _default_edition_names(titles, indices):
-                combined = _prepare_multi_edition(titles, indices, names)
-            prep_tag_for_rip()
-            try:
-                creator.create_mkv(combined, select_streams(combined))
-            except RipError as e:
-                print(e.format_verbose())
-        elif c == "ra":
-            prep_tag_for_rip()
-            s, f = 0, 0
-            for title in titles:
-                try:
-                    creator.create_mkv(title)
-                    s += 1
-                except RipError as e:
-                    print(e.format_verbose())
-                    f += 1
-            print(tr("\nDone: {ok} ok, {fail} failed", ok=s, fail=f))
-        elif c == "re":
-            ep_titles = [t for t in titles if t.dvd_episode_number is not None]
-            if not ep_titles:
-                log_warn(tr("No episodes detected on this disc"))
-                continue
-            prep_tag_for_rip()
-            log_info(tr("Ripping {n} episode(s)...", n=len(ep_titles)))
-            s, f = 0, 0
-            for ep in ep_titles:
-                try:
-                    creator.create_mkv(ep)
-                    s += 1
-                except RipError as e:
-                    print(e.format_verbose())
-                    f += 1
-            print(tr("\nDone: {ok} ok, {fail} failed", ok=s, fail=f))
-        else:
-            log_warn(tr("Unknown: {cmd}", cmd=c))
+            parts = command_line.split()
+            if not self._dispatch(parts[0], parts[1:]):
+                return
 
 
-def parse_args() -> tuple[
-    Path | None, str, int | None, list[str] | None, list[int] | None
-]:
-    import argparse
+def interactive_mode(
+    titles: list[Title],
+    disc_name: str | None = None,
+    runtime_state: RuntimeState | None = None,
+) -> None:
+    state = runtime_state or RUNTIME_STATE
+    display_titles(titles, disc_name, state.config)
+    creator = MKVCreator(
+        state.config.output_dir,
+        state.tag_options,
+        runtime_state=state,
+    )
+    tagging = _InteractiveTagState.from_options(state.tag_options)
+    tagging.announce()
+    print()
+    _InteractiveRipper(
+        titles,
+        creator,
+        tagging,
+        _interactive_edition_groups(titles, state.logger.debug_enabled),
+        state.logger.debug_enabled,
+    ).run()
 
+
+def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=tr("MakeMKV-like ripper using mkvmerge (MKVToolNix) + 7z")
     )
@@ -491,53 +602,98 @@ def parse_args() -> tuple[
         default=None,
         help="UI language code (e.g. en, es); overrides the settings file",
     )
-    a = p.parse_args()
-    # argparse attributes are untyped (Any); narrow them once so the return
-    # statements below type-check soundly.
+    return p
+
+
+def _apply_parsed_args(
+    a: argparse.Namespace,
+    runtime_state: RuntimeState | None = None,
+) -> tuple[Path | None, list[str] | None, int | None, int | None]:
+    state = runtime_state or RUNTIME_STATE
+    config = state.config
+    tag_options = state.tag_options
     src: Path | None = a.source
     sids: list[str] | None = a.streams
     details: int | None = a.details
     title_num: int | None = a.title
-    CONFIG.output_dir, CONFIG.preferred_languages = a.output, a.lang.split(",")
-    CONFIG.keep_all_audio, CONFIG.keep_all_subtitles = a.all_audio, not a.no_subs
-    CONFIG.include_forced, CONFIG.min_duration, CONFIG.debug = (
-        not a.no_forced,
-        a.min_duration,
-        a.debug,
+    config.output_dir = a.output
+    config.preferred_languages = a.lang.split(",")
+    config.keep_all_audio = a.all_audio
+    config.keep_all_subtitles = not a.no_subs
+    config.include_forced = not a.no_forced
+    config.min_duration = a.min_duration
+    config.debug = a.debug
+    config.temp_dir = a.temp_dir
+    config.ram_limit = a.ram_limit
+    config.no_sudo = a.no_sudo
+    config.show_all = a.show_all
+    config.ui_lang = a.ui_lang
+    state.logger.configure(config)
+    tag_options.enabled = a.tag
+    tag_options.no_tag = a.no_tag
+    tag_options.api_key = a.tmdb_key
+    tag_options.metadata = (
+        a.tag_metadata if a.tag_metadata else list(DEFAULT_TAG_METADATA)
     )
-    CONFIG.temp_dir = a.temp_dir
-    CONFIG.ram_limit = a.ram_limit
-    CONFIG.no_sudo = a.no_sudo
-    CONFIG.show_all = a.show_all
-    CONFIG.ui_lang = a.ui_lang
-    TAG_OPTS.enabled = a.tag
-    TAG_OPTS.no_tag = a.no_tag
-    TAG_OPTS.api_key = a.tmdb_key
-    TAG_OPTS.metadata = a.tag_metadata if a.tag_metadata else list(DEFAULT_TAG_METADATA)
-    TAG_OPTS.region = a.tag_region
-    TAG_OPTS.language = a.tag_language
-    TAG_OPTS.art = a.tag_art
-    TAG_OPTS.save_xml = a.save_tag_xml
-    TAG_OPTS.confirm = not a.no_tag_confirm
-    TAG_OPTS.title_override = a.tag_title
-    TAG_OPTS.year_override = a.tag_year
+    tag_options.region = a.tag_region
+    tag_options.language = a.tag_language
+    tag_options.art = a.tag_art
+    tag_options.save_xml = a.save_tag_xml
+    tag_options.confirm = not a.no_tag_confirm
+    tag_options.title_override = a.tag_title
+    tag_options.year_override = a.tag_year
+    return src, sids, details, title_num
+
+
+def _save_tmdb_key_and_exit(api_key: str) -> None:
+    from settings import SETTINGS_PATH, load_settings, save_settings
+
+    cfg = load_settings()
+    cfg["api_key"] = api_key
+    try:
+        save_settings(cfg)
+        log_info(f"TMDB API key saved to {SETTINGS_PATH}")
+    except OSError as e:
+        log_error(tr("Could not write config: {err}", err=e))
+        sys.exit(1)
+    sys.exit(0)
+
+
+def _select_action(
+    a: argparse.Namespace,
+    src: Path | None,
+    sids: list[str] | None,
+    details: int | None,
+    title_num: int | None,
+) -> tuple[Path | None, str, int | None, list[str] | None]:
+    if details is not None:
+        return src, "details", details, sids
+    if a.main:
+        return src, "rip_main", None, sids
+    if title_num is not None:
+        return src, "rip_title", title_num, sids
+    if a.all:
+        return src, "rip_all", None, sids
+    if a.episodes:
+        return src, "rip_episodes", None, sids
+    if a.info:
+        return src, "info", None, sids
+    return src, "interactive", None, sids
+
+
+def parse_args(
+    runtime_state: RuntimeState | None = None,
+) -> tuple[Path | None, str, int | None, list[str] | None, list[int] | None]:
+    p = _build_arg_parser()
+    a = p.parse_args()
+    src, sids, details, title_num = _apply_parsed_args(a, runtime_state)
 
     # Persist the TMDB API key and exit (no ripping tools needed for this).
     if a.save_key:
-        from settings import SETTINGS_PATH, load_settings, save_settings
-
-        cfg = load_settings()
-        cfg["api_key"] = a.save_key
-        try:
-            save_settings(cfg)
-            log_info(f"TMDB API key saved to {SETTINGS_PATH}")
-        except OSError as e:
-            log_error(tr("Could not write config: {err}", err=e))
-            sys.exit(1)
-        sys.exit(0)
+        _save_tmdb_key_and_exit(a.save_key)
 
     if a.multi_edition:
-        if not CONFIG.debug:
+        if not (runtime_state or RUNTIME_STATE).logger.debug_enabled:
             log_error(tr("--multi-edition is experimental; pass --debug to enable it"))
             sys.exit(1)
         try:
@@ -549,19 +705,10 @@ def parse_args() -> tuple[
             log_error(tr("--multi-edition needs at least two titles"))
             sys.exit(1)
         return src, "rip_multi_edition", None, sids, me_idx
-    if details is not None:
-        return src, "details", details, sids, None
-    if a.main:
-        return src, "rip_main", None, sids, None
-    if title_num is not None:
-        return src, "rip_title", title_num, sids, None
-    if a.all:
-        return src, "rip_all", None, sids, None
-    if a.episodes:
-        return src, "rip_episodes", None, sids, None
-    if a.info:
-        return src, "info", None, sids, None
-    return src, "interactive", None, sids, None
+    source, action, number, selected_streams = _select_action(
+        a, src, sids, details, title_num
+    )
+    return source, action, number, selected_streams, None
 
 
 # =============================================================================
@@ -734,7 +881,7 @@ def _rip_multi_edition(
 ) -> None:
     """Build the combined title and rip it."""
     combined = _prepare_multi_edition(titles, indices, names)
-    creator.create_mkv(combined, select_streams(combined, streams))
+    creator.create_mkv(combined, creator.select_streams(combined, streams))
 
 
 def _fmt_edition_duration(seconds: float) -> str:
@@ -743,31 +890,26 @@ def _fmt_edition_duration(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def main():
-    # Resolve the UI language before parsing args so that --help and the
-    # first-run wizard are already localised.
+def _initialize_cli(
+    runtime_state: RuntimeState | None = None,
+) -> tuple[Path | None, str, int | None, list[str] | None, list[int] | None]:
     _init_ui_language()
-
-    # mkvmerge is required for muxing.
     if not _HAS_MKVMERGE:
         log_error(tr("Missing: mkvmerge (install mkvtoolnix)"))
         sys.exit(1)
 
-    # First-run wizard: if no settings file exists yet, walk the user through
-    # language + (optional) TMDB key once, then re-resolve the language.
-    # Skip it for quick-exit invocations (--help / --version / --save-key) so
-    # those never block on interactive input.
-    _quick_exit = any(a in sys.argv for a in ("-h", "--help", "-v", "--version"))
-    _saving_key = "--save-key" in sys.argv
-    if not SETTINGS_PATH.exists() and not _quick_exit and not _saving_key:
+    quick_exit = any(
+        argument in sys.argv for argument in ("-h", "--help", "-v", "--version")
+    )
+    saving_key = "--save-key" in sys.argv
+    if not SETTINGS_PATH.exists() and not quick_exit and not saving_key:
         _first_run_setup()
         _init_ui_language()
 
-    src, act, num, sids, me_idx = parse_args()
-
-    # An explicit --ui-lang flag wins for this run even over the wizard.
-    if CONFIG.ui_lang:
-        set_language(CONFIG.ui_lang)
+    state = runtime_state or RUNTIME_STATE
+    parsed = parse_args(state)
+    if state.config.ui_lang:
+        set_language(state.config.ui_lang)
     log_debug(
         tr(
             "Using language: {name} ({code})",
@@ -775,108 +917,219 @@ def main():
             code=get_language(),
         )
     )
+    return parsed
 
-    # Propagate the debug flag to the extracted DVD IFO parser module so its
-    # log_debug output matches cli.py's verbosity.
-    dvdifo.set_debug(CONFIG.debug)
 
-    # Redirect temp files to a user-specified disk directory when present.
-    # Without this, temp files default to /tmp (often tmpfs / RAM-backed),
-    # which can fill memory when extracting multi-GB ISOs.
-    if CONFIG.temp_dir:
-        CONFIG.temp_dir.mkdir(parents=True, exist_ok=True)
-        tempfile.tempdir = str(CONFIG.temp_dir)
-    # Detect whether the effective temp dir is RAM-backed (tmpfs) and, if so,
-    # cap extraction at ram_limit of installed RAM (oversized titles spill to
-    # disk). See disc_reader.init_ram_budget / temp_base_for_title.
+def _configure_runtime(runtime_state: RuntimeState | None = None) -> None:
+    state = runtime_state or RUNTIME_STATE
+    config = state.config
+    state.logger.configure(config)
+    dvdifo.set_debug(state.logger.debug)
+    if config.temp_dir:
+        config.temp_dir.mkdir(parents=True, exist_ok=True)
+        tempfile.tempdir = str(config.temp_dir)
+
     from disc_reader import init_ram_budget
 
-    init_ram_budget()
-    if src is None:
-        log_error(tr("A source path is required"))
-        log_error(tr("Run with -h to see usage, e.g. script.py /path/to/media"))
+    init_ram_budget(config)
+
+
+def _scan_source(
+    source: Path, runtime_state: RuntimeState | None = None
+) -> tuple[list[Title], str | None]:
+    if not source.exists() and not str(source).startswith("/dev/"):
+        log_error(tr("Not found: {path}", path=source))
         sys.exit(1)
-    if not src.exists() and not str(src).startswith("/dev/"):
-        log_error(tr("Not found: {path}", path=src))
-        sys.exit(1)
-    scanner = Scanner(src)
+    scanner = Scanner(source, runtime_state=runtime_state)
     titles = scanner.scan()
     if not titles:
         log_warn(tr("No titles found"))
         sys.exit(0)
-    if act == "info":
-        display_titles(titles, scanner.disc_name)
-    elif act == "details" and num is not None and 0 <= num < len(titles):
-        display_title_details(titles[num])
-    elif act == "rip_title" and num is not None and 0 <= num < len(titles):
-        try:
-            MKVCreator(CONFIG.output_dir, TAG_OPTS).create_mkv(
-                titles[num], select_streams(titles[num], sids)
-            )
-        except RipError as e:
-            print(e.format_verbose())
-            sys.exit(1)
-    elif act == "rip_main":
-        idx = pick_main_feature(titles)
-        if idx < 0:
-            log_warn(tr("No titles found"))
-            sys.exit(0)
-        log_info(
-            tr(
-                "Main feature: #{idx} {name} ({dur})",
-                idx=idx,
-                name=titles[idx].name,
-                dur=titles[idx].duration_display,
-            )
+    return titles, scanner.disc_name
+
+
+def _run_main_feature_rip(
+    titles: list[Title],
+    stream_ids: list[str] | None,
+    runtime_state: RuntimeState | None = None,
+) -> None:
+    state = runtime_state or RUNTIME_STATE
+    index = pick_main_feature(titles, state.config)
+    if index < 0:
+        log_warn(tr("No titles found"))
+        sys.exit(0)
+    log_info(
+        tr(
+            "Main feature: #{idx} {name} ({dur})",
+            idx=index,
+            name=titles[index].name,
+            dur=titles[index].duration_display,
         )
+    )
+    try:
+        creator = MKVCreator(
+            state.config.output_dir,
+            state.tag_options,
+            runtime_state=state,
+        )
+        creator.create_mkv(
+            titles[index],
+            creator.select_streams(titles[index], stream_ids),
+        )
+    except RipError as exc:
+        print(exc.format_verbose())
+        sys.exit(1)
+
+
+def _rip_title_batch(
+    titles: list[Title], runtime_state: RuntimeState | None = None
+) -> None:
+    state = runtime_state or RUNTIME_STATE
+    ok = failed = 0
+    creator = MKVCreator(
+        state.config.output_dir,
+        state.tag_options,
+        runtime_state=state,
+    )
+    for title in titles:
         try:
-            MKVCreator(CONFIG.output_dir, TAG_OPTS).create_mkv(
-                titles[idx], select_streams(titles[idx], sids)
-            )
-        except RipError as e:
-            print(e.format_verbose())
-            sys.exit(1)
-    elif act == "rip_multi_edition" and me_idx:
-        try:
-            _rip_multi_edition(
-                MKVCreator(CONFIG.output_dir, TAG_OPTS),
-                titles,
-                me_idx,
-                None,
-                sids,
-            )
-        except RipError as e:
-            print(e.format_verbose())
-            sys.exit(1)
-        except ValueError as e:
-            log_error(str(e))
-            sys.exit(1)
-    elif act == "rip_all":
-        s, f = 0, 0
-        creator = MKVCreator(CONFIG.output_dir, TAG_OPTS)
-        for title in titles:
-            try:
-                creator.create_mkv(title)
-                s += 1
-            except RipError as e:
-                print(e.format_verbose())
-                f += 1
-        print(tr("\nSummary: {ok} ok, {fail} failed", ok=s, fail=f))
-    elif act == "rip_episodes":
-        ep_titles = [t for t in titles if t.dvd_episode_number is not None]
-        if not ep_titles:
-            log_warn(tr("No episodes detected on this disc"))
-            sys.exit(0)
-        log_info(tr("Ripping {n} episode(s)...", n=len(ep_titles)))
-        s, f = 0, 0
-        creator = MKVCreator(CONFIG.output_dir, TAG_OPTS)
-        for ep in ep_titles:
-            try:
-                creator.create_mkv(ep)
-                s += 1
-            except RipError as e:
-                print(e.format_verbose())
-                f += 1
-        print(tr("\nSummary: {ok} ok, {fail} failed", ok=s, fail=f))
-    elif act == "interactive":
-        interactive_mode(titles, scanner.disc_name)
+            creator.create_mkv(title)
+            ok += 1
+        except RipError as exc:
+            print(exc.format_verbose())
+            failed += 1
+    print(tr("\nSummary: {ok} ok, {fail} failed", ok=ok, fail=failed))
+
+
+def _require_title_index(action: str, number: int | None, titles: list[Title]) -> int:
+    if number is None or not 0 <= number < len(titles):
+        log_error(tr("Invalid title for {action}: {idx}", action=action, idx=number))
+        sys.exit(1)
+    return number
+
+
+def _show_action_info(
+    titles: list[Title], disc_name: str | None, state: RuntimeState
+) -> None:
+    display_titles(titles, disc_name, state.config)
+
+
+def _show_action_details(titles: list[Title], number: int | None, action: str) -> None:
+    index = _require_title_index(action, number, titles)
+    display_title_details(titles[index])
+
+
+def _rip_selected_title(
+    titles: list[Title],
+    number: int | None,
+    stream_ids: list[str] | None,
+    state: RuntimeState,
+) -> None:
+    index = _require_title_index("rip_title", number, titles)
+    try:
+        creator = MKVCreator(
+            state.config.output_dir,
+            state.tag_options,
+            runtime_state=state,
+        )
+        creator.create_mkv(
+            titles[index], creator.select_streams(titles[index], stream_ids)
+        )
+    except RipError as exc:
+        print(exc.format_verbose())
+        sys.exit(1)
+
+
+def _rip_selected_editions(
+    titles: list[Title],
+    edition_indices: list[int] | None,
+    stream_ids: list[str] | None,
+    state: RuntimeState,
+) -> None:
+    if not edition_indices:
+        log_error(tr("No multi-edition title indexes supplied"))
+        sys.exit(1)
+
+    try:
+        _rip_multi_edition(
+            MKVCreator(
+                state.config.output_dir,
+                state.tag_options,
+                runtime_state=state,
+            ),
+            titles,
+            edition_indices,
+            None,
+            stream_ids,
+        )
+    except RipError as exc:
+        print(exc.format_verbose())
+        sys.exit(1)
+    except ValueError as exc:
+        log_error(str(exc))
+        sys.exit(1)
+
+
+def _rip_episode_batch(titles: list[Title], state: RuntimeState) -> None:
+    episode_titles = [title for title in titles if title.dvd_episode_number is not None]
+    if not episode_titles:
+        log_warn(tr("No episodes detected on this disc"))
+        sys.exit(0)
+    log_info(tr("Ripping {n} episode(s)...", n=len(episode_titles)))
+    _rip_title_batch(episode_titles, state)
+
+
+def _reject_unknown_action(action: str) -> None:
+    log_error(tr("Unknown action: {action}", action=action))
+    sys.exit(1)
+
+
+def _run_action(
+    action: str,
+    titles: list[Title],
+    disc_name: str | None,
+    number: int | None,
+    stream_ids: list[str] | None,
+    edition_indices: list[int] | None,
+    runtime_state: RuntimeState | None = None,
+) -> None:
+    state = runtime_state or RUNTIME_STATE
+    if action == "info":
+        _show_action_info(titles, disc_name, state)
+    elif action == "details":
+        _show_action_details(titles, number, action)
+    elif action == "rip_title":
+        _rip_selected_title(titles, number, stream_ids, state)
+    elif action == "rip_main":
+        _run_main_feature_rip(titles, stream_ids, state)
+    elif action == "rip_multi_edition":
+        _rip_selected_editions(titles, edition_indices, stream_ids, state)
+    elif action == "rip_all":
+        _rip_title_batch(titles, state)
+    elif action == "rip_episodes":
+        _rip_episode_batch(titles, state)
+    elif action == "interactive":
+        interactive_mode(titles, disc_name, state)
+    else:
+        _reject_unknown_action(action)
+
+
+def main():
+    runtime_state = RUNTIME_STATE
+    source, action, number, stream_ids, edition_indices = _initialize_cli(runtime_state)
+    _configure_runtime(runtime_state)
+    if source is None:
+        log_error(tr("A source path is required"))
+        log_error(tr("Run with -h to see usage, e.g. script.py /path/to/media"))
+        sys.exit(1)
+
+    titles, disc_name = _scan_source(source, runtime_state)
+    _run_action(
+        action,
+        titles,
+        disc_name,
+        number,
+        stream_ids,
+        edition_indices,
+        runtime_state,
+    )

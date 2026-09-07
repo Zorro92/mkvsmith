@@ -1,8 +1,6 @@
 """Unit tests for scan-time Blu-ray colour inference (bluray._set_video_color_from_info)."""
 
-from typing import Any
-
-from bluray import _set_video_color_from_info
+from bluray import MplsStreamInfo, _set_video_color_from_info
 from models import Stream
 
 
@@ -13,8 +11,23 @@ def _video(**kwargs: object) -> Stream:
     return s
 
 
-def _info(**kwargs: Any) -> dict[str, Any]:
-    return kwargs
+def _info(
+    height: int | None = None,
+    codec: str = "hevc",
+    dynamic_range_type: str = "",
+    colorspace: str = "",
+) -> MplsStreamInfo:
+    info: MplsStreamInfo = {
+        "type": None,
+        "codec": codec,
+        "lang": "und",
+        "channels": None,
+        "pid": None,
+        "height": height,
+        "dynamic_range_type": dynamic_range_type,
+        "colorspace": colorspace,
+    }
+    return info
 
 
 def test_hd_1080_infers_bt709() -> None:

@@ -228,8 +228,8 @@ _BD_COLOR_SPACE_MAP: dict[int, str] = {
 # M2TS clip — audio channel counts, video resolution, framerate, codecs, and
 # languages — all without touching the M2TS itself.
 #
-# Previously, channel counts were obtained by probing the M2TS via ffprobe
-# (or 7z partial extraction for ISOs).  CLPI parsing removes this dependency,
+# Previously, channel counts were obtained by probing each M2TS (or partially
+# extracting it for ISOs).  CLPI parsing removes this dependency,
 # making scanning order(s) of magnitude faster and more reliable.
 #
 # Based on bluinfo/ts_scanner.py's clipfilescan() and the BD-ROM spec.
@@ -405,8 +405,7 @@ def _merge_clpi_into_mpls(
             s["aspect"] = cinfo.get("aspect")
 
 
-# BD/H.264 colour metadata heuristics — used when ffprobe probing is skipped
-# (MPLS+CLPI scan path).  Virtually all HD Blu-ray (720p/1080p/i) uses BT.709.
+# BD/H.264 colour metadata heuristics for the direct MPLS+CLPI scan path.  Virtually all HD Blu-ray (720p/1080p/i) uses BT.709.
 # UHD (2160p) is handled separately in _set_video_color_from_info: the STN
 # table's dynamic_range_type marks HDR (hdr10/dolby_vision) vs SDR, and only
 # HDR gets BT.2020 primaries + PQ transfer — SDR UHD defaults to BT.709.
@@ -424,18 +423,18 @@ _BD_HEVC_COLOR_MAP: dict[str, tuple[str, str, str]] = {
 }
 
 
-def _set_video_color_from_info(s: Stream, si: dict[str, Any]) -> None:
+def _set_video_color_from_info(s: Stream, si: MplsStreamInfo) -> None:
     """Populate colour metadata on a video Stream from scan info dict.
 
-    Used when scanning via MPLS+CLPI without ffprobe.  For HEVC streams the
+    Used when scanning directly from MPLS+CLPI.  For HEVC streams the
     STN table contains explicit ``colorspace`` and ``dynamic_range_type``
     attributes (byte 5 of the stream attributes).  For other codecs we infer
     HD vs SD from the CLPI-provided ``height``.
 
-    Does nothing when colour fields are already set (e.g. after ffprobe).
+    Does nothing when colour fields are already populated by another source.
     """
     if s.color_primaries is not None:
-        return  # Already populated by ffprobe.
+        return  # Already populated by another source.
 
     cs = si.get("colorspace")
     if cs is not None and cs in _BD_HEVC_COLOR_MAP:
@@ -700,7 +699,7 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
     If *clpi_dir* is provided (a ``BDMV/CLIPINF`` directory), the first
     playitem's .clpi file is parsed and its attributes (audio channel counts,
     video resolution, framerate) are merged into the STN stream info. This
-    eliminates the need for ffprobe/M2TS probing on directory-based Blu-rays.
+    eliminates per-clip M2TS probing for directory-based Blu-rays.
     """
     try:
         data = path.read_bytes()
@@ -785,9 +784,11 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
                 }
                 subpath_entries.append(sp_entry)
         if subpath_entries:
+            subpath_types = ", ".join(
+                f"type={entry['type']}" for entry in subpath_entries
+            )
             log_debug(
-                f"{path.stem}: {len(subpath_entries)} SubPath entries "
-                f"({', '.join(f'type={e["type"]}' for e in subpath_entries)})"
+                f"{path.stem}: {len(subpath_entries)} SubPath entries ({subpath_types})"
             )
 
         chapter_times = _parse_mpls_chapters(data, play_items)

@@ -29,17 +29,20 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import final
+from typing import Any, final
 
 from bluray import (
+    MplsStreamInfo,
     _apply_stn_languages,
     _parse_bdmv_catalog_number,
     _parse_bdmv_disc_name,
     _parse_mpls,
     _set_video_color_from_info,
 )
+
 from dvdifo import (
     DvdIfoError,
     VmgInfo,
@@ -56,10 +59,9 @@ from dvdbuild import (
 )
 from i18n import tr
 from models import (
-    CONFIG,
-    _DIRECT_MOUNT_CLEANUP,
-    _TEMP_DIRS,
-    _TEMP_FILES,
+    Config,
+    RuntimeState,
+    RUNTIME_STATE,
     _HAS_MKVMERGE,
     EditionAtom,
     EditionSpec,
@@ -71,6 +73,62 @@ from models import (
     log_error,
     log_debug,
 )
+
+
+def _streams_from_mpls(mpls_streams: list[MplsStreamInfo]) -> list[Stream]:
+    type_counts = {
+        StreamType.VIDEO: 0,
+        StreamType.AUDIO: 0,
+        StreamType.SUBTITLE: 0,
+    }
+    title_streams: list[Stream] = []
+    for stream_info in mpls_streams:
+        stream_type = stream_info["type"]
+        if stream_type == StreamType.VIDEO:
+            stream = Stream(
+                0,
+                StreamType.VIDEO,
+                stream_info["codec"],
+                "und",
+                "",
+                False,
+                False,
+                type_index=0,
+                pid=stream_info.get("pid"),
+            )
+            _set_video_color_from_info(stream, stream_info)
+            title_streams.append(stream)
+            type_counts[StreamType.VIDEO] += 1
+        elif stream_type == StreamType.AUDIO:
+            stream = Stream(
+                0,
+                StreamType.AUDIO,
+                stream_info["codec"],
+                stream_info["lang"],
+                "",
+                False,
+                False,
+                type_index=type_counts[StreamType.AUDIO],
+                pid=stream_info.get("pid"),
+            )
+            stream.channels = stream_info.get("channels")
+            title_streams.append(stream)
+            type_counts[StreamType.AUDIO] += 1
+        elif stream_type == StreamType.SUBTITLE:
+            stream = Stream(
+                0,
+                StreamType.SUBTITLE,
+                stream_info["codec"],
+                stream_info["lang"],
+                "",
+                False,
+                False,
+                type_index=type_counts[StreamType.SUBTITLE],
+                pid=stream_info.get("pid"),
+            )
+            title_streams.append(stream)
+            type_counts[StreamType.SUBTITLE] += 1
+    return title_streams
 
 
 # =============================================================================
@@ -146,144 +204,174 @@ _RELEASE_NAME_TAGS = {
 }
 
 
-def _clean_release_name(name: str) -> str:
-    """Turn a release-style folder/file name into a human title.
+_RELEASE_TITLE_SMALL_WORDS = {
+    "a",
+    "an",
+    "the",
+    "of",
+    "and",
+    "or",
+    "but",
+    "for",
+    "to",
+    "at",
+    "in",
+    "on",
+    "by",
+    "de",
+    "du",
+    "la",
+    "le",
+    "el",
+    "il",
+    "und",
+    "der",
+    "das",
+}
 
-    Handles the common 'Banjo.The.Woodpile.Cat.1979.USA.NTSC.DVD5' convention:
-    separators become spaces and tokens are cut at the first year or scene tag
-    (codec, resolution, source, region, etc.). Returns '' if nothing usable.
-    """
+
+def _release_name_tokens(name: str) -> list[str]:
     base = re.sub(r"\.(mkv|mp4|avi|iso|m2ts|vob|ts|m4v)$", "", name, flags=re.I)
-    s = re.sub(r"[\._\-]+", " ", base).strip()
-    s = re.sub(r"[\[\]\(\)]", " ", s)
-    tokens = s.split()
+    normalized = re.sub(r"[\._\-]+", " ", base).strip()
+    normalized = re.sub(r"[\[\]\(\)]", " ", normalized)
+    return normalized.split()
+
+
+def _is_release_year(token: str) -> bool:
+    return re.fullmatch(r"(19|20)\d{2}", token) is not None
+
+
+def _is_episode_tag(token: str) -> bool:
+    return re.fullmatch(r"s\d{1,2}e\d{1,3}", token) is not None
+
+
+def _is_release_metadata(token: str) -> bool:
+    if token in _RELEASE_NAME_TAGS:
+        return True
+    return (
+        re.fullmatch(r"\d{3,4}p", token) is not None
+        or re.fullmatch(r"\d{3,4}x\d{3,4}", token) is not None
+    )
+
+
+def _release_title_tokens(tokens: list[str]) -> list[str]:
     kept: list[str] = []
-    for tok in tokens:
-        low = tok.lower().strip(":,;!?")
-        if re.fullmatch(r"(19|20)\d{2}", low):  # year: keep then stop
-            kept.append(low)
+    for token in tokens:
+        normalized = token.lower().strip(":,;!?")
+        if _is_release_year(normalized):
+            kept.append(normalized)
             break
-        if re.fullmatch(r"s\d{1,2}e\d{1,3}", low):  # SxxExx tag
-            kept.append(tok.upper())
+        if _is_episode_tag(normalized):
+            kept.append(token.upper())
             break
-        if low in _RELEASE_NAME_TAGS:
+        if _is_release_metadata(normalized):
             break
-        if re.fullmatch(r"\d{3,4}p", low) or re.fullmatch(r"\d{3,4}x\d{3,4}", low):
-            break
-        kept.append(tok)
-    title = " ".join(kept).strip(" -,.;:!?")
+        kept.append(token)
+    return kept
+
+
+def _title_case_release_name(title: str) -> str:
+    words = title.split()
+    titled: list[str] = []
+    for index, word in enumerate(words):
+        lowered = word.lower()
+        if _is_episode_tag(lowered):
+            titled.append(word.upper())
+        elif index > 0 and lowered in _RELEASE_TITLE_SMALL_WORDS:
+            titled.append(lowered)
+        elif word[:1].isalpha():
+            titled.append(word[:1].upper() + word[1:].lower())
+        else:
+            titled.append(word)
+    return " ".join(titled)
+
+
+def _clean_release_name(name: str) -> str:
+    """Turn a release-style folder/file name into a human title."""
+    tokens = _release_name_tokens(name)
+    title = " ".join(_release_title_tokens(tokens)).strip(" -,.;:!?")
     if not title:
         return ""
-    small = {
-        "a",
-        "an",
-        "the",
-        "of",
-        "and",
-        "or",
-        "but",
-        "for",
-        "to",
-        "at",
-        "in",
-        "on",
-        "by",
-        "de",
-        "du",
-        "la",
-        "le",
-        "el",
-        "il",
-        "und",
-        "der",
-        "das",
-    }
-    words = title.split()
-    out: list[str] = []
-    for i, w in enumerate(words):
-        wl = w.lower()
-        if re.fullmatch(r"s\d{1,2}e\d{1,3}", wl):
-            out.append(w.upper())
-        elif i > 0 and wl in small:
-            out.append(wl)
-        else:
-            out.append(w[:1].upper() + w[1:].lower() if w[:1].isalpha() else w)
-    return " ".join(out)
+    return _title_case_release_name(title)
 
 
-# _read_u16 and _read_u32 now live in dvdifo.py (imported explicitly above).
+_PlaylistDedupKey = tuple[tuple[str, ...], int]
 
 
-# =============================================================================
-# Standalone scanner helpers (extracted from the original Scanner class)
-# =============================================================================
+def _playlist_clip_ids(title: Title) -> tuple[str, ...]:
+    if title.iso_internal_paths:
+        return tuple(Path(path).name for path in title.iso_internal_paths)
+    return (title.source_file.name,) + tuple(
+        Path(path).name for path in title.append_clips
+    )
+
+
+def _playlist_dedup_key(title: Title) -> _PlaylistDedupKey:
+    return (_playlist_clip_ids(title), round(title.duration_seconds))
+
+
+def _group_duplicate_playlists(
+    titles: list[Title],
+) -> tuple[dict[_PlaylistDedupKey, list[Title]], list[_PlaylistDedupKey]]:
+    groups: dict[_PlaylistDedupKey, list[Title]] = {}
+    order: list[_PlaylistDedupKey] = []
+    for title in titles:
+        key = _playlist_dedup_key(title)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(title)
+    return groups, order
+
+
+def _playlist_rank(title: Title) -> tuple[int, int, int]:
+    return (
+        len(title.chapters),
+        len(title.streams),
+        len(title.audio_streams) + len(title.subtitle_streams),
+    )
+
+
+def _best_duplicate_playlist(group: list[Title]) -> Title:
+    best = group[0]
+    best_rank = _playlist_rank(best)
+    for title in group[1:]:
+        rank = _playlist_rank(title)
+        if rank > best_rank:
+            best, best_rank = title, rank
+    return best
+
+
+def _collapse_duplicate_group(group: list[Title]) -> Title:
+    best = _best_duplicate_playlist(group)
+    for title in group:
+        if title is not best:
+            log_debug(
+                f"Collapsed duplicate playlist {title.name} "
+                f"(same clips+duration as {best.name})"
+            )
+    return best
 
 
 def _dedup_duplicate_playlists(titles: list[Title]) -> list[Title]:
     """Collapse Blu-ray titles that resolve to the same clip sequence.
 
-    Multiple MPLS playlists on a disc frequently reference the same
-    underlying M2TS clip(s) — for region/menu branching, "favourite scenes"
-    modes, or plain duplicate authoring. They yield identical video/audio
-    bytes and differ only in chapter-table completeness or stream ordering.
-
-    Such titles are grouped by their resolved clip sequence + total duration
-    and only the richest representative is kept (most chapters, then most
-    streams, then most audio+subtitle tracks). The first-built title wins
-    ties, which — because PLAYLIST is iterated sorted — is the lowest MPLS
-    number. Collapsed duplicates are logged at DEBUG level.
-
-    Titles whose clip sequence or duration differs (seamless-branching
-    editions, partial selections) are left untouched. Intentionally
-    Blu-ray-only in effect: DVD deliberately exposes same-content PGCs
-    (angles) as separate titles and must not be collapsed here.
+    Titles are grouped by clip sequence and rounded duration; only the richest
+    representative is kept. First-built titles win ties, preserving the lowest
+    sorted MPLS number. Different clip sets or durations remain separate.
     """
-    groups: dict[tuple[tuple[str, ...], int], list[Title]] = {}
-    order: list[tuple[tuple[str, ...], int]] = []
-    for t in titles:
-        if t.iso_internal_paths:
-            clip_ids = tuple(Path(p).name for p in t.iso_internal_paths)
-        else:
-            clip_ids = (t.source_file.name,) + tuple(
-                Path(p).name for p in t.append_clips
-            )
-        key = (clip_ids, round(t.duration_seconds))
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(t)
-
-    if all(len(groups[k]) == 1 for k in order):
+    groups, order = _group_duplicate_playlists(titles)
+    if all(len(groups[key]) == 1 for key in order):
         return titles
 
-    deduped: list[Title] = []
+    deduplicated: list[Title] = []
     for key in order:
         group = groups[key]
         if len(group) == 1:
-            deduped.extend(group)
-            continue
-        best = group[0]
-        best_rank = (
-            len(best.chapters),
-            len(best.streams),
-            len(best.audio_streams) + len(best.subtitle_streams),
-        )
-        for t in group[1:]:
-            rank = (
-                len(t.chapters),
-                len(t.streams),
-                len(t.audio_streams) + len(t.subtitle_streams),
-            )
-            if rank > best_rank:
-                best, best_rank = t, rank
-        for t in group:
-            if t is not best:
-                log_debug(
-                    f"Collapsed duplicate playlist {t.name} "
-                    f"(same clips+duration as {best.name})"
-                )
-        deduped.append(best)
-    return deduped
+            deduplicated.extend(group)
+        else:
+            deduplicated.append(_collapse_duplicate_group(group))
+    return deduplicated
 
 
 # =============================================================================
@@ -369,6 +457,190 @@ def _edition_atoms(
     return atoms
 
 
+@dataclass
+class _EditionClipUnion:
+    keys: list[str]
+    index: dict[str, int]
+    durations: list[float]
+    sizes: list[int]
+    starts: list[float]
+    total_duration: float
+
+
+def _validate_edition_titles(edition_titles: list[Title]) -> tuple[Title, bool]:
+    if len(edition_titles) < 2:
+        raise ValueError("multi-edition needs at least two titles")
+    first = edition_titles[0]
+    for title in edition_titles:
+        if not title.playlist_name:
+            raise ValueError(
+                f"'{title.name}' is not a Blu-ray playlist title; "
+                "multi-edition MKVs can only combine playlists"
+            )
+        if _stream_signature(title) != _stream_signature(first):
+            raise ValueError(
+                f"'{title.name}' has a different stream layout than '{first.name}'; "
+                "editions combined into one MKV must share the same tracks"
+            )
+
+    is_iso = bool(first.iso_internal_paths)
+    if any(bool(title.iso_internal_paths) != is_iso for title in edition_titles):
+        raise ValueError("cannot mix ISO and folder sources in one multi-edition title")
+    return first, is_iso
+
+
+def _union_edition_clips(edition_titles: list[Title]) -> _EditionClipUnion:
+    """Build the first-appearance clip union and its combined timeline."""
+    clip_index: dict[str, int] = {}
+    clip_keys: list[str] = []
+    clip_durations: list[float] = []
+    clip_sizes: list[int] = []
+
+    for title in edition_titles:
+        keys = _title_clip_keys(title)
+        durations = title.clip_durations
+        sizes = title.clip_sizes
+        if len(durations) != len(keys):
+            log_debug(
+                f"{title.name}: clip_durations mismatch "
+                f"({len(durations)} vs {len(keys)}); multi-edition atoms "
+                "may be approximate"
+            )
+            durations = (durations + [0.0] * len(keys))[: len(keys)]
+            sizes = (sizes + [0] * len(keys))[: len(keys)]
+
+        for position, key in enumerate(keys):
+            if key in clip_index:
+                previous_duration = clip_durations[clip_index[key]]
+                if (
+                    durations[position]
+                    and abs(durations[position] - previous_duration) > _EDITION_EPS
+                ):
+                    log_debug(
+                        f"clip {Path(key).name}: duration differs between "
+                        f"playlists ({previous_duration:.3f}s vs "
+                        f"{durations[position]:.3f}s); using the first"
+                    )
+                continue
+
+            clip_index[key] = len(clip_keys)
+            clip_keys.append(key)
+            clip_durations.append(durations[position])
+            clip_sizes.append(sizes[position] if position < len(sizes) else 0)
+
+    clip_starts: list[float] = []
+    running_duration = 0.0
+    for duration in clip_durations:
+        clip_starts.append(running_duration)
+        running_duration += duration
+
+    return _EditionClipUnion(
+        keys=clip_keys,
+        index=clip_index,
+        durations=clip_durations,
+        sizes=clip_sizes,
+        starts=clip_starts,
+        total_duration=running_duration,
+    )
+
+
+def _edition_name(
+    title: Title,
+    first: Title,
+    edition_index: int,
+    edition_names: list[str] | None,
+) -> str:
+    if edition_names is not None:
+        return edition_names[edition_index]
+    if edition_index == 0:
+        # The default edition carries the movie/disc name, not the scanner's
+        # generic " - Title N" list label.
+        return first.disc_name or first.name
+    return f"Playlist {title.playlist_name}"
+
+
+def _build_edition_specs(
+    edition_titles: list[Title],
+    first: Title,
+    clip_union: _EditionClipUnion,
+    edition_names: list[str] | None,
+) -> list[EditionSpec]:
+    if edition_names is not None and len(edition_names) != len(edition_titles):
+        raise ValueError("edition name count does not match title count")
+
+    editions: list[EditionSpec] = []
+    for edition_index, title in enumerate(edition_titles):
+        keys = _title_clip_keys(title)
+        indices = [clip_union.index[key] for key in keys if key in clip_union.index]
+        chapters = list(title.chapters)
+        # Re-apply the trailing end-chapter strip relative to this edition's
+        # own duration; scanners normally already did this.
+        if chapters and chapters[-1] >= title.duration_seconds - 0.5:
+            chapters = chapters[:-1]
+
+        atoms = _edition_atoms(
+            indices,
+            clip_union.starts,
+            clip_union.durations,
+            chapters,
+        )
+        visible_count = 0
+        for atom in atoms:
+            if not atom.hidden:
+                visible_count += 1
+                atom.name = f"Chapter {visible_count:02d}"
+
+        editions.append(
+            EditionSpec(
+                uid=edition_index + 1,
+                name=_edition_name(title, first, edition_index, edition_names),
+                is_default=(edition_index == 0),
+                atoms=atoms,
+            )
+        )
+    return editions
+
+
+def _build_combined_edition_title(
+    first: Title,
+    clip_union: _EditionClipUnion,
+    is_iso: bool,
+    editions: list[EditionSpec],
+) -> Title:
+    base_name = first.disc_name or first.name
+    if is_iso:
+        combined = Title(
+            first.index,
+            first.source_file,
+            base_name,
+            clip_union.total_duration,
+        )
+        combined.iso_internal_paths = clip_union.keys
+    else:
+        combined = Title(
+            first.index,
+            Path(clip_union.keys[0]),
+            base_name,
+            clip_union.total_duration,
+        )
+        combined.append_clips = [Path(key) for key in clip_union.keys[1:]]
+
+    combined.streams = [Stream(**vars(stream)) for stream in first.streams]
+    combined.disc_name = first.disc_name
+    combined.disc_barcode = first.disc_barcode
+    combined.playlist_name = first.playlist_name
+    combined.clip_durations = clip_union.durations
+    combined.clip_sizes = clip_union.sizes
+    combined.estimated_size_bytes = sum(clip_union.sizes)
+    combined.editions = editions
+    log_debug(
+        f"Multi-edition title: {len(clip_union.keys)} unique clips "
+        f"({clip_union.total_duration:.0f}s total), {len(editions)} editions "
+        f"({', '.join(edition.name for edition in editions)})"
+    )
+    return combined
+
+
 def build_multi_edition_title(
     edition_titles: list[Title], edition_names: list[str] | None = None
 ) -> Title:
@@ -384,130 +656,10 @@ def build_multi_edition_title(
     titles, and share an identical stream layout (editions of one movie differ
     in clip order/selection, not in tracks). Raises ``ValueError`` otherwise.
     """
-    if len(edition_titles) < 2:
-        raise ValueError("multi-edition needs at least two titles")
-    first = edition_titles[0]
-    for t in edition_titles:
-        if not t.playlist_name:
-            raise ValueError(
-                f"'{t.name}' is not a Blu-ray playlist title; "
-                "multi-edition MKVs can only combine playlists"
-            )
-        if _stream_signature(t) != _stream_signature(first):
-            raise ValueError(
-                f"'{t.name}' has a different stream layout than '{first.name}'; "
-                "editions combined into one MKV must share the same tracks"
-            )
-
-    is_iso = bool(first.iso_internal_paths)
-    if any(bool(t.iso_internal_paths) != is_iso for t in edition_titles):
-        raise ValueError("cannot mix ISO and folder sources in one multi-edition title")
-
-    # Union of unique clips in first-appearance order, with per-clip duration
-    # and byte size from the first playlist that references the clip.
-    clip_index: dict[str, int] = {}
-    clip_keys: list[str] = []
-    clip_durs: list[float] = []
-    clip_sizes: list[int] = []
-    for t in edition_titles:
-        keys = _title_clip_keys(t)
-        durs = t.clip_durations
-        sizes = t.clip_sizes
-        if len(durs) != len(keys):
-            log_debug(
-                f"{t.name}: clip_durations mismatch ({len(durs)} vs {len(keys)}); "
-                "multi-edition atoms may be approximate"
-            )
-            durs = (durs + [0.0] * len(keys))[: len(keys)]
-            sizes = (sizes + [0] * len(keys))[: len(keys)]
-        for i, key in enumerate(keys):
-            if key in clip_index:
-                prev_dur = clip_durs[clip_index[key]]
-                if durs[i] and abs(durs[i] - prev_dur) > _EDITION_EPS:
-                    log_debug(
-                        f"clip {Path(key).name}: duration differs between playlists "
-                        f"({prev_dur:.3f}s vs {durs[i]:.3f}s); using the first"
-                    )
-                continue
-            clip_index[key] = len(clip_keys)
-            clip_keys.append(key)
-            clip_durs.append(durs[i])
-            clip_sizes.append(sizes[i] if i < len(sizes) else 0)
-
-    # Global timeline: each unique clip's [start, end) on the combined file.
-    clip_starts: list[float] = []
-    running = 0.0
-    for d in clip_durs:
-        clip_starts.append(running)
-        running += d
-    union_duration = running
-
-    # One edition spec per input title.
-    editions: list[EditionSpec] = []
-    if edition_names is not None and len(edition_names) != len(edition_titles):
-        raise ValueError("edition name count does not match title count")
-    for ei, t in enumerate(edition_titles):
-        keys = _title_clip_keys(t)
-        indices = [clip_index[k] for k in keys if k in clip_index]
-        chapters = list(t.chapters)
-        # Re-apply the trailing end-chapter strip relative to the edition's own
-        # duration (scan already did this, but chapters may have been touched).
-        if chapters and chapters[-1] >= t.duration_seconds - 0.5:
-            chapters = chapters[:-1]
-        atoms = _edition_atoms(indices, clip_starts, clip_durs, chapters)
-        # Name visible atoms sequentially ("Chapter 01"...), matching the flat
-        # single-edition writer. Every real chapter yields exactly one visible
-        # atom, so numbering follows the playlist's chapter order.
-        visible_count = 0
-        for atom in atoms:
-            if not atom.hidden:
-                visible_count += 1
-                atom.name = f"Chapter {visible_count:02d}"
-        if edition_names is not None:
-            name = edition_names[ei]
-        elif ei == 0:
-            # Default edition carries the movie name (disc name when known) —
-            # not the " - Title N" list label the scanner gave it.
-            name = first.disc_name or first.name
-        else:
-            name = f"Playlist {t.playlist_name}"
-        editions.append(
-            EditionSpec(uid=ei + 1, name=name, is_default=(ei == 0), atoms=atoms)
-        )
-
-    # Build the synthetic combined title from the first edition's layout.
-    base_name = first.disc_name or first.name
-    if is_iso:
-        combined = Title(
-            first.index,
-            first.source_file,
-            base_name,
-            union_duration,
-        )
-        combined.iso_internal_paths = clip_keys
-    else:
-        combined = Title(
-            first.index,
-            Path(clip_keys[0]),
-            base_name,
-            union_duration,
-        )
-        combined.append_clips = [Path(k) for k in clip_keys[1:]]
-    combined.streams = [Stream(**vars(s)) for s in first.streams]
-    combined.duration_seconds = union_duration
-    combined.disc_name = first.disc_name
-    combined.disc_barcode = first.disc_barcode
-    combined.playlist_name = first.playlist_name
-    combined.clip_durations = clip_durs
-    combined.clip_sizes = clip_sizes
-    combined.estimated_size_bytes = sum(clip_sizes)
-    combined.editions = editions
-    log_debug(
-        f"Multi-edition title: {len(clip_keys)} unique clips "
-        f"({union_duration:.0f}s total), {len(editions)} editions "
-        f"({', '.join(e.name for e in editions)})"
-    )
-    return combined
+    first, is_iso = _validate_edition_titles(edition_titles)
+    clip_union = _union_edition_clips(edition_titles)
+    editions = _build_edition_specs(edition_titles, first, clip_union, edition_names)
+    return _build_combined_edition_title(first, clip_union, is_iso, editions)
 
 
 def _detect_edition_groups(titles: list[Title]) -> list[list[Title]]:
@@ -543,189 +695,176 @@ def _detect_edition_groups(titles: list[Title]) -> list[list[Title]]:
     return groups
 
 
-def _scan_bluray_source(source: Path) -> tuple[list[Title], str | None]:
-    """Scan a Blu-ray BDMV directory and return (titles, disc_name)."""
-    bdmv = source / "BDMV" if (source / "BDMV").is_dir() else source / "bdmv"
-    titles: list[Title] = []
+def _build_bluray_title_from_mpls(
+    titles: list[Title],
+    mpls: Path,
+    clip_paths: list[Path],
+    info: dict[str, Any],
+    disc_name: str | None,
+    disc_barcode: str | None,
+) -> Title | None:
+    total_duration = sum(play_item["duration"] for play_item in info["play_items"])
+    title_streams = _streams_from_mpls(info.get("streams", []))
+    if title_streams:
+        title = Title(
+            len(titles),
+            clip_paths[0],
+            f"Playlist {mpls.stem}",
+            total_duration,
+        )
+        title.streams = title_streams
+    else:
+        log_debug(f"No STN streams in {mpls.stem}, falling back to mkvmerge")
+        title = _create_title(
+            titles,
+            clip_paths[0],
+            f"Playlist {mpls.stem}",
+            override_duration=total_duration,
+        )
+        if title is None:
+            return None
+        _apply_stn_languages(title, info["audio_langs"], info["subtitle_langs"])
+
+    title.duration_seconds = total_duration
+    title.append_clips = clip_paths[1:]
+    title.chapters = info.get("chapter_times", [])
+    title.disc_name = disc_name
+    title.disc_barcode = disc_barcode
+    title.playlist_name = mpls.stem
+    title.clip_durations = [play_item["duration"] for play_item in info["play_items"]]
+    try:
+        title.clip_sizes = [clip_path.stat().st_size for clip_path in clip_paths]
+    except OSError:
+        title.clip_sizes = []
+    if title.chapters and title.chapters[-1] >= total_duration:
+        title.chapters = title.chapters[:-1]
+    if len(clip_paths) > 1:
+        log_debug(f"{mpls.stem}: {len(clip_paths)} clips will be appended")
+    return title
+
+
+def _log_bluray_subpaths(
+    playlist_stem: str, info: dict[str, Any], stream_dir: Path
+) -> None:
+    subpath_entries = info.get("subpath_entries", [])
+    if not subpath_entries:
+        return
+    log_debug(f"{playlist_stem}: {len(subpath_entries)} SubPath entries")
+    for subpath in subpath_entries:
+        subpath_type = subpath.get("type", 0)
+        subpath_clips = subpath.get("clips", [])
+        if subpath_type not in (4, 6) or not subpath_clips:
+            continue
+        log_debug(f"  SubPath type {subpath_type}: clips {subpath_clips}")
+        for subpath_clip in subpath_clips:
+            clip_path = stream_dir / f"{subpath_clip}.m2ts"
+            if clip_path.exists():
+                log_debug(
+                    f"    SubPath clip found: {subpath_clip}.m2ts "
+                    f"({clip_path.stat().st_size / 1e6:.1f} MB)"
+                )
+
+
+def _find_bdmv_directory(source: Path) -> Path:
+    return source / "BDMV" if (source / "BDMV").is_dir() else source / "bdmv"
+
+
+def _read_bdmv_metadata(bdmv: Path) -> tuple[str | None, str | None]:
     disc_name = _parse_bdmv_disc_name(bdmv)
     disc_barcode = _parse_bdmv_catalog_number(bdmv)
     if disc_name:
         log_info(tr("Disc name: {name}", name=disc_name))
     if disc_barcode:
         log_debug(f"BD catalog number: {disc_barcode}")
+    return disc_name, disc_barcode
+
+
+def _playlist_clip_paths(
+    play_items: list[dict[str, Any]], stream_dir: Path
+) -> list[Path] | None:
+    clip_paths: list[Path] = []
+    for play_item in play_items:
+        clip_path = stream_dir / f"{play_item['clip']}.m2ts"
+        if not clip_path.exists():
+            return None
+        clip_paths.append(clip_path)
+    return clip_paths or None
+
+
+def _scan_playlist_titles(
+    titles: list[Title],
+    playlist_dir: Path,
+    clpi_dir: Path | None,
+    stream_dir: Path,
+    disc_name: str | None,
+    disc_barcode: str | None,
+    config: Config | None,
+) -> None:
+    minimum_duration = (config or RUNTIME_STATE.config).min_duration
+    for playlist in sorted(playlist_dir.glob("*.mpls")):
+        playlist_info = _parse_mpls(playlist, clpi_dir=clpi_dir)
+        if not playlist_info:
+            continue
+
+        play_items = playlist_info["play_items"]
+        total_duration = sum(play_item["duration"] for play_item in play_items)
+        if total_duration < minimum_duration:
+            continue
+
+        clip_paths = _playlist_clip_paths(play_items, stream_dir)
+        if clip_paths is None:
+            continue
+
+        title = _build_bluray_title_from_mpls(
+            titles,
+            playlist,
+            clip_paths,
+            playlist_info,
+            disc_name,
+            disc_barcode,
+        )
+        if title is None:
+            continue
+
+        _log_bluray_subpaths(playlist.stem, playlist_info, stream_dir)
+        titles.append(title)
+        log_debug(
+            f"Built from MPLS (native): {playlist.stem}, "
+            f"duration={total_duration:.0f}s, {len(title.streams)} streams"
+        )
+
+
+def _fallback_raw_m2ts_dir(bdmv: Path) -> Path | None:
+    stream_dir = bdmv / "STREAM"
+    return stream_dir if stream_dir.is_dir() else None
+
+
+def _scan_bluray_source(
+    source: Path, config: Config | None = None
+) -> tuple[list[Title], str | None]:
+    """Scan a Blu-ray BDMV directory and return (titles, disc_name)."""
+    bdmv = _find_bdmv_directory(source)
+    titles: list[Title] = []
+    disc_name, disc_barcode = _read_bdmv_metadata(bdmv)
 
     clpi_dir = bdmv / "CLIPINF"
-    if not clpi_dir.is_dir():
-        clpi_dir = None
-    pd, stream_dir = bdmv / "PLAYLIST", bdmv / "STREAM"
-    if pd.is_dir():
-        for mpls in sorted(pd.glob("*.mpls")):
-            info = _parse_mpls(mpls, clpi_dir=clpi_dir)
-            if not info:
-                continue
-            total_duration = sum(pi["duration"] for pi in info["play_items"])
-            if total_duration < CONFIG.min_duration:
-                continue
-            clip_paths: list[Path] = []
-            complete = True
-            for pi in info["play_items"]:
-                cp = stream_dir / f"{pi['clip']}.m2ts"
-                if not cp.exists():
-                    complete = False
-                    break
-                clip_paths.append(cp)
-            if not complete or not clip_paths:
-                continue
-
-            # Build title from MPLS STN data --- no ffprobe needed.
-            mpls_streams = info.get("streams", [])
-            if mpls_streams:
-                type_counts = {
-                    StreamType.VIDEO: 0,
-                    StreamType.AUDIO: 0,
-                    StreamType.SUBTITLE: 0,
-                }
-                title_streams: list[Stream] = []
-                for si in mpls_streams:
-                    st = si["type"]
-                    if st == StreamType.VIDEO:
-                        s = Stream(
-                            0,
-                            StreamType.VIDEO,
-                            si["codec"],
-                            "und",
-                            "",
-                            False,
-                            False,
-                            type_index=0,
-                            pid=si.get("pid"),
-                        )
-                        _set_video_color_from_info(s, si)
-                        title_streams.append(s)
-                        type_counts[StreamType.VIDEO] += 1
-                    elif st == StreamType.AUDIO:
-                        s = Stream(
-                            0,
-                            StreamType.AUDIO,
-                            si["codec"],
-                            si["lang"],
-                            "",
-                            False,
-                            False,
-                            type_index=type_counts[StreamType.AUDIO],
-                            pid=si.get("pid"),
-                        )
-                        s.channels = si.get("channels")
-                        title_streams.append(s)
-                        type_counts[StreamType.AUDIO] += 1
-                    elif st == StreamType.SUBTITLE:
-                        s = Stream(
-                            0,
-                            StreamType.SUBTITLE,
-                            si["codec"],
-                            si["lang"],
-                            "",
-                            False,
-                            False,
-                            type_index=type_counts[StreamType.SUBTITLE],
-                            pid=si.get("pid"),
-                        )
-                        title_streams.append(s)
-                        type_counts[StreamType.SUBTITLE] += 1
-
-                if title_streams:
-                    t = Title(
-                        len(titles),
-                        clip_paths[0],
-                        f"Playlist {mpls.stem}",
-                        total_duration,
-                    )
-                    t.streams = title_streams
-                    t.duration_seconds = total_duration
-                    t.append_clips = clip_paths[1:]
-                    t.chapters = info.get("chapter_times", [])
-                    t.disc_name = disc_name
-                    t.disc_barcode = disc_barcode
-                    t.playlist_name = mpls.stem
-                    t.clip_durations = [pi["duration"] for pi in info["play_items"]]
-                    try:
-                        t.clip_sizes = [cp.stat().st_size for cp in clip_paths]
-                    except OSError:
-                        t.clip_sizes = []
-
-                    # Log SubPath entries (secondary audio/video in separate clips).
-                    subpath_entries = info.get("subpath_entries", [])
-                    if subpath_entries:
-                        log_debug(
-                            f"{mpls.stem}: {len(subpath_entries)} SubPath entries"
-                        )
-                        for sp in subpath_entries:
-                            sp_type = sp.get("type", 0)
-                            sp_clips = sp.get("clips", [])
-                            # Type 4 = secondary audio out-of-mux, type 6 = secondary video out-of-mux.
-                            if sp_type in (4, 6) and sp_clips:
-                                log_debug(f"  SubPath type {sp_type}: clips {sp_clips}")
-                                # Check if SubPath clips exist alongside the main stream.
-                                for sp_clip in sp_clips:
-                                    sp_path = stream_dir / f"{sp_clip}.m2ts"
-                                    if sp_path.exists():
-                                        log_debug(
-                                            f"    SubPath clip found: {sp_clip}.m2ts "
-                                            f"({sp_path.stat().st_size / 1e6:.1f} MB)"
-                                        )
-
-                    # Strip trailing end chapter (matches MakeMKV).
-                    if t.chapters and t.chapters[-1] >= total_duration:
-                        t.chapters = t.chapters[:-1]
-                    if len(clip_paths) > 1:
-                        log_debug(
-                            f"{mpls.stem}: {len(clip_paths)} clips will be appended"
-                        )
-                    titles.append(t)
-                    log_debug(
-                        f"Built from MPLS (native): {mpls.stem}, "
-                        f"duration={total_duration:.0f}s, "
-                        f"{len(title_streams)} streams"
-                    )
-                    continue
-
-            # Fallback: ffprobe-based title creation when MPLS has no STN.
-            log_debug(f"No STN streams in {mpls.stem}, falling back to ffprobe")
-            t = _create_title(
-                titles,
-                clip_paths[0],
-                f"Playlist {mpls.stem}",
-                override_duration=total_duration,
-            )
-            if not t:
-                continue
-            t.duration_seconds = total_duration
-            t.append_clips = clip_paths[1:]
-            t.chapters = info.get("chapter_times", [])
-            t.disc_name = disc_name
-            t.disc_barcode = disc_barcode
-            t.playlist_name = mpls.stem
-            t.clip_durations = [pi["duration"] for pi in info["play_items"]]
-            try:
-                t.clip_sizes = [cp.stat().st_size for cp in clip_paths]
-            except OSError:
-                t.clip_sizes = []
-            # Strip trailing end chapter (matches MakeMKV).
-            if t.chapters and t.chapters[-1] >= total_duration:
-                t.chapters = t.chapters[:-1]
-            _apply_stn_languages(t, info["audio_langs"], info["subtitle_langs"])
-            if len(clip_paths) > 1:
-                log_debug(f"{mpls.stem}: {len(clip_paths)} clips will be appended")
-            titles.append(t)
+    playlist_dir = bdmv / "PLAYLIST"
+    stream_dir = bdmv / "STREAM"
+    if playlist_dir.is_dir():
+        _scan_playlist_titles(
+            titles,
+            playlist_dir,
+            clpi_dir if clpi_dir.is_dir() else None,
+            stream_dir,
+            disc_name,
+            disc_barcode,
+            config,
+        )
 
     if not titles:
-        stream_dir_lower = (
-            source / "BDMV" / "STREAM"
-            if (source / "BDMV").is_dir()
-            else source / "bdmv" / "STREAM"
-        )
-        if stream_dir_lower.is_dir():
-            _scan_m2ts_dir(stream_dir_lower, titles)
+        raw_stream_dir = _fallback_raw_m2ts_dir(bdmv)
+        if raw_stream_dir is not None:
+            _scan_m2ts_dir(raw_stream_dir, titles)
 
     titles = _dedup_duplicate_playlists(titles)
     return titles, disc_name
@@ -773,51 +912,176 @@ def _scan_device_source(source: Path) -> list[Title]:
     return titles
 
 
+def _first_iso_playlist_clpi(
+    playlist_path: Path, extracted_clpi: dict[str, Path]
+) -> Path | None:
+    """Read the first play-item clip name from a raw MPLS blob."""
+    try:
+        data = playlist_path.read_bytes()
+        if len(data) < 40 or data[0:4] != b"MPLS":
+            return None
+        play_items_position = _read_u32(data, 8) + 10
+        if play_items_position + 2 > len(data):
+            return None
+        play_item_length = _read_u16(data, play_items_position)
+        play_item = data[
+            play_items_position + 2 : play_items_position + 2 + play_item_length
+        ]
+        if len(play_item) < 32:
+            return None
+        clip_name = play_item[0:5].decode("ascii", "ignore")
+        return extracted_clpi.get(clip_name)
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _iso_clip_internals(
+    play_items: list[dict[str, Any]], m2ts_by_clip: dict[str, str]
+) -> list[str]:
+    clip_internals: list[str] = []
+    for play_item in play_items:
+        internal_path = m2ts_by_clip.get(play_item["clip"])
+        if internal_path:
+            clip_internals.append(internal_path)
+        else:
+            log_debug(f"  Clip {play_item['clip']}.m2ts not found in ISO")
+    return clip_internals
+
+
+def _build_iso_bluray_playlist_title(
+    *,
+    playlist_path: Path,
+    index: int,
+    source_file: Path,
+    extracted_clpi: dict[str, Path],
+    m2ts_by_clip: dict[str, str],
+    sizes: dict[str, int],
+    minimum_duration: float,
+) -> Title | None:
+    first_clip_clpi = _first_iso_playlist_clpi(playlist_path, extracted_clpi)
+    clpi_dir = (
+        first_clip_clpi.parent
+        if first_clip_clpi is not None and first_clip_clpi.suffix.lower() == ".clpi"
+        else None
+    )
+
+    playlist_info = _parse_mpls(playlist_path, clpi_dir=clpi_dir)
+    if not playlist_info:
+        log_debug(f"MPLS parse failed for {playlist_path.name}")
+        return None
+
+    play_items = playlist_info["play_items"]
+    total_duration = sum(play_item["duration"] for play_item in play_items)
+    if total_duration < minimum_duration:
+        return None
+
+    clip_internals = _iso_clip_internals(play_items, m2ts_by_clip)
+    if not clip_internals:
+        log_debug(f"  No M2TS files found for {playlist_path.name}, skipping")
+        return None
+
+    title_streams = _streams_from_mpls(playlist_info.get("streams", []))
+    if not title_streams:
+        log_debug(f"  No usable streams from {playlist_path.name}, skipping")
+        return None
+
+    title = Title(
+        index,
+        source_file,
+        f"Playlist {playlist_path.stem}",
+        total_duration,
+    )
+    title.streams = title_streams
+    title.chapters = playlist_info.get("chapter_times", [])
+    if title.chapters and title.chapters[-1] >= total_duration:
+        title.chapters = title.chapters[:-1]
+    title.iso_internal_paths = clip_internals
+    title.estimated_size_bytes = sum(
+        sizes.get(internal_path, 0) for internal_path in clip_internals
+    )
+    title.playlist_name = playlist_path.stem
+    title.clip_durations = [play_item["duration"] for play_item in play_items]
+    title.clip_sizes = [sizes.get(internal_path, 0) for internal_path in clip_internals]
+    return title
+
+
+def _scanned_title_sort_key(title: Title) -> tuple[int, int, float]:
+    # Episodes first, other titles by duration, then the play-all chain last.
+    if title.dvd_play_all:
+        group = 2
+    elif title.dvd_episode_number is not None:
+        group = 0
+    else:
+        group = 1
+    return (
+        group,
+        title.dvd_episode_number if title.dvd_episode_number is not None else 0,
+        -title.duration_seconds,
+    )
+
+
+def _sort_and_reindex_titles(titles: list[Title]) -> None:
+    titles.sort(key=_scanned_title_sort_key)
+    for index, title in enumerate(titles):
+        title.index = index
+
+
+def _resolve_iso_source(source: Path) -> Path:
+    if not source.is_dir():
+        return source
+
+    isos = sorted(source.glob("*.iso"))
+    if not isos:
+        log_warn(tr("No ISO file found in {path}", path=source))
+        return source
+
+    selected = isos[0]
+    log_info(tr("Using ISO file in directory: {name}", name=selected.name))
+    return selected
+
+
 @final
 class Scanner:
-    def __init__(self, source: Path):
+    def __init__(
+        self,
+        source: Path,
+        config: Config | None = None,
+        runtime_state: RuntimeState | None = None,
+    ):
+        state = runtime_state or RUNTIME_STATE
         self.source = source
+        self.config = config if config is not None else state.config
+        self.cleanup = state.cleanup
         self.titles: list[Title] = []
         self.disc_name: str | None = None
+
+    def _scan_source_type(self, source_type) -> None:
+        from disc_reader import SourceType
+
+        if source_type in (SourceType.DVD, SourceType.DVD_RAW):
+            self.titles, self.disc_name = _scan_dvd_source(self.source, self.config)
+        elif source_type == SourceType.BLURAY:
+            self.titles, self.disc_name = _scan_bluray_source(self.source, self.config)
+        elif source_type == SourceType.BLURAY_RAW:
+            self.titles, self.disc_name = _scan_bluray_raw_source(self.source)
+        elif source_type == SourceType.VIDEO_FILE:
+            self.titles = _scan_video_source(self.source)
+        elif source_type == SourceType.DEVICE:
+            self.titles = _scan_device_source(self.source)
 
     def scan(self) -> list[Title]:
         from disc_reader import SourceType, detect_source_type
 
-        st = detect_source_type(self.source)
-        log_info(tr("Source type: {type}", type=st.value))
-        if st == SourceType.ISO_UNKNOWN:
-            if self.source.is_dir():
-                isos = sorted(self.source.glob("*.iso"))
-                if isos:
-                    self.source = isos[0]
-                    log_info(
-                        tr("Using ISO file in directory: {name}", name=self.source.name)
-                    )
-                else:
-                    log_warn(tr("No ISO file found in {path}", path=self.source))
+        source_type = detect_source_type(self.source)
+        log_info(tr("Source type: {type}", type=source_type.value))
+        if source_type == SourceType.ISO_UNKNOWN:
+            self.source = _resolve_iso_source(self.source)
             self._scan_iso()
-        elif st in (SourceType.DVD, SourceType.DVD_RAW):
-            self.titles, self.disc_name = _scan_dvd_source(self.source)
-        elif st == SourceType.BLURAY:
-            self.titles, self.disc_name = _scan_bluray_source(self.source)
-        elif st == SourceType.BLURAY_RAW:
-            self.titles, self.disc_name = _scan_bluray_raw_source(self.source)
-        elif st == SourceType.VIDEO_FILE:
-            self.titles = _scan_video_source(self.source)
-        elif st == SourceType.DEVICE:
-            self.titles = _scan_device_source(self.source)
-        self.titles.sort(
-            key=lambda t: (
-                # Episodes first (ordered by episode number), then other titles,
-                # then the "play all" chain last so it doesn't dominate the list.
-                2 if t.dvd_play_all else (0 if t.dvd_episode_number is not None else 1),
-                t.dvd_episode_number if t.dvd_episode_number is not None else 0,
-                -t.duration_seconds,
-            )
-        )
-        for i, t in enumerate(self.titles):
-            t.index = i
-        for t in self.titles:
+        else:
+            self._scan_source_type(source_type)
+
+        _sort_and_reindex_titles(self.titles)
+        if self.titles:
             self._apply_disc_name()
         return self.titles
 
@@ -839,7 +1103,7 @@ class Scanner:
             if not disc:
                 return
             self.disc_name = disc
-        main_idx = pick_main_feature(self.titles)
+        main_idx = pick_main_feature(self.titles, self.config)
         for t in self.titles:
             if t.dvd_episode_number is not None:
                 t.name = f"{self.disc_name} - Episode {t.dvd_episode_number}"
@@ -870,14 +1134,10 @@ class Scanner:
             self._scan_iso_mount()
 
     def _scan_iso_7z(self) -> None:
-        from disc_reader import (
-            _extract_partial_7z,
-            _extract_with_7z,
-            _list_iso_files_7z,
-        )
+        from disc_reader import _list_iso_files_7z
 
         log_info(tr("Scanning ISO with 7z..."))
-        paths, sizes = _list_iso_files_7z(self.source)
+        paths, sizes = _list_iso_files_7z(self.source, self.cleanup.symlinks)
         if not paths:
             log_error(
                 tr("7z could not find any .mpls, .m2ts, or .vob files inside the ISO.")
@@ -888,432 +1148,414 @@ class Scanner:
             p for p in paths if "stream" in p.lower() and p.lower().endswith(".m2ts")
         ]
         if mpls_files:
-            tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
-            _TEMP_DIRS.append(tmp_dir)
-            # Build lookup: clip name -> internal M2TS path (e.g. "00000" -> "BDMV/STREAM/00000.m2ts")
-            m2ts_by_clip: dict[str, str] = {}
-            for p in m2ts_files:
-                stem = Path(p).stem
-                m2ts_by_clip[stem] = p
-            # Build lookup: clip name -> internal CLPI path (e.g. "00000" -> "BDMV/CLIPINF/00000.clpi")
-            clpi_internal: dict[str, str] = {}
-            for p in paths:
-                if p.lower().endswith(".clpi"):
-                    stem = Path(p).stem
-                    clpi_internal[stem] = p
-            # Find bdmt.xml (Blu-ray disc name metadata) inside the ISO.
-            bdmt_files: list[str] = [
-                p
-                for p in paths
-                if p.lower().endswith(".xml")
-                and "meta" in p.lower()
-                and Path(p).stem.startswith("bdmt")
-            ]
-            # Extract MPLS + CLPI + bdmt files in one pass so 7z reads the ISO once.
-            files_to_extract = list(mpls_files)
-            if clpi_internal:
-                files_to_extract.extend(clpi_internal.values())
-            if bdmt_files:
-                files_to_extract.extend(bdmt_files)
-            extracted_paths = _extract_with_7z(self.source, files_to_extract, tmp_dir)
-            # Map extracted CLPI paths back to their clip name for fast lookup.
-            # (MPLS files have the same stem but we only want CLPI here.)
-            extracted_clpi: dict[str, Path] = {}
-            for ep in extracted_paths:
-                if ep.suffix.lower() == ".clpi":
-                    extracted_clpi[ep.stem] = ep
-
-            # Parse bdmt.xml for disc name if present in the ISO.
-            if bdmt_files and not self.disc_name:
-                for ep in extracted_paths:
-                    if ep.suffix.lower() == ".xml" and ep.stem.startswith("bdmt"):
-                        try:
-                            for elem in ET.parse(ep).iter():
-                                if (
-                                    elem.tag.endswith("name")
-                                    and elem.text
-                                    and elem.text.strip()
-                                ):
-                                    raw = elem.text.strip()
-                                    # Preserve spaces but convert newlines to " - "
-                                    self.disc_name = (
-                                        raw.replace("\r\n", " - ")
-                                        .replace("\r", " - ")
-                                        .replace("\n", " - ")
-                                    )
-                                    log_info(
-                                        tr(
-                                            "Disc name from bdmt.xml: {name}",
-                                            name=self.disc_name,
-                                        )
-                                    )
-                                    break
-                        except Exception as e:
-                            log_debug(f"Failed to parse bdmt.xml: {e}")
-                        break
-
-            for ext_path in extracted_paths:
-                if not ext_path.suffix.lower() == ".mpls":
-                    continue
-                # Try to parse CLPI for the first playitem and pass to _parse_mpls.
-                first_clip_clpi: Path | None = None
-                try:
-                    data = ext_path.read_bytes()
-                    if len(data) >= 40 and data[0:4] == b"MPLS":
-                        from_pos = _read_u32(data, 8) + 10
-                        if from_pos + 2 <= len(data):
-                            item_len = _read_u16(data, from_pos)
-                            item = data[from_pos + 2 : from_pos + 2 + item_len]
-                            if len(item) >= 32:
-                                clip_name = item[0:5].decode("ascii", "ignore")
-                                if clip_name in extracted_clpi:
-                                    first_clip_clpi = extracted_clpi[clip_name]
-                except Exception:
-                    pass
-
-                clpi_dir_arg: Path | None = None
-                if first_clip_clpi and first_clip_clpi.suffix.lower() == ".clpi":
-                    clpi_dir_arg = first_clip_clpi.parent
-
-                # Pass the CLPI directory so _parse_mpls merges attributes.
-                info = _parse_mpls(ext_path, clpi_dir=clpi_dir_arg)
-                if not info:
-                    log_debug(f"MPLS parse failed for {ext_path.name}")
-                    continue
-                total_duration = sum(pi["duration"] for pi in info["play_items"])
-                if total_duration < CONFIG.min_duration:
-                    continue
-                # Map playitem clips to their ISO M2TS internal paths.
-                clip_internals: list[str] = []
-                for pi in info["play_items"]:
-                    ip = m2ts_by_clip.get(pi["clip"])
-                    if ip:
-                        clip_internals.append(ip)
-                    else:
-                        log_debug(f"  Clip {pi['clip']}.m2ts not found in ISO")
-                if not clip_internals:
-                    log_debug(f"  No M2TS files found for {ext_path.name}, skipping")
-                    continue
-                # Build stream list from MPLS STN table (no ffprobe needed).
-                mpls_streams = info.get("streams", [])
-                if not mpls_streams:
-                    log_debug(f"  No STN stream info in {ext_path.name}, skipping")
-                    continue
-                type_counts = {
-                    StreamType.VIDEO: 0,
-                    StreamType.AUDIO: 0,
-                    StreamType.SUBTITLE: 0,
-                }
-                title_streams: list[Stream] = []
-                for si in mpls_streams:
-                    st = si["type"]
-                    if st == StreamType.VIDEO:
-                        s = Stream(
-                            0,
-                            StreamType.VIDEO,
-                            si["codec"],
-                            "und",
-                            "",
-                            False,
-                            False,
-                            type_index=0,
-                            pid=si.get("pid"),
-                        )
-                        _set_video_color_from_info(s, si)
-                        title_streams.append(s)
-                        type_counts[StreamType.VIDEO] += 1
-                    elif st == StreamType.AUDIO:
-                        s = Stream(
-                            0,
-                            StreamType.AUDIO,
-                            si["codec"],
-                            si["lang"],
-                            "",
-                            False,
-                            False,
-                            type_index=type_counts[StreamType.AUDIO],
-                            pid=si.get("pid"),
-                        )
-                        s.channels = si.get("channels")
-                        title_streams.append(s)
-                        type_counts[StreamType.AUDIO] += 1
-                    elif st == StreamType.SUBTITLE:
-                        s = Stream(
-                            0,
-                            StreamType.SUBTITLE,
-                            si["codec"],
-                            si["lang"],
-                            "",
-                            False,
-                            False,
-                            type_index=type_counts[StreamType.SUBTITLE],
-                            pid=si.get("pid"),
-                        )
-                        title_streams.append(s)
-                        type_counts[StreamType.SUBTITLE] += 1
-                if not title_streams:
-                    log_debug(f"  No usable streams from {ext_path.name}, skipping")
-                    continue
-                t = Title(
-                    len(self.titles),
-                    self.source,
-                    f"Playlist {ext_path.stem}",
-                    total_duration,
-                )
-                t.streams = title_streams
-                t.chapters = info.get("chapter_times", [])
-                # Strip trailing end chapter (matches MakeMKV).
-                if t.chapters and t.chapters[-1] >= total_duration:
-                    t.chapters = t.chapters[:-1]
-                t.iso_internal_paths = clip_internals
-                t.estimated_size_bytes = sum(sizes.get(p, 0) for p in clip_internals)
-                t.playlist_name = ext_path.stem
-                t.clip_durations = [pi["duration"] for pi in info["play_items"]]
-                t.clip_sizes = [sizes.get(p, 0) for p in clip_internals]
-                self.titles.append(t)
-                log_debug(
-                    f"Built from MPLS: {ext_path.name}, "
-                    f"duration={total_duration:.0f}s, "
-                    f"{len(title_streams)} streams, "
-                    f"{len(clip_internals)} clips"
-                )
-        if mpls_files and not self.titles:
-            log_debug(
-                f"Found {len(mpls_files)} MPLS file(s) in ISO but none produced a "
-                f"valid title (parse failure, zero duration, no streams, "
-                f"or missing M2TS clips)."
-            )
+            self._scan_iso_bluray(paths, sizes, mpls_files, m2ts_files)
         if not mpls_files and m2ts_files:
-            for p in m2ts_files:
-                if tmp := _extract_partial_7z(self.source, p):
-                    if t := _create_title(self.titles, tmp, Path(p).stem):
-                        t.source_file, t.iso_internal_paths = self.source, [p]
-                        t.estimated_size_bytes = sizes.get(p, 0)
-                        self.titles.append(t)
-                    tmp.unlink(missing_ok=True)
+            self._scan_iso_raw_m2ts(m2ts_files, sizes)
         elif not mpls_files and not m2ts_files:
-            # Check for DVD VIDEO_TS content (VOB/IFO files).
-            vob_files = sorted(
-                p
-                for p in paths
-                if p.lower().endswith(".vob") and p.upper().startswith("VIDEO_TS/")
-            )
-            ifo_files = sorted(
-                p
-                for p in paths
-                if p.lower().endswith(".ifo") and p.upper().startswith("VIDEO_TS/")
-            )
-            if vob_files and ifo_files:
-                log_info(tr("Detected DVD VIDEO_TS structure in ISO"))
-                tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
-                _TEMP_DIRS.append(tmp_dir)
-
-                # Extract all IFO files (small) for scanning.
-                files_to_extract = list(ifo_files)
-                # Map VTS number -> internal first-VOB path.
-                vts_first_vob: dict[int, str] = {}
-                for p in vob_files:
-                    m = re.search(r"VTS_(\d+)_1\.VOB$", p, re.IGNORECASE)
-                    if m:
-                        vts = int(m.group(1))
-                        if vts not in vts_first_vob:
-                            vts_first_vob[vts] = p
-                # Map VTS number -> all internal VOB paths (for muxing).
-                # Part 0 (VTS_XX_0.VOB) is the VTSM menu VOB, not part of the
-                # title's VOBU addressing space - the IFO's VOBU_ADMAP and
-                # CellPlaybackInfo sector fields are relative to the title
-                # VOB stream (parts 1+) only. Including part 0 here would
-                # both mux DVD menu video into the output and shift every
-                # sector-based calculation off by the menu VOB's size.
-                vts_all_vobs: dict[int, list[str]] = {}
-                for p in vob_files:
-                    m = re.search(r"VTS_(\d+)_(\d+)\.VOB$", p, re.IGNORECASE)
-                    if m and int(m.group(2)) >= 1:
-                        vts = int(m.group(1))
-                        vts_all_vobs.setdefault(vts, []).append(p)
-                for parts in vts_all_vobs.values():
-                    parts.sort(
-                        key=lambda p: (
-                            int(m.group(1))
-                            if (m := re.search(r"_(\d+)\.VOB$", p))
-                            else 0
-                        )
-                    )
-
-                # Extract IFOs first so we can use them for parsing.
-                extracted = _extract_with_7z(self.source, files_to_extract, tmp_dir)
-
-                # Parse VMG IFO (VIDEO_TS.IFO) for disc name / barcode.
-                vmg_path = next(
-                    (e for e in extracted if e.name.upper() == "VIDEO_TS.IFO"),
-                    None,
-                )
-                vmg_info: VmgInfo | None = None
-                disc_barcode: str | None = None
-                if vmg_path and vmg_path.exists():
-                    try:
-                        vmg_info = _parse_vmg_ifo(vmg_path)
-                    except DvdIfoError as exc:
-                        log_debug(f"VMG IFO parse failed: {exc}")
-                    if vmg_info:
-                        vmg_disc_name = vmg_info.get("disc_name")
-                        if vmg_disc_name:
-                            self.disc_name = vmg_disc_name
-                        disc_barcode = vmg_info.get("barcode")
-
-                # Build reverse lookup: VTS number -> first logical title number.
-                vts_to_title_num: dict[int, int] = {}
-                if vmg_info:
-                    title_map = vmg_info.get("title_map")
-                    if title_map:
-                        for title_idx, (vts_num, _ttl_num) in title_map.items():
-                            if vts_num not in vts_to_title_num:
-                                vts_to_title_num[vts_num] = title_idx
-
-                for ifo_path in sorted(extracted):
-                    m = re.search(r"VTS_(\d+)_0\.IFO$", ifo_path.name, re.IGNORECASE)
-                    if not m:
-                        continue
-                    vts = int(m.group(1))
-                    first_vob_internal = vts_first_vob.get(vts)
-                    if not first_vob_internal:
-                        continue
-                    # Extract the first VOB partially (up to 256 MB) for
-                    # probing/fallback — _build_title_from_ifo reads the IFO,
-                    # not the VOB, so a prefix is sufficient for scanning.
-                    first_vob_extracted = _extract_partial_7z(
-                        self.source, first_vob_internal
-                    )
-                    if not first_vob_extracted:
-                        continue
-                    if first_vob_extracted.suffix.lower() != ".vob":
-                        # _extract_partial_7z creates a .tmp file; rename
-                        # so VOB-dependent paths (mkvmerge probe, etc.) work.
-                        vob_renamed = first_vob_extracted.with_suffix(".vob")
-                        try:
-                            first_vob_extracted.rename(vob_renamed)
-                        except Exception:
-                            pass
-                        else:
-                            first_vob_extracted = vob_renamed
-                            _TEMP_FILES.append(first_vob_extracted)
-
-                    logical_title = vts_to_title_num.get(vts)
-                    title_name = f"Title {vts}"
-                    if logical_title:
-                        title_name = f"Title {logical_title} (VTS {vts})"
-                        log_debug(f"TT_SRPT: VTS {vts} -> DVD Title {logical_title}")
-
-                    t = _build_title_from_ifo(
-                        self.titles,
-                        first_vob_extracted,
-                        ifo_path,
-                        [first_vob_extracted],
-                        vts,
-                        title_name=title_name,
-                    )
-                    if t is None:
-                        if t := _create_title(
-                            self.titles, first_vob_extracted, title_name
-                        ):
-                            t.disc_name = self.disc_name
-                            t.disc_barcode = disc_barcode
-                            _apply_dvd_ifo_languages(t, ifo_path)
-                            t.source_file = self.source
-                            t.iso_internal_paths = vts_all_vobs.get(
-                                vts, [first_vob_internal]
-                            )
-                            t.estimated_size_bytes = sum(
-                                sizes.get(vp, 0) for vp in t.iso_internal_paths
-                            )
-                            self.titles.append(t)
-                        continue
-                    t.source_file = self.source
-                    t.iso_internal_paths = vts_all_vobs.get(vts, [first_vob_internal])
-                    t.estimated_size_bytes = sum(
-                        sizes.get(vp, 0) for vp in t.iso_internal_paths
-                    )
-                    t.disc_name = self.disc_name
-                    t.disc_barcode = disc_barcode
-                    self.titles.append(t)
-
-                    # Seamless-branching discs can hold multiple substantial
-                    # PGCs within the same VTS (e.g. a theatrical cut plus one
-                    # or more longer bonus/extended cuts sharing footage via
-                    # interleaved cells). Expose each as its own separate,
-                    # independently rippable title alongside the default one,
-                    # matching how MakeMKV lists each edition separately
-                    # rather than collapsing them into a single title.
-                    try:
-                        ifo_bytes = ifo_path.read_bytes()
-                    except Exception as e:
-                        log_debug(
-                            f"Alternate-edition PGC scan skipped for {ifo_path.name}: {e}"
-                        )
-                        ifo_bytes = b""
-                    extra_pgcs = (
-                        _find_alternate_edition_pgcs(ifo_bytes, CONFIG.min_duration)
-                        if ifo_bytes
-                        else []
-                    )
-                    for edition_num, pgc_num in enumerate(extra_pgcs, start=2):
-                        edition_name = f"{title_name} - Edition {edition_num}"
-                        t_alt = _build_title_from_ifo(
-                            self.titles,
-                            first_vob_extracted,
-                            ifo_path,
-                            [first_vob_extracted],
-                            vts,
-                            title_name=edition_name,
-                            pgc_number=pgc_num,
-                        )
-                        if t_alt is None:
-                            continue
-                        t_alt.source_file = self.source
-                        t_alt.iso_internal_paths = vts_all_vobs.get(
-                            vts, [first_vob_internal]
-                        )
-                        t_alt.estimated_size_bytes = sum(
-                            sizes.get(vp, 0) for vp in t_alt.iso_internal_paths
-                        )
-                        t_alt.disc_name = self.disc_name
-                        t_alt.disc_barcode = disc_barcode
-                        t_alt.dvd_edition_label = f"Edition {edition_num}"
-                        self.titles.append(t_alt)
-                        log_debug(
-                            f"  Alternate edition: PGC {pgc_num} "
-                            f"({t_alt.duration_seconds:.0f}s) exposed as "
-                            f"'{edition_name}'"
-                        )
-            else:
-                log_debug(
-                    "7z listed files from the ISO, but none matched BDMV/VIDEO_TS "
-                    "paths (.mpls, .m2ts, or .vob). The ISO may not be a video disc."
-                )
+            self._scan_iso_dvd(paths, sizes)
 
         if mpls_files:
             self.titles = _dedup_duplicate_playlists(self.titles)
+
+    def _scan_iso_raw_m2ts(self, m2ts_files: list[str], sizes: dict[str, int]) -> None:
+        from disc_reader import _extract_partial_7z
+
+        for internal_path in m2ts_files:
+            if tmp := _extract_partial_7z(
+                self.source,
+                internal_path,
+                temp_files=self.cleanup.temp_files,
+                symlinks=self.cleanup.symlinks,
+            ):
+                if title := _create_title(self.titles, tmp, Path(internal_path).stem):
+                    title.source_file = self.source
+                    title.iso_internal_paths = [internal_path]
+                    title.estimated_size_bytes = sizes.get(internal_path, 0)
+                    self.titles.append(title)
+                tmp.unlink(missing_ok=True)
+
+    def _scan_iso_bluray(
+        self,
+        paths: list[str],
+        sizes: dict[str, int],
+        mpls_files: list[str],
+        m2ts_files: list[str],
+    ) -> None:
+        from disc_reader import _extract_with_7z
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
+        self.cleanup.register_temp_dir(tmp_dir)
+        m2ts_by_clip = {Path(path).stem: path for path in m2ts_files}
+        clpi_internal = {
+            Path(path).stem: path for path in paths if path.lower().endswith(".clpi")
+        }
+        bdmt_files = [
+            path
+            for path in paths
+            if path.lower().endswith(".xml")
+            and "meta" in path.lower()
+            and Path(path).stem.startswith("bdmt")
+        ]
+
+        files_to_extract = list(mpls_files)
+        files_to_extract.extend(clpi_internal.values())
+        files_to_extract.extend(bdmt_files)
+        extracted_paths = _extract_with_7z(
+            self.source, files_to_extract, tmp_dir, self.cleanup.symlinks
+        )
+        extracted_clpi = {
+            path.stem: path
+            for path in extracted_paths
+            if path.suffix.lower() == ".clpi"
+        }
+        if bdmt_files and not self.disc_name:
+            self._read_iso_disc_name(extracted_paths)
+
+        for ext_path in extracted_paths:
+            if ext_path.suffix.lower() == ".mpls":
+                self._build_iso_bluray_title(
+                    ext_path, extracted_clpi, m2ts_by_clip, sizes
+                )
+
+        if not self.titles:
+            log_debug(
+                f"Found {len(mpls_files)} MPLS file(s) in ISO but none produced a "
+                f"valid title (parse failure, zero duration, no streams, "
+                "or missing M2TS clips)."
+            )
+
+    def _read_iso_disc_name(self, extracted_paths: list[Path]) -> None:
+        for ext_path in extracted_paths:
+            if ext_path.suffix.lower() != ".xml" or not ext_path.stem.startswith(
+                "bdmt"
+            ):
+                continue
+            try:
+                for elem in ET.parse(ext_path).iter():
+                    if elem.tag.endswith("name") and elem.text and elem.text.strip():
+                        raw = elem.text.strip()
+                        self.disc_name = (
+                            raw.replace("\r\n", " - ")
+                            .replace("\r", " - ")
+                            .replace("\n", " - ")
+                        )
+                        log_info(
+                            tr("Disc name from bdmt.xml: {name}", name=self.disc_name)
+                        )
+                        break
+            except (ET.ParseError, OSError, UnicodeError, LookupError) as exc:
+                log_debug(f"Failed to parse bdmt.xml: {exc}")
+            break
+
+    def _scan_iso_dvd(self, paths: list[str], sizes: dict[str, int]) -> None:
+        from disc_reader import _extract_with_7z
+
+        vob_files = sorted(
+            path
+            for path in paths
+            if path.lower().endswith(".vob") and path.upper().startswith("VIDEO_TS/")
+        )
+        ifo_files = sorted(
+            path
+            for path in paths
+            if path.lower().endswith(".ifo") and path.upper().startswith("VIDEO_TS/")
+        )
+        if not vob_files or not ifo_files:
+            log_debug(
+                "7z listed files from the ISO, but none matched BDMV/VIDEO_TS "
+                "paths (.mpls, .m2ts, or .vob). The ISO may not be a video disc."
+            )
+            return
+
+        log_info(tr("Detected DVD VIDEO_TS structure in ISO"))
+        tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
+        self.cleanup.register_temp_dir(tmp_dir)
+        vts_first_vob, vts_all_vobs = self._dvd_iso_vob_maps(vob_files)
+        extracted = _extract_with_7z(
+            self.source, ifo_files, tmp_dir, self.cleanup.symlinks
+        )
+        vmg_info, disc_barcode = self._parse_iso_vmg(extracted)
+        self._scan_iso_dvd_vts(
+            extracted,
+            vts_first_vob,
+            vts_all_vobs,
+            self._vts_title_numbers(vmg_info),
+            disc_barcode,
+            sizes,
+        )
+
+    @staticmethod
+    def _dvd_iso_vob_maps(
+        vob_files: list[str],
+    ) -> tuple[dict[int, str], dict[int, list[str]]]:
+        vts_first_vob: dict[int, str] = {}
+        for internal_path in vob_files:
+            match = re.search(r"VTS_(\d+)_1\.VOB$", internal_path, re.IGNORECASE)
+            if match:
+                vts_first_vob.setdefault(int(match.group(1)), internal_path)
+
+        vts_all_vobs: dict[int, list[str]] = {}
+        for internal_path in vob_files:
+            match = re.search(r"VTS_(\d+)_(\d+)\.VOB$", internal_path, re.IGNORECASE)
+            if match and int(match.group(2)) >= 1:
+                vts_all_vobs.setdefault(int(match.group(1)), []).append(internal_path)
+
+        def part_number(internal_path: str) -> int:
+            match = re.search(r"_(\d+)\.VOB$", internal_path)
+            return int(match.group(1)) if match else 0
+
+        for parts in vts_all_vobs.values():
+            parts.sort(key=part_number)
+        return vts_first_vob, vts_all_vobs
+
+    def _parse_iso_vmg(
+        self, extracted: list[Path]
+    ) -> tuple[VmgInfo | None, str | None]:
+        vmg_path = next(
+            (path for path in extracted if path.name.upper() == "VIDEO_TS.IFO"),
+            None,
+        )
+        if not vmg_path or not vmg_path.exists():
+            return None, None
+
+        vmg_info: VmgInfo | None = None
+        try:
+            vmg_info = _parse_vmg_ifo(vmg_path)
+        except DvdIfoError as exc:
+            log_debug(f"VMG IFO parse failed: {exc}")
+        if not vmg_info:
+            return None, None
+
+        disc_name = vmg_info.get("disc_name")
+        if disc_name:
+            self.disc_name = disc_name
+        return vmg_info, vmg_info.get("barcode")
+
+    @staticmethod
+    def _vts_title_numbers(vmg_info: VmgInfo | None) -> dict[int, int]:
+        title_map = vmg_info.get("title_map") if vmg_info else None
+        if not title_map:
+            return {}
+
+        vts_to_title_num: dict[int, int] = {}
+        for title_idx, (vts_num, _ttl_num) in title_map.items():
+            vts_to_title_num.setdefault(vts_num, title_idx)
+        return vts_to_title_num
+
+    def _scan_iso_dvd_vts(
+        self,
+        extracted: list[Path],
+        vts_first_vob: dict[int, str],
+        vts_all_vobs: dict[int, list[str]],
+        vts_to_title_num: dict[int, int],
+        disc_barcode: str | None,
+        sizes: dict[str, int],
+    ) -> None:
+        from disc_reader import _extract_partial_7z
+
+        for ifo_path in sorted(extracted):
+            match = re.search(r"VTS_(\d+)_0\.IFO$", ifo_path.name, re.IGNORECASE)
+            if not match:
+                continue
+            vts = int(match.group(1))
+            first_vob_internal = vts_first_vob.get(vts)
+            if not first_vob_internal:
+                continue
+
+            first_vob_extracted = _extract_partial_7z(
+                self.source,
+                first_vob_internal,
+                temp_files=self.cleanup.temp_files,
+                symlinks=self.cleanup.symlinks,
+            )
+            if not first_vob_extracted:
+                continue
+            first_vob_extracted = self._ensure_vob_suffix(
+                first_vob_extracted, self.cleanup.temp_files
+            )
+
+            logical_title = vts_to_title_num.get(vts)
+            title_name = f"Title {vts}"
+            if logical_title:
+                title_name = f"Title {logical_title} (VTS {vts})"
+                log_debug(f"TT_SRPT: VTS {vts} -> DVD Title {logical_title}")
+
+            title = _build_title_from_ifo(
+                self.titles,
+                first_vob_extracted,
+                ifo_path,
+                [first_vob_extracted],
+                vts,
+                title_name=title_name,
+                config=self.config,
+            )
+            if title is None:
+                if title := _create_title(self.titles, first_vob_extracted, title_name):
+                    title.disc_name = self.disc_name
+                    title.disc_barcode = disc_barcode
+                    _apply_dvd_ifo_languages(title, ifo_path)
+                    self._apply_iso_dvd_source(
+                        title,
+                        vts,
+                        first_vob_internal,
+                        vts_all_vobs,
+                        disc_barcode,
+                        sizes,
+                    )
+                    self.titles.append(title)
+                continue
+
+            self._apply_iso_dvd_source(
+                title,
+                vts,
+                first_vob_internal,
+                vts_all_vobs,
+                disc_barcode,
+                sizes,
+            )
+            self.titles.append(title)
+            self._scan_iso_dvd_alternate_editions(
+                ifo_path,
+                first_vob_extracted,
+                title_name,
+                vts,
+                first_vob_internal,
+                vts_all_vobs,
+                disc_barcode,
+                sizes,
+            )
+
+    @staticmethod
+    def _ensure_vob_suffix(extracted: Path, temp_files: list[Path]) -> Path:
+        if extracted.suffix.lower() == ".vob":
+            return extracted
+        renamed = extracted.with_suffix(".vob")
+        try:
+            extracted.rename(renamed)
+        except OSError:
+            return extracted
+        temp_files.append(renamed)
+        return renamed
+
+    def _apply_iso_dvd_source(
+        self,
+        title: Title,
+        vts: int,
+        first_vob_internal: str,
+        vts_all_vobs: dict[int, list[str]],
+        disc_barcode: str | None,
+        sizes: dict[str, int],
+    ) -> None:
+        title.source_file = self.source
+        title.iso_internal_paths = vts_all_vobs.get(vts, [first_vob_internal])
+        title.estimated_size_bytes = sum(
+            sizes.get(internal_path, 0) for internal_path in title.iso_internal_paths
+        )
+        title.disc_name = self.disc_name
+        title.disc_barcode = disc_barcode
+
+    def _scan_iso_dvd_alternate_editions(
+        self,
+        ifo_path: Path,
+        first_vob_extracted: Path,
+        title_name: str,
+        vts: int,
+        first_vob_internal: str,
+        vts_all_vobs: dict[int, list[str]],
+        disc_barcode: str | None,
+        sizes: dict[str, int],
+    ) -> None:
+        try:
+            ifo_bytes = ifo_path.read_bytes()
+        except OSError as exc:
+            log_debug(f"Alternate-edition PGC scan skipped for {ifo_path.name}: {exc}")
+            ifo_bytes = b""
+
+        extra_pgcs = (
+            _find_alternate_edition_pgcs(ifo_bytes, self.config.min_duration)
+            if ifo_bytes
+            else []
+        )
+        for edition_num, pgc_num in enumerate(extra_pgcs, start=2):
+            edition_name = f"{title_name} - Edition {edition_num}"
+            alternate = _build_title_from_ifo(
+                self.titles,
+                first_vob_extracted,
+                ifo_path,
+                [first_vob_extracted],
+                vts,
+                title_name=edition_name,
+                pgc_number=pgc_num,
+                config=self.config,
+            )
+            if alternate is None:
+                continue
+            self._apply_iso_dvd_source(
+                alternate,
+                vts,
+                first_vob_internal,
+                vts_all_vobs,
+                disc_barcode,
+                sizes,
+            )
+            alternate.dvd_edition_label = f"Edition {edition_num}"
+            self.titles.append(alternate)
+            log_debug(
+                f"  Alternate edition: PGC {pgc_num} "
+                f"({alternate.duration_seconds:.0f}s) exposed as "
+                f"'{edition_name}'"
+            )
+
+    def _build_iso_bluray_title(
+        self,
+        ext_path: Path,
+        extracted_clpi: dict[str, Path],
+        m2ts_by_clip: dict[str, str],
+        sizes: dict[str, int],
+    ) -> None:
+        title = _build_iso_bluray_playlist_title(
+            playlist_path=ext_path,
+            index=len(self.titles),
+            source_file=self.source,
+            extracted_clpi=extracted_clpi,
+            m2ts_by_clip=m2ts_by_clip,
+            sizes=sizes,
+            minimum_duration=self.config.min_duration,
+        )
+        if title is None:
+            return
+        self.titles.append(title)
+        log_debug(
+            f"Built from MPLS: {ext_path.name}, "
+            f"duration={title.duration_seconds:.0f}s, "
+            f"{len(title.streams)} streams, "
+            f"{len(title.iso_internal_paths)} clips"
+        )
 
     def _scan_iso_mount(self) -> None:
         """Mount the ISO via ``sudo mount -o loop,ro`` and scan the result."""
         from disc_reader import _try_direct_mount
 
-        if CONFIG.no_sudo:
+        if self.config.no_sudo:
             log_info(tr("Skipping direct mount (--no-sudo is set)"))
             return
-        mnt = _try_direct_mount(self.source)
+        mnt = _try_direct_mount(
+            self.source,
+            self.config,
+            direct_mounts=self.cleanup.direct_mounts,
+        )
         if not mnt:
             log_error("All ISO reading methods failed.")
             log_error(f"Try: sudo mount -o loop,ro '{self.source}' /mnt/iso")
             return
         log_info(f"Direct mount succeeded at {mnt}")
         if (mnt / "BDMV").is_dir():
-            blu_titles, disc_name = _scan_bluray_source(mnt)
+            blu_titles, disc_name = _scan_bluray_source(mnt, self.config)
             self.titles.extend(blu_titles)
             if disc_name:
                 self.disc_name = disc_name
         elif (mnt / "VIDEO_TS").is_dir():
-            dvd_titles, disc_name = _scan_dvd_source(mnt)
+            dvd_titles, disc_name = _scan_dvd_source(mnt, self.config)
             self.titles.extend(dvd_titles)
             if disc_name:
                 self.disc_name = disc_name
@@ -1330,10 +1572,9 @@ class Scanner:
             )
             try:
                 mnt.rmdir()
-            except Exception:
+            except OSError:
                 pass
-            if mnt in _DIRECT_MOUNT_CLEANUP:
-                _DIRECT_MOUNT_CLEANUP.remove(mnt)
+            self.cleanup.unregister_direct_mount(mnt)
 
 
 # =============================================================================
@@ -1381,19 +1622,23 @@ def _is_notable_title(title: Title) -> bool:
     return n_audio > 0
 
 
-def _get_notable_titles(titles: list[Title]) -> tuple[list[Title], int]:
+def _get_notable_titles(
+    titles: list[Title], config: Config | None = None
+) -> tuple[list[Title], int]:
     """Return (notable, hidden_count).
 
-    Respects ``CONFIG.show_all`` — when set, all titles are returned as notable
+    Respects ``config.show_all`` — when set, all titles are returned as notable
     and hidden_count is always 0.
     """
-    if CONFIG.show_all:
+    if (config or RUNTIME_STATE.config).show_all:
         return titles, 0
     notable = [t for t in titles if _is_notable_title(t)]
     return notable, len(titles) - len(notable)
 
 
-def _main_feature_score(title: Title) -> tuple[int, int, float]:
+def _main_feature_score(
+    title: Title, config: Config | None = None
+) -> tuple[int, int, float]:
     """Rank titles for "main feature" detection.
 
     DVDs put the real film in the title set with the richest audio/subtitle
@@ -1411,20 +1656,20 @@ def _main_feature_score(title: Title) -> tuple[int, int, float]:
 
     Final tiebreak: duration.
 
-    Titles shorter than ``CONFIG.min_duration`` (default 60s) are excluded
+    Titles shorter than ``config.min_duration`` (default 60s) are excluded
     from main-feature consideration — they are almost always menus, trailers,
     or warning cards with unusually rich stream tables.
     """
-    if title.duration_seconds < CONFIG.min_duration:
+    if title.duration_seconds < (config or RUNTIME_STATE.config).min_duration:
         return (-1, 0, 0.0)
     richness = len(title.audio_streams) + len(title.subtitle_streams)
     is_default_edition = 0 if title.dvd_pgc_number is not None else 1
     return (richness, is_default_edition, title.duration_seconds)
 
 
-def pick_main_feature(titles: list[Title]) -> int:
+def pick_main_feature(titles: list[Title], config: Config | None = None) -> int:
     """Return the index of the best main-feature candidate, or -1 if empty."""
     if not titles:
         return -1
-    best = max(titles, key=_main_feature_score)
+    best = max(titles, key=lambda title: _main_feature_score(title, config))
     return best.index

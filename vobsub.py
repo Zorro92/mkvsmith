@@ -21,9 +21,7 @@ from typing import Any
 from dvdifo import _concat_file_layout, _LANG_MAP_3_TO_2
 
 from models import (
-    _TEMP_FILES,
     _HAS_MKVMERGE,
-    CONFIG,
     get_language_name,
     log_debug,
     log_warn,
@@ -34,8 +32,8 @@ from models import (
 #
 # A DVD VTS stores every Program Chain (the main movie plus short warning /
 # intro / rating-card PGCs) interleaved in the same VOB files. Each cell starts
-# its own PTS timeline at ~0, so when ffmpeg copies the raw VOBs the overlapping
-# timelines collapse: warning cards appear before the movie and the audio ends
+# its own PTS timeline at ~0, so copying concatenated raw VOBs collapses the
+# overlapping timelines: warning cards appear before the movie and the audio ends
 # up far shorter than the video (hard desync). MakeMKV follows the main PGC's
 # cell list and extracts only those cells; we approximate that without a full
 # DVD-nav implementation by locating the longest PTS-continuous run (the movie)
@@ -88,9 +86,9 @@ def _snap_to_pack(inputs: list[Path], pos: int, total: int) -> int:
     """Snap ``pos`` back to the nearest MPEG-PS pack header (sector boundary).
 
     Cell boundaries (and thus clean extraction points) always coincide with a
-    pack header ``00 00 01 BA`` on a 2048-byte sector. The packet ``pos`` we get
-    from ffprobe points at the *payload* of the first video/access unit, slightly
-    past the cell's opening pack, so we search the window before it.
+    pack header ``00 00 01 BA`` on a 2048-byte sector. A packet position from a
+    bitstream scanner can point just past the cell's opening pack, so we search
+    the preceding window.
     """
     window = 1 << 16
     base = max(0, pos - window)
@@ -572,6 +570,8 @@ def _raw_vobsub_spu_scan(data: bytes, start: int = 0) -> list[tuple[int, int, by
 def _scan_vob_subpictures(
     inputs: list[Path],
     max_bytes: int = 0,
+    *,
+    debug: bool = False,
 ) -> dict[int, list[tuple[int, bytes]]]:
     """Scan VOB files for DVD subpicture SPU packets.
 
@@ -839,7 +839,7 @@ def _scan_vob_subpictures(
     _spu_accum.clear()
 
     # Diagnostic: validate first few SPU entries
-    if CONFIG.debug and result:
+    if debug and result:
         for sid in sorted(result):
             entries = result[sid]
             if entries:
@@ -1036,6 +1036,9 @@ def _write_vobsub_files(
     base: Path,
     ifo_palette: list[tuple[int, int, int]] | None = None,
     pts_offset: int = 0,
+    *,
+    temp_files: list[Path],
+    debug: bool = False,
 ) -> tuple[Path, list[dict[str, Any]]] | None:
     """Write VobSub .idx and .sub files from scanned SPU data.
 
@@ -1092,7 +1095,7 @@ def _write_vobsub_files(
             sub_data.extend(sector)
 
     sub_path.write_bytes(bytes(sub_data))
-    _TEMP_FILES.append(sub_path)
+    temp_files.append(sub_path)
 
     # Palette: try SPU data (rarely has SET_COLOR), otherwise use
     # MakeMKV's hardcoded greyscale palette.  MakeMKV ignores the
@@ -1181,17 +1184,17 @@ def _write_vobsub_files(
         track_idx += 1
 
     idx_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    _TEMP_FILES.append(idx_path)
+    temp_files.append(idx_path)
 
     # Debug: save a copy alongside the real files (same temp dir, tracked for cleanup)
-    if CONFIG.debug:
+    if debug:
         try:
             debug_sub = base.with_name(base.name + "_debug.sub")
             debug_idx = base.with_name(base.name + "_debug.idx")
             debug_sub.write_bytes(bytes(sub_data))
             debug_idx.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            _TEMP_FILES.append(debug_sub)
-            _TEMP_FILES.append(debug_idx)
+            temp_files.append(debug_sub)
+            temp_files.append(debug_idx)
             log_debug(f"VobSub debug files saved: {debug_idx}")
         except Exception as e:
             log_debug(f"Failed to save debug VobSub files: {e}")
@@ -1244,11 +1247,14 @@ def _extract_dvd_vobsubs(
     vobu_parts: list[Path] | None = None,
     vobu_part_sizes: list[int] | None = None,
     total_duration: float = 0.0,
+    *,
+    temp_files: list[Path],
+    debug: bool = False,
 ) -> tuple[Path, list[dict[str, Any]]] | None:
     """Extract DVD VobSub subtitles from VOB files by scanning the MPEG-PS
     bitstream directly.
 
-    This is a pure-Python alternative to ffmpeg extraction. mkvmerge cannot
+    This direct parser avoids an external extraction dependency. mkvmerge cannot
     detect DVD subpicture streams in VOB files, so we parse the
     private_stream_1 (0xBD) PES packets ourselves.
 
@@ -1290,7 +1296,7 @@ def _extract_dvd_vobsubs(
             "VobSub: seamless-branching with VOBU parts — "
             "using concatenated VOB scan (no per-part remap)"
         )
-    spus = _scan_vob_subpictures(vob_paths)
+    spus = _scan_vob_subpictures(vob_paths, debug=debug)
     if not spus:
         log_warn(
             "DVD VobSub scan found no subpicture streams in the input VOBs. "
@@ -1362,7 +1368,7 @@ def _extract_dvd_vobsubs(
         log_debug(f"VobSub: PTS baseline scan failed ({e}); using offset 0")
 
     base = Path(tempfile.NamedTemporaryFile(suffix="_vobsub", delete=False).name)
-    _TEMP_FILES.append(base)
+    temp_files.append(base)
     return _write_vobsub_files(
         filtered,
         lang_by_id,
@@ -1370,6 +1376,8 @@ def _extract_dvd_vobsubs(
         base,
         ifo_palette=ifo_palette,
         pts_offset=pts_offset,
+        temp_files=temp_files,
+        debug=debug,
     )
 
 

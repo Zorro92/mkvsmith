@@ -23,6 +23,7 @@ from dvdifo import (
     _get_active_pgc_streams,
     _parse_pgc_stream_languages,
     _parse_vmg_ifo,
+    _pgc_angle_from_commands,
     _parse_vts_c_adt,
     _parse_vts_ifo_languages,
     _parse_vts_pgc_info,
@@ -259,6 +260,8 @@ def test_parse_multi_angle_pgc_chapters(fixtures_dir: Path) -> None:
     assert _find_main_pgc(data) == (4136, 5478.033366666667, 92)
     assert _find_main_pgc(data, 2) == (7124, 5507.8341666666665, 108)
     assert _find_main_pgc(data, 3) == (10534, 5507.8341666666665, 108)
+    assert _pgc_angle_from_commands(data, 7124) == 1
+    assert _pgc_angle_from_commands(data, 10534) == 2
 
     angle_one_chapters, angle_one_duration = _parse_vts_pgc_info(data, 2)
     assert len(angle_one_chapters) == 21

@@ -247,3 +247,35 @@ def test_find_main_pgc_and_enumerate_vts_pgcs(fixtures_dir: Path) -> None:
         (37, 19722, 63.266933333333334, 2),
         (38, 20072, 1104.4337666666668, 14),
     ]
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "beauty_vts_09_0.ifo").is_file(),
+    reason="Beauty and the Beast multi-angle VTS fixture not present",
+)
+def test_parse_multi_angle_pgc_chapters(fixtures_dir: Path) -> None:
+    data = (fixtures_dir / "beauty_vts_09_0.ifo").read_bytes()
+
+    assert _find_main_pgc(data) == (4136, 5478.033366666667, 92)
+    assert _find_main_pgc(data, 2) == (7124, 5507.8341666666665, 108)
+    assert _find_main_pgc(data, 3) == (10534, 5507.8341666666665, 108)
+
+    angle_one_chapters, angle_one_duration = _parse_vts_pgc_info(data, 2)
+    assert len(angle_one_chapters) == 21
+    assert angle_one_duration == pytest.approx(5507.367433333334)
+    assert angle_one_chapters[:4] == pytest.approx(
+        [0.0, 167.0, 433.002, 790.44], abs=1e-3
+    )
+    assert angle_one_chapters[-4:] == pytest.approx(
+        [4543.565, 4716.332, 4989.699, 5241.6], abs=1e-3
+    )
+
+    angle_two_chapters, angle_two_duration = _parse_vts_pgc_info(data, 3)
+    assert len(angle_two_chapters) == 21
+    assert angle_two_duration == pytest.approx(5704.533433333333)
+    assert angle_two_chapters[:4] == pytest.approx(
+        [0.0, 97.334, 288.236, 971.439], abs=1e-3
+    )
+    assert angle_two_chapters[-4:] == pytest.approx(
+        [4740.731, 4913.498, 5186.865, 5438.766], abs=1e-3
+    )

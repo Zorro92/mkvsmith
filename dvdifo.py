@@ -1387,27 +1387,74 @@ def _trim_trailing_menu_programs(
     return chapters, cumulative
 
 
+def _cell_playback_base(cell_table: int, cell: int) -> int:
+    return cell_table + (cell - 1) * _PGCOffset.CELL_PLAYBACK_INFO_LEN
+
+
+def _cell_duration(ifo_data: bytes, cell_base: int) -> float:
+    return _bcd_playback_seconds(
+        ifo_data,
+        cell_base + _PGCOffset.CELL_DURATION_OFFSET,
+    )
+
+
+def _selected_angle_cell(
+    angle_cells: list[int], angle_index: int, last_cell: int
+) -> int:
+    if not angle_cells:
+        return last_cell
+    return angle_cells[min(angle_index, len(angle_cells) - 1)]
+
+
+def _pgc_program_cell_duration(
+    ifo_data: bytes,
+    cell_table: int,
+    entry_cell: int,
+    exit_cell: int,
+    angle_index: int,
+) -> float:
+    duration = 0.0
+    angle_cells: list[int] | None = None
+    for cell in range(entry_cell, exit_cell + 1):
+        cell_base = _cell_playback_base(cell_table, cell)
+        cell_type = (ifo_data[cell_base] >> 6) & 0x03
+        if cell_type == 0:
+            angle_cells = None
+            duration += _cell_duration(ifo_data, cell_base)
+        elif cell_type == 1:
+            angle_cells = [cell]
+        elif cell_type in (2, 3):
+            if angle_cells is None:
+                angle_cells = []
+            angle_cells.append(cell)
+            if cell_type == 3:
+                selected_cell = _selected_angle_cell(angle_cells, angle_index, cell)
+                duration += _cell_duration(
+                    ifo_data, _cell_playback_base(cell_table, selected_cell)
+                )
+                angle_cells = None
+    return duration
+
+
 def _pgc_chapters_and_duration(
     ifo_data: bytes, pgc_abs: int
 ) -> tuple[list[float], float]:
     """Return chapter start times and duration for one PGC.
 
-    Programs define chapter boundaries. Normal and first angle-block cells
-    advance the timeline; the selected angle cell from completed interleaved
-    blocks is used for multi-angle content.
+    Programs define chapter boundaries. Normal cells and the selected cell from
+    each completed angle block advance the timeline.
     """
     tables = _pgc_program_tables(ifo_data, pgc_abs)
     if tables is None:
         return [], 0.0
     program_map, cell_table, program_count, cell_count = tables
 
-    # Detect angle from pre-commands for angle-aware cell duration filtering.
     pgc_angle = _pgc_angle_from_commands(ifo_data, pgc_abs)
     angle_index = pgc_angle - 1
-
     chapters: list[float] = []
     program_durations: list[float] = []
     cumulative = 0.0
+
     for program in range(program_count):
         cell_range = _pgc_program_cell_range(
             ifo_data, program_map, program, program_count, cell_count
@@ -1415,40 +1462,11 @@ def _pgc_chapters_and_duration(
         if cell_range is None:
             continue
         entry_cell, exit_cell = cell_range
-
         chapters.append(round(cumulative, 3))
         program_start = cumulative
-        angle_cells: list[int] | None = None
-        for cell in range(entry_cell, exit_cell + 1):
-            cell_base = cell_table + (cell - 1) * _PGCOffset.CELL_PLAYBACK_INFO_LEN
-            cell_type = (ifo_data[cell_base] >> 6) & 0x03
-            if cell_type == 0:
-                angle_cells = None
-                cumulative += _bcd_playback_seconds(
-                    ifo_data,
-                    cell_base + _PGCOffset.CELL_DURATION_OFFSET,
-                )
-            elif cell_type == 1:
-                angle_cells = [cell]
-            elif cell_type in (2, 3):
-                if angle_cells is None:
-                    angle_cells = []
-                angle_cells.append(cell)
-                if cell_type == 3:
-                    selected_cell = (
-                        angle_cells[min(angle_index, len(angle_cells) - 1)]
-                        if angle_cells
-                        else cell
-                    )
-                    selected_base = (
-                        cell_table
-                        + (selected_cell - 1) * _PGCOffset.CELL_PLAYBACK_INFO_LEN
-                    )
-                    cumulative += _bcd_playback_seconds(
-                        ifo_data,
-                        selected_base + _PGCOffset.CELL_DURATION_OFFSET,
-                    )
-                    angle_cells = None
+        cumulative += _pgc_program_cell_duration(
+            ifo_data, cell_table, entry_cell, exit_cell, angle_index
+        )
         program_durations.append(cumulative - program_start)
 
     return _trim_trailing_menu_programs(chapters, program_durations, cumulative)

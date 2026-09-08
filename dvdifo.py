@@ -1231,11 +1231,68 @@ def _default_pgc_number(ifo_data: bytes) -> int | None:
     return None
 
 
+def _pgc_has_angle_command(ifo_data: bytes, pgc_abs: int) -> bool:
+    command_base = _pgc_command_table_base(ifo_data, pgc_abs)
+    if command_base is None:
+        return False
+    command_count = _pgc_pre_command_count(ifo_data, command_base)
+    return _scan_pgc_angle_commands(ifo_data, command_base, command_count) > 0
+
+
 # Relative duration tolerance for grouping PGCs into an episode cluster.
 # Episodes of a TV series are typically within a few percent of each other;
 # 15% is generous enough to absorb intro/outro variation while still
 # separating a 22-minute episode from a 40-minute documentary on the same disc.
 _EPISODE_DURATION_TOL = 0.15
+_EnumeratedPgc = tuple[int, int, float, int]
+
+
+def _largest_duration_cluster(pgcs: list[_EnumeratedPgc]) -> list[_EnumeratedPgc]:
+    """Return the largest mutually duration-compatible PGC cluster."""
+    best_cluster: list[_EnumeratedPgc] = []
+    for pgc in pgcs:
+        duration = pgc[2]
+        neighbours = [
+            candidate
+            for candidate in pgcs
+            if abs(candidate[2] - duration) / max(candidate[2], duration, 1.0)
+            <= _EPISODE_DURATION_TOL
+        ]
+        if len(neighbours) > len(best_cluster) or (
+            len(neighbours) == len(best_cluster)
+            and best_cluster
+            and duration < best_cluster[0][2]
+        ):
+            best_cluster = neighbours
+    return best_cluster
+
+
+def _has_distinct_pgc_cell_signatures(
+    ifo_data: bytes, cluster: list[_EnumeratedPgc]
+) -> bool:
+    signatures = [
+        signature
+        for signature in (
+            _pgc_cell_position_signature(ifo_data, pgc[1], pgc[3]) for pgc in cluster
+        )
+        if signature is not None
+    ]
+    return len(set(signatures)) == len(signatures)
+
+
+def _find_play_all_pgc(
+    all_pgcs: list[_EnumeratedPgc],
+    episodes: list[_EnumeratedPgc],
+    min_duration: float,
+) -> int | None:
+    episode_total = sum(pgc[2] for pgc in episodes)
+    episode_numbers = {pgc[0] for pgc in episodes}
+    for number, _pgc_abs, duration, _cells in all_pgcs:
+        if number in episode_numbers or duration < min_duration:
+            continue
+        if episode_total > 0 and abs(duration - episode_total) / episode_total <= 0.05:
+            return number
+    return None
 
 
 def _detect_episode_pgcs(
@@ -1269,65 +1326,25 @@ def _detect_episode_pgcs(
     matching its duration against the sum of episode durations (within 5 %).
     """
     all_pgcs = _enumerate_vts_pgcs(ifo_data)
-    substantial = [p for p in all_pgcs if p[2] >= min_duration and p[3] >= 1]
+    substantial = [
+        pgc
+        for pgc in all_pgcs
+        if pgc[2] >= min_duration
+        and pgc[3] >= 1
+        and not _pgc_has_angle_command(ifo_data, pgc[1])
+    ]
     if len(substantial) < 2:
         return [], None
 
-    # --- Duration clustering ---
-    # Pick the PGC whose duration neighbourhood is the largest; all PGCs
-    # within tolerance of it form the candidate episode set. Ties favour the
-    # shorter centre so that, if equal-size clusters exist at different
-    # lengths, the episode-length group wins over a group of long extras.
-    best_cluster: list[tuple[int, int, float, int]] = []
-    for p in substantial:
-        dur = p[2]
-        neighbours = [
-            q
-            for q in substantial
-            if abs(q[2] - dur) / max(q[2], dur, 1.0) <= _EPISODE_DURATION_TOL
-        ]
-        if len(neighbours) > len(best_cluster) or (
-            len(neighbours) == len(best_cluster)
-            and best_cluster
-            and dur < best_cluster[0][2]
-        ):
-            best_cluster = neighbours
-
+    best_cluster = _largest_duration_cluster(substantial)
     if len(best_cluster) < 2:
         return [], None
 
-    # --- Cell-table verification ---
-    # Episode PGCs must have distinct cell-position signatures. Identical
-    # signatures mean the PGCs share the same physical cells (seamless
-    # branching / multi-angle), not separate episode footage.
-    sigs: list[tuple[tuple[int, int], ...]] = []
-    for num, pgc_abs, _dur, n_cells in best_cluster:
-        sig = _pgc_cell_position_signature(ifo_data, pgc_abs, n_cells)
-        if sig is None:
-            # Can't verify — be conservative and keep duration as the sole
-            # signal for this PGC by skipping its signature.
-            continue
-        sigs.append(sig)
-    if sigs and len(set(sigs)) != len(sigs):
-        # At least two PGCs share identical cell tables → branching, not series.
+    if not _has_distinct_pgc_cell_signatures(ifo_data, best_cluster):
         return [], None
 
     episode_nums = sorted(p[0] for p in best_cluster)
-
-    # --- Play-all detection ---
-    # A non-episode PGC whose duration is close to the sum of all episodes.
-    ep_total = sum(p[2] for p in best_cluster)
-    play_all: int | None = None
-    ep_set = set(episode_nums)
-    for num, _pgc_abs, dur, _cells in all_pgcs:
-        if num in ep_set:
-            continue
-        if dur < min_duration:
-            continue
-        if ep_total > 0 and abs(dur - ep_total) / ep_total <= 0.05:
-            play_all = num
-            break
-
+    play_all = _find_play_all_pgc(all_pgcs, best_cluster, min_duration)
     return episode_nums, play_all
 
 

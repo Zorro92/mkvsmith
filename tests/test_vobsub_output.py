@@ -7,7 +7,67 @@ from pathlib import Path
 import pytest
 
 import vobsub
-from vobsub import _write_vobsub_files
+from vobsub import (
+    _filter_vobsub_streams,
+    _vobsub_pts_offset,
+    _write_vobsub_files,
+)
+
+
+def test_filter_vobsub_streams_distributes_zero_only_to_missing_tracks() -> None:
+    filtered, languages = _filter_vobsub_streams(
+        {
+            0: [(20, b"zero-one"), (40, b"zero-two")],
+            0x20: [(10, b"real-one")],
+        },
+        {0x20: "eng", 0x21: "fra"},
+    )
+
+    assert filtered == {
+        0x20: [(10, b"real-one")],
+        0x21: [(20, b"zero-one"), (40, b"zero-two")],
+    }
+    assert languages == {0x20: "eng", 0x21: "fra"}
+
+
+def test_filter_vobsub_streams_skips_zero_when_all_ifo_tracks_are_present() -> None:
+    filtered, languages = _filter_vobsub_streams(
+        {0: [(10, b"zero")], 0x20: [(20, b"real")]},
+        {0x20: "eng"},
+    )
+
+    assert filtered == {0x20: [(20, b"real")]}
+    assert languages == {0x20: "eng"}
+
+
+def test_filter_vobsub_streams_adds_unknown_language() -> None:
+    filtered, languages = _filter_vobsub_streams(
+        {0x21: [(10, b"undeclared")]}, {0x20: "eng"}
+    )
+
+    assert filtered == {0x21: [(10, b"undeclared")]}
+    assert languages == {0x20: "eng", 0x21: "und"}
+
+
+def test_vobsub_pts_offset_uses_first_video_pts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        vobsub, "_scan_vob_pts", lambda *_args, **_kwargs: [(90_000, 8), (91_000, 9)]
+    )
+
+    assert _vobsub_pts_offset([Path("movie.vob")]) == 90_000
+
+
+def test_vobsub_pts_offset_defaults_to_zero_on_scan_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(vobsub, "_scan_vob_pts", fail)
+
+    assert _vobsub_pts_offset([Path("movie.vob")]) == 0
 
 
 def test_write_vobsub_files_interleaves_tracks_by_pts(

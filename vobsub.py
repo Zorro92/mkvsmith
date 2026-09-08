@@ -125,6 +125,13 @@ class _SpuControlState:
     alphas: list[int]
 
 
+@dataclass(slots=True)
+class _PtsScanCounts:
+    start_codes: int = 0
+    video_stream_ids: int = 0
+    pts_values: int = 0
+
+
 def _spu_nibble_quad(data: bytes, offset: int) -> tuple[int, int, int, int]:
     emphasis_two = (data[offset] >> 4) & 0x0F
     emphasis_one = data[offset] & 0x0F
@@ -325,6 +332,50 @@ def _snap_to_pack(inputs: list[Path], pos: int, total: int) -> int:
     return snapped - (snapped % 2048) if snapped % 2048 else snapped
 
 
+def _scan_vob_pts_window(
+    data: bytearray, scan_offset: int
+) -> tuple[list[tuple[int, int]], int, _PtsScanCounts]:
+    """Extract video PTS values from one accumulated scan buffer."""
+    result: list[tuple[int, int]] = []
+    counts = _PtsScanCounts()
+    data_len = len(data)
+
+    while scan_offset < data_len - 3:
+        index = data.find(_PS_VIDEO_START, scan_offset)
+        if index < 0 or index + 3 >= data_len:
+            scan_offset = max(scan_offset, data_len - 3)
+            break
+        counts.start_codes += 1
+        stream_id = data[index + 3]
+        if stream_id == _PS_PACK_SID:
+            scan_offset = index + 4
+            continue
+        if stream_id != _PS_VIDEO_SID:
+            if index + 5 < data_len:
+                pes_length = (data[index + 4] << 8) | data[index + 5]
+                scan_offset = index + 6 + pes_length if pes_length > 0 else index + 4
+            else:
+                scan_offset = index + 4
+            continue
+
+        counts.video_stream_ids += 1
+        if index + 13 >= data_len:
+            scan_offset = max(scan_offset, data_len - 3)
+            break
+        pes_length = (data[index + 4] << 8) | data[index + 5]
+        if (data[index + 7] & 0xC0) != 0 and index + 14 <= data_len:
+            header_data_length = data[index + 8]
+            pts = _decode_pes_pts(data, index + 9)
+            if pts is not None and header_data_length >= 5:
+                result.append((pts, index))
+                counts.pts_values += 1
+
+        scan_offset = index + 6 + pes_length if pes_length > 0 else index + 4
+        if len(result) >= 2_000_000:
+            break
+    return result, scan_offset, counts
+
+
 def _scan_vob_pts(
     inputs: list[Path], max_bytes: int = 512 * 1024 * 1024
 ) -> list[tuple[int, int]]:
@@ -352,9 +403,7 @@ def _scan_vob_pts(
     result: list[tuple[int, int]] = []
     scan_offset = 0
     read_offset = 0
-    found_start_codes = 0
-    found_video_sid = 0
-    found_pts = 0
+    counts = _PtsScanCounts()
     did_try_read = False
 
     while read_offset < scan_limit:
@@ -368,66 +417,20 @@ def _scan_vob_pts(
         did_try_read = True
         data.extend(chunk)
         read_offset += to_read
-        data_len = len(data)
-
-        while scan_offset < data_len - 3:
-            # Look for the MPEG-PS start code prefix (00 00 01).
-            idx = data.find(_PS_VIDEO_START, scan_offset)
-            if idx < 0 or idx + 3 >= data_len:
-                scan_offset = max(scan_offset, data_len - 3)
-                break
-            found_start_codes += 1
-            sid = data[idx + 3]
-            if sid == _PS_PACK_SID:
-                # ---- Pack header (0xBA): advance past start code -----
-                scan_offset = idx + 4
-                continue
-            if sid != _PS_VIDEO_SID:
-                # Skip other non-video streams using PES packet length.
-                if idx + 5 < data_len:
-                    pes_len = (data[idx + 4] << 8) | data[idx + 5]
-                    scan_offset = idx + 6 + pes_len if pes_len > 0 else idx + 4
-                else:
-                    scan_offset = idx + 4
-                continue
-
-            found_video_sid += 1
-            # Video PES packet at idx. Need at least 14 bytes to read PTS.
-            if idx + 13 >= data_len:
-                scan_offset = max(scan_offset, data_len - 3)
-                break
-
-            pes_len = (data[idx + 4] << 8) | data[idx + 5]
-
-            # PES header: byte6 has marker bits '10', byte7 has PTS_DTS_flags,
-            # byte8 has PES_header_data_length, byte9+ has PTS/DTS.
-            # Correctly parse the PTS from the PES header.
-            if (data[idx + 7] & 0xC0) != 0 and idx + 14 <= data_len:
-                hdr_data_len = data[idx + 8]
-                pts_off = idx + 9
-                if pts_off + 4 < data_len and hdr_data_len >= 5:
-                    pts = _decode_pes_pts(data, pts_off)
-                    if pts is not None:
-                        result.append((pts, idx))
-                        found_pts += 1
-
-            # Advance past this PES packet.
-            if pes_len > 0:
-                scan_offset = idx + 6 + pes_len
-            else:
-                scan_offset = idx + 4
-
-            # Cap results to avoid memory issues.
-            if len(result) >= 2_000_000:
-                break
-
+        window_result, scan_offset, window_counts = _scan_vob_pts_window(
+            data, scan_offset
+        )
+        result.extend(window_result)
+        counts.start_codes += window_counts.start_codes
+        counts.video_stream_ids += window_counts.video_stream_ids
+        counts.pts_values += window_counts.pts_values
         if len(result) >= 2_000_000:
             break
 
     log_debug(
         f"VOB PTS scan: {len(result)} PTS entries, "
-        f"{found_start_codes} start codes, {found_video_sid} video SIDs, "
-        f"{found_pts} with PTS, "
+        f"{counts.start_codes} start codes, {counts.video_stream_ids} video SIDs, "
+        f"{counts.pts_values} with PTS, "
         f"in {read_offset // (1024 * 1024)} MB"
         f" (did_try_read={did_try_read})"
     )

@@ -74,6 +74,36 @@ class _Private1Packet:
     subpicture: _SubpicturePayload | None
 
 
+class _SpuAccumulator:
+    """Join continuation PES packets that form one DVD subpicture."""
+
+    def __init__(self) -> None:
+        self._packets: dict[int, tuple[int, list[bytes]]] = {}
+
+    def add(
+        self, sub_stream_id: int, pts: int, chunk: bytes
+    ) -> tuple[int, bytes] | None:
+        if sub_stream_id not in self._packets:
+            self._packets[sub_stream_id] = (pts, [chunk])
+            return None
+
+        accumulated_pts, chunks = self._packets[sub_stream_id]
+        if pts and pts != accumulated_pts and chunks:
+            self._packets[sub_stream_id] = (pts, [chunk])
+            return accumulated_pts, b"".join(chunks)
+        chunks.append(chunk)
+        if pts and not accumulated_pts:
+            self._packets[sub_stream_id] = (pts, chunks)
+        return None
+
+    def flush(self) -> dict[int, list[tuple[int, bytes]]]:
+        result: dict[int, list[tuple[int, bytes]]] = {}
+        for sub_stream_id, (accumulated_pts, chunks) in self._packets.items():
+            result[sub_stream_id] = [(accumulated_pts, b"".join(chunks))]
+        self._packets.clear()
+        return result
+
+
 def _read_concat_bytes(inputs: list[Path], start: int, length: int) -> bytes:
     """Read ``length`` bytes starting at global offset ``start`` across inputs."""
     out = bytearray()
@@ -686,9 +716,7 @@ def _scan_vob_subpictures(
     total_found_private1 = 0
     total_found_private2 = 0
     total_found_subpic = 0
-    # Accumulator for multi-packet SPUs (Warner Bros. splits SPUs across sectors).
-    # Key: sub_stream_id, Value: (pts, [chunk_bytes, ...])
-    _spu_accum: dict[int, tuple[int, list[bytes]]] = {}
+    spu_accumulator = _SpuAccumulator()
 
     _SCAN_WINDOW = 64 * 1024 * 1024  # 64 MB sliding window
     _SEARCH_PATTERN = b"\x00\x00\x01"
@@ -763,32 +791,13 @@ def _scan_vob_subpictures(
                                 pts = subpicture.pts
                                 spu_chunk = bytes(buf[subpicture.start : packet.end])
 
-                                # Accumulator for multi-packet SPUs. On Warner
-                                # Bros. DVDs a single SPU is split across multiple
-                                # consecutive 0xBD PES packets. The first packet
-                                # carries the SPU header; continuation packets carry
-                                # pixel data. A PTS change for the same sub_id
-                                # signals the end of the current SPU.
-                                if sub_stream_id in _spu_accum:
-                                    acc_pts, chunks = _spu_accum[sub_stream_id]
-                                    if pts and pts != acc_pts and len(chunks) >= 1:
-                                        full_data = b"".join(chunks)
-                                        result.setdefault(sub_stream_id, []).append(
-                                            (acc_pts, full_data)
-                                        )
-                                        _spu_accum[sub_stream_id] = (
-                                            pts,
-                                            [spu_chunk],
-                                        )
-                                    else:
-                                        chunks.append(spu_chunk)
-                                        if pts and not acc_pts:
-                                            _spu_accum[sub_stream_id] = (
-                                                pts,
-                                                chunks,
-                                            )
-                                else:
-                                    _spu_accum[sub_stream_id] = (pts, [spu_chunk])
+                                completed_spu = spu_accumulator.add(
+                                    sub_stream_id, pts, spu_chunk
+                                )
+                                if completed_spu is not None:
+                                    result.setdefault(sub_stream_id, []).append(
+                                        completed_spu
+                                    )
                             scan = max(packet.end, idx + 4)
 
                         elif sid == _PS_PRIVATE2_SID:
@@ -860,10 +869,8 @@ def _scan_vob_subpictures(
 
     # Flush any remaining SPUs in the accumulator (PTS-based boundaries already
     # handled all splits; just emit everything remaining, no spu_size truncation).
-    for sid, (acc_pts, chunks) in list(_spu_accum.items()):
-        full_data = b"".join(chunks)
-        result.setdefault(sid, []).append((acc_pts, full_data))
-    _spu_accum.clear()
+    for sid, entries in spu_accumulator.flush().items():
+        result.setdefault(sid, []).extend(entries)
 
     # Diagnostic: validate first few SPU entries
     if debug and result:

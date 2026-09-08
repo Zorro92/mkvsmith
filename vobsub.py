@@ -60,6 +60,13 @@ _PS_PACK_SID = 0xBA
 _PS_SUBP_START = 0x20
 _PS_SUBP_END = 0x3F
 
+_FFMPEG_SPU_LEVEL_MAP = [
+    [0xFF],
+    [0x00, 0xFF],
+    [0x00, 0x80, 0xFF],
+    [0x00, 0x55, 0xAA, 0xFF],
+]
+
 
 @dataclass(slots=True)
 class _SubpicturePayload:
@@ -102,6 +109,150 @@ class _SpuAccumulator:
             result[sub_stream_id] = [(accumulated_pts, b"".join(chunks))]
         self._packets.clear()
         return result
+
+
+@dataclass(slots=True)
+class _SpuControlState:
+    palette_indexes: list[int | None]
+    alphas: list[int]
+
+
+def _spu_nibble_quad(data: bytes, offset: int) -> tuple[int, int, int, int]:
+    emphasis_two = (data[offset] >> 4) & 0x0F
+    emphasis_one = data[offset] & 0x0F
+    pattern = (data[offset + 1] >> 4) & 0x0F
+    background = data[offset + 1] & 0x0F
+    return emphasis_two, emphasis_one, pattern, background
+
+
+def _parse_spu_control_state(spu_data: bytes) -> _SpuControlState | None:
+    """Parse linked DVD SPU display-control sequences.
+
+    Bytes 2-3 of the SPU point to its first control sequence. Every sequence
+    contains a two-byte date, a two-byte absolute link to the next sequence,
+    then variable-length opcodes ending in ``0xff``. This layout follows the
+    DVD SPU control-sequence reference documented by Sam Hocevar.
+    """
+    if len(spu_data) < 4:
+        return None
+    sequence_offset = (spu_data[2] << 8) | spu_data[3]
+    if sequence_offset < 4 or sequence_offset + 4 > len(spu_data):
+        return None
+
+    state = _SpuControlState(
+        palette_indexes=[None, None, None, None],
+        alphas=[0, 0, 0, 0],
+    )
+    visited: set[int] = set()
+    while sequence_offset not in visited:
+        visited.add(sequence_offset)
+        next_offset = (spu_data[sequence_offset + 2] << 8) | spu_data[
+            sequence_offset + 3
+        ]
+        command_offset = sequence_offset + 4
+        while command_offset < len(spu_data):
+            opcode = spu_data[command_offset]
+            command_offset += 1
+            if opcode == 0xFF:
+                break
+            if opcode in (0x00, 0x01, 0x02):
+                continue
+            if opcode in (0x03, 0x04):
+                if command_offset + 2 > len(spu_data):
+                    break
+                emphasis_two, emphasis_one, pattern, background = _spu_nibble_quad(
+                    spu_data, command_offset
+                )
+                if opcode == 0x03:
+                    state.palette_indexes = [
+                        background,
+                        pattern,
+                        emphasis_one,
+                        emphasis_two,
+                    ]
+                else:
+                    state.alphas = [
+                        background,
+                        pattern,
+                        emphasis_one,
+                        emphasis_two,
+                    ]
+                command_offset += 2
+                continue
+            if opcode == 0x05:
+                argument_length = 6
+            elif opcode == 0x06:
+                argument_length = 4
+            elif opcode == 0x07:
+                if command_offset + 2 > len(spu_data):
+                    break
+                argument_length = 2 + (
+                    (spu_data[command_offset] << 8) | spu_data[command_offset + 1]
+                )
+            else:
+                break
+            if command_offset + argument_length > len(spu_data):
+                break
+            command_offset += argument_length
+
+        if (
+            next_offset == sequence_offset
+            or next_offset < 4
+            or next_offset >= len(spu_data)
+        ):
+            break
+        sequence_offset = next_offset
+
+    has_color = any(index is not None for index in state.palette_indexes)
+    has_contrast = any(alpha > 0 for alpha in state.alphas)
+    if not has_color and not has_contrast:
+        return None
+    return state
+
+
+def _build_spu_palette(
+    state: _SpuControlState, clut: list[tuple[int, int, int]] | None
+) -> list[tuple[int, int, int]] | None:
+    """Build a 16-entry palette from an authoritative CLUT or SPU contrast."""
+    if clut is not None:
+        return [
+            clut[index] if index < len(clut) else (0x82, 0x82, 0x82)
+            for index in range(16)
+        ]
+    if not any(alpha > 0 for alpha in state.alphas):
+        return None
+
+    opaque_indexes = sorted(
+        {
+            palette_index
+            for palette_value, palette_index in enumerate(state.palette_indexes)
+            if palette_index is not None and state.alphas[palette_value] > 0
+        }
+    )
+    level_count = min(len(opaque_indexes), 4)
+    levels = (
+        _FFMPEG_SPU_LEVEL_MAP[level_count - 1]
+        if level_count > 0
+        else _FFMPEG_SPU_LEVEL_MAP[0]
+    )
+    grayscale_by_index: dict[int, tuple[int, int, int]] = {}
+    for level, palette_index in enumerate(opaque_indexes):
+        grayscale = (0xFF * levels[level]) >> 8
+        grayscale_by_index[palette_index] = (grayscale, grayscale, grayscale)
+    palette: list[tuple[int, int, int]] = []
+    for palette_value in range(16):
+        if palette_value >= 4:
+            palette.append((0x82, 0x82, 0x82))
+            continue
+        palette_index = state.palette_indexes[palette_value]
+        color = grayscale_by_index.get(palette_index)
+        if color is not None:
+            palette.append(color)
+        elif state.alphas[palette_value] == 0:
+            palette.append((0, 0, 0))
+        else:
+            palette.append((0xFF, 0xFF, 0xFF))
+    return palette
 
 
 def _read_concat_bytes(inputs: list[Path], start: int, length: int) -> bytes:
@@ -297,150 +448,11 @@ def _extract_spu_palette(
     Returns a 16-entry list of ``(R, G, B)`` tuples, or ``None`` if
     no SET_COLOR or SET_CONTR is found.
     """
-    if len(spu_data) < 14:
-        return None
-    pcs_off = (spu_data[2] << 8) | spu_data[3]
-    if pcs_off < 4 or pcs_off > len(spu_data) - 14:
-        return None
-    if pcs_off + 12 > len(spu_data):
+    state = _parse_spu_control_state(spu_data)
+    if state is None:
         return None
 
-    display_ctrl = spu_data[pcs_off + 2]
-    has_color = bool(display_ctrl & 0x08)
-    has_contrast = bool(display_ctrl & 0x04)
-    if not has_color and not has_contrast:
-        return None
-
-    # --- Date/offset table ---------------------------------------------------
-    tbl_off = pcs_off + 12
-    cmd_offsets: list[int] = []
-    while tbl_off + 4 <= len(spu_data):
-        offset = (spu_data[tbl_off + 2] << 8) | spu_data[tbl_off + 3]
-        if offset == 0:
-            break
-        cmd_offsets.append(offset)
-        tbl_off += 4
-    if not cmd_offsets:
-        return None
-
-    # --- Walk command chains -------------------------------------------------
-    _pal_idx: list[int | None] = [None, None, None, None]
-    _alpha: list[int] = [0, 0, 0, 0]
-
-    def _nibble_pair(data: bytes, off: int) -> tuple[int, int, int, int]:
-        em2 = (data[off] >> 4) & 0x0F
-        em1 = data[off] & 0x0F
-        pat = (data[off + 1] >> 4) & 0x0F
-        bg = data[off + 1] & 0x0F
-        return em2, em1, pat, bg
-
-    for chain_off in cmd_offsets:
-        off = pcs_off + chain_off
-        if off >= len(spu_data):
-            continue
-        while off < len(spu_data):
-            opcode = spu_data[off]
-            off += 1
-            if opcode == 0xFF:
-                break
-            elif opcode == 0x03:  # SET_COLOR
-                if off + 2 > len(spu_data):
-                    break
-                em2, em1, pat, bg = _nibble_pair(spu_data, off)
-                _pal_idx[0] = bg
-                _pal_idx[1] = pat
-                _pal_idx[2] = em1
-                _pal_idx[3] = em2
-                off += 2
-            elif opcode == 0x04:  # SET_CONTR
-                if off + 2 > len(spu_data):
-                    break
-                em2, em1, pat, bg = _nibble_pair(spu_data, off)
-                _alpha[0] = bg
-                _alpha[1] = pat
-                _alpha[2] = em1
-                _alpha[3] = em2
-                off += 2
-            elif opcode in (0x00, 0x01, 0x02):
-                pass
-            elif opcode == 0x05:
-                off += 6
-            elif opcode == 0x06:
-                off += 4
-            elif opcode == 0x07:
-                if off + 2 <= len(spu_data):
-                    chg_len = (spu_data[off] << 8) | spu_data[off + 1]
-                    off += 2 + chg_len
-                else:
-                    break
-            else:
-                break
-
-    # Need at least SET_COLOR or SET_CONTR to have been found
-    if all(i is None for i in _pal_idx) and all(a == 0 for a in _alpha):
-        return None
-
-    # --- Build palette -------------------------------------------------------
-    # Priority:
-    # 1. CLUT available (from IFO PGC): use it for all 16 entries directly.
-    #    The CLUT is the authoritative PGC palette; SET_COLOR/SET_CONTR in
-    #    the SPU stream tells the player which entries to use per-event but
-    #    we provide the full palette so the player can reference any index.
-    # 2. No CLUT but SET_CONTR found: adopt FFmpeg's level_map approach
-    #    (dvdsubdec.c guess_palette) to distribute grey levels across the
-    #    distinct colormap indices used by opaque pixel values, so that
-    #    text, outline and anti-alias get perceptibly different colours
-    #    instead of all being white.
-    # 3. Otherwise: return None (no usable colour information).
-    _LEVEL_MAP_FFMPEG = [
-        [0xFF],  # 1 opaque colour → white
-        [0x00, 0xFF],  # 2 → black + white
-        [0x00, 0x80, 0xFF],  # 3 → black, grey, white
-        [0x00, 0x55, 0xAA, 0xFF],  # 4 → dark, med, light, white
-    ]
-
-    result: list[tuple[int, int, int]] = []
-
-    if clut is not None:
-        # CLUT available: use it verbatim for all 16 palette entries.
-        for i in range(16):
-            result.append(clut[i] if i < len(clut) else (0x82, 0x82, 0x82))
-    elif any(x > 0 for x in _alpha):
-        # No CLUT: distribute grey levels across unique colormap indices
-        # used by opaque pixel values, matching FFmpeg's guess_palette.
-        unique_cm = sorted(
-            {v for pv in range(4) if (v := _pal_idx[pv]) is not None and _alpha[pv] > 0}
-        )
-        n = min(len(unique_cm), 4)
-        levels = _LEVEL_MAP_FFMPEG[n - 1] if n > 0 else [0xFF]
-
-        # Assign one level per distinct colormap index.
-        _cm_color: dict[int, tuple[int, int, int]] = {}
-        for j, cm_idx in enumerate(unique_cm):
-            lvl = levels[j] if j < len(levels) else 0xFF
-            grey = (0xFF * lvl) >> 8
-            _cm_color[cm_idx] = (grey, grey, grey)
-
-        for pv in range(16):
-            if pv < 4:
-                idx = _pal_idx[pv]
-                a = _alpha[pv]
-                if idx is not None and idx in _cm_color:
-                    result.append(_cm_color[idx])
-                elif a == 0 and any(x > 0 for x in _alpha):
-                    # Transparent background — black is safe; the
-                    # player won't display it due to zero contrast.
-                    result.append((0, 0, 0))
-                else:
-                    # Fallback: white.
-                    result.append((0xFF, 0xFF, 0xFF))
-            else:
-                result.append((0x82, 0x82, 0x82))
-    else:
-        # No CLUT and no SET_CONTR — no usable colour information.
-        return None
-
-    return result
+    return _build_spu_palette(state, clut)
 
 
 def _default_vobsub_palette() -> str:

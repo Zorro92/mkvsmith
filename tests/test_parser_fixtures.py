@@ -40,7 +40,7 @@ from dvdifo import (
     _build_main_edition_vobu_ranges,
 )
 from models import StreamType
-from vobsub import _scan_vob_subpictures
+from vobsub import _extract_spu_palette, _scan_vob_subpictures
 
 # Disc-derived fixtures are not committed (to avoid redistributing disc
 # metadata). These tests skip on a fresh clone; capture the fixtures locally
@@ -392,6 +392,11 @@ def test_scan_multi_angle_vob_subpictures(fixtures_dir: Path) -> None:
 
     assert 0x20 in result
     assert 0x21 in result
+    assert all(
+        _extract_spu_palette(spu_data) is None
+        for entries in (result[0x20], result[0x21])
+        for _pts, spu_data in entries
+    )
     for sub_stream_id in (0x20, 0x21):
         entries = result[sub_stream_id]
         assert [(pts, len(data)) for pts, data in entries] == [(25257, 988)]

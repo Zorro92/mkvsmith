@@ -140,6 +140,60 @@ def _spu_nibble_quad(data: bytes, offset: int) -> tuple[int, int, int, int]:
     return emphasis_two, emphasis_one, pattern, background
 
 
+def _execute_spu_control_commands(
+    spu_data: bytes, command_offset: int, state: _SpuControlState
+) -> int:
+    """Apply one control sequence's opcodes and return the final offset."""
+    while command_offset < len(spu_data):
+        opcode = spu_data[command_offset]
+        command_offset += 1
+        if opcode == 0xFF:
+            break
+        if opcode in (0x00, 0x01, 0x02):
+            continue
+        if opcode in (0x03, 0x04):
+            if command_offset + 2 > len(spu_data):
+                break
+            emphasis_two, emphasis_one, pattern, background = _spu_nibble_quad(
+                spu_data, command_offset
+            )
+            if opcode == 0x03:
+                state.palette_indexes = [
+                    background,
+                    pattern,
+                    emphasis_one,
+                    emphasis_two,
+                ]
+            else:
+                state.alphas = [
+                    background,
+                    pattern,
+                    emphasis_one,
+                    emphasis_two,
+                ]
+            command_offset += 2
+            continue
+
+        argument_length: int
+        if opcode == 0x05:
+            argument_length = 6
+        elif opcode == 0x06:
+            argument_length = 4
+        elif opcode == 0x07:
+            if command_offset + 2 > len(spu_data):
+                break
+            argument_length = 2 + (
+                (spu_data[command_offset] << 8) | spu_data[command_offset + 1]
+            )
+        else:
+            break
+        if command_offset + argument_length > len(spu_data):
+            break
+        command_offset += argument_length
+    assert isinstance(command_offset, int)
+    return command_offset
+
+
 def _parse_spu_control_state(spu_data: bytes) -> _SpuControlState | None:
     """Parse linked DVD SPU display-control sequences.
 
@@ -164,51 +218,7 @@ def _parse_spu_control_state(spu_data: bytes) -> _SpuControlState | None:
         next_offset = (spu_data[sequence_offset + 2] << 8) | spu_data[
             sequence_offset + 3
         ]
-        command_offset = sequence_offset + 4
-        while command_offset < len(spu_data):
-            opcode = spu_data[command_offset]
-            command_offset += 1
-            if opcode == 0xFF:
-                break
-            if opcode in (0x00, 0x01, 0x02):
-                continue
-            if opcode in (0x03, 0x04):
-                if command_offset + 2 > len(spu_data):
-                    break
-                emphasis_two, emphasis_one, pattern, background = _spu_nibble_quad(
-                    spu_data, command_offset
-                )
-                if opcode == 0x03:
-                    state.palette_indexes = [
-                        background,
-                        pattern,
-                        emphasis_one,
-                        emphasis_two,
-                    ]
-                else:
-                    state.alphas = [
-                        background,
-                        pattern,
-                        emphasis_one,
-                        emphasis_two,
-                    ]
-                command_offset += 2
-                continue
-            if opcode == 0x05:
-                argument_length = 6
-            elif opcode == 0x06:
-                argument_length = 4
-            elif opcode == 0x07:
-                if command_offset + 2 > len(spu_data):
-                    break
-                argument_length = 2 + (
-                    (spu_data[command_offset] << 8) | spu_data[command_offset + 1]
-                )
-            else:
-                break
-            if command_offset + argument_length > len(spu_data):
-                break
-            command_offset += argument_length
+        _execute_spu_control_commands(spu_data, sequence_offset + 4, state)
 
         if (
             next_offset == sequence_offset

@@ -42,5 +42,22 @@ def test_extract_spu_palette_prefers_authoritative_clut() -> None:
     assert _extract_spu_palette(_documented_reference_spu(), clut) == clut
 
 
+def test_extract_spu_palette_skips_change_color_command_payload() -> None:
+    spu = bytearray(16)
+    spu[0:2] = len(spu).to_bytes(2, "big")
+    spu[2:4] = (4).to_bytes(2, "big")
+    spu[4:] = bytes.fromhex("00000004070002aabb031234040ff0ff")
+
+    palette = _extract_spu_palette(bytes(spu))
+
+    assert palette is not None
+    assert palette[:4] == [
+        (0, 0, 0),
+        (0xFE, 0xFE, 0xFE),
+        (0, 0, 0),
+        (0, 0, 0),
+    ]
+
+
 def test_extract_spu_palette_rejects_truncated_control_offset() -> None:
     assert _extract_spu_palette(b"\x00\x10\x0a\x0c") is None

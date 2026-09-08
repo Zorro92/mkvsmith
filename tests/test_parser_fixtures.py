@@ -20,6 +20,7 @@ import pytest
 
 from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from dvdifo import (
+    _EditionCell,
     _enumerate_vts_pgcs,
     _find_main_pgc,
     _get_active_pgc_streams,
@@ -34,7 +35,9 @@ from dvdifo import (
     _parse_vts_video_attrs,
     _parse_vts_audio_attrs,
     _parse_vts_vobu_admap,
+    _select_main_edition_cells,
     _vts_ttn1_pgc_abs,
+    _build_main_edition_vobu_ranges,
 )
 from models import StreamType
 from vobsub import _scan_vob_subpictures
@@ -308,6 +311,71 @@ def test_lookup_multi_angle_main_feature_ranges(fixtures_dir: Path) -> None:
         8_192,
         4_333_617_152,
     )
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "beauty_vts_09_0.ifo").is_file(),
+    reason="Beauty and the Beast multi-angle VTS fixture not present",
+)
+def test_select_multi_angle_edition_cells(fixtures_dir: Path) -> None:
+    data = (fixtures_dir / "beauty_vts_09_0.ifo").read_bytes()
+
+    default_selection = _select_main_pgc_cells(data, 1)
+    angle_one_selection = _select_main_pgc_cells(data, 2)
+    angle_two_selection = _select_main_pgc_cells(data, 3)
+    assert default_selection is not None
+    assert angle_one_selection is not None
+    assert angle_two_selection is not None
+
+    default_cells, default_interleaved = default_selection
+    angle_one_cells, angle_one_interleaved = angle_one_selection
+    angle_two_cells, angle_two_interleaved = angle_two_selection
+
+    assert len(default_cells) == 65
+    assert (default_cells[0].first_sector, default_cells[0].last_sector) == (4, 82)
+    assert (default_cells[-1].first_sector, default_cells[-1].last_sector) == (
+        1_414_280,
+        1_474_422,
+    )
+
+    assert angle_one_interleaved is True
+    assert len(angle_one_cells) == 71
+    assert (angle_one_cells[1].vob_id, angle_one_cells[1].block_mode) == (3, 1)
+
+    assert angle_two_interleaved is True
+    assert len(angle_two_cells) == 71
+    assert (angle_two_cells[1].vob_id, angle_two_cells[1].block_mode) == (4, 3)
+
+
+def _select_main_pgc_cells(
+    data: bytes, pgc_number: int
+) -> tuple[list[_EditionCell], bool] | None:
+    main = _find_main_pgc(data, pgc_number)
+    assert main is not None
+    pgc_abs, _, cell_count = main
+    return _select_main_edition_cells(data, pgc_abs, cell_count)
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "beauty_vts_09_0.ifo").is_file(),
+    reason="Beauty and the Beast multi-angle VTS fixture not present",
+)
+def test_build_default_edition_vobu_ranges(fixtures_dir: Path) -> None:
+    data = (fixtures_dir / "beauty_vts_09_0.ifo").read_bytes()
+    vobu_admap = _parse_vts_vobu_admap(data)
+    assert vobu_admap is not None
+
+    ranges = _build_main_edition_vobu_ranges(data, vobu_admap, [], 1)
+
+    assert ranges is not None
+    assert len(ranges) == 65
+    assert ranges[:3] == [
+        (8_192, 169_984),
+        (169_984, 91_590_656),
+        (165_996_544, 217_221_120),
+    ]
+    assert ranges[-1] == (2_896_445_440, 3_019_618_304)
+    assert sum(end - start for start, end in ranges) == 3_019_610_112
 
 
 @pytest.mark.skipif(

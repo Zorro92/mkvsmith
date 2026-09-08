@@ -2082,6 +2082,212 @@ def _scan_vobu_cell_ids(
     return results
 
 
+@dataclass(slots=True)
+class _EditionCell:
+    """One angle-selected cell from a PGC playback table."""
+
+    first_sector: int
+    last_sector: int
+    vob_id: int
+    cell_id: int
+    duration_seconds: float
+    block_mode: int
+    cell_index: int
+
+
+def _trim_trailing_thumbnail_cells(cells: list[_EditionCell]) -> list[_EditionCell]:
+    """Remove trailing menu thumbnail/keyframe cells from movie playback."""
+    retained = list(cells)
+    trimmed = 0
+    while len(retained) > 1 and retained[-1].duration_seconds < 1.0:
+        retained.pop()
+        trimmed += 1
+    if trimmed:
+        log_debug(
+            f"Main-edition cells: trimmed {trimmed} trailing sub-second "
+            "cell(s) (thumbnail/keyframe data, not movie content)"
+        )
+    return retained
+
+
+def _select_main_edition_cells(
+    ifo_data: bytes,
+    pgc_abs: int,
+    cell_count: int,
+) -> tuple[list[_EditionCell], bool] | None:
+    """Select PGC cells for its chosen angle and discard thumbnail tail cells."""
+    playback_base = _pgc_cell_playback_table_base(ifo_data, pgc_abs, cell_count)
+    position_base = _pgc_cell_position_table_base(ifo_data, pgc_abs, cell_count)
+    if playback_base is None or position_base is None:
+        return None
+
+    angle_index = _pgc_angle_from_commands(ifo_data, pgc_abs) - 1
+    selected_cells: list[_EditionCell] = []
+    current_block: list[_EditionCell] = []
+    any_interleaved = False
+
+    def finalize_block() -> None:
+        if not current_block:
+            return
+        selected_index = (
+            angle_index if angle_index < len(current_block) else len(current_block) - 1
+        )
+        selected_cells.append(current_block[selected_index])
+        current_block.clear()
+
+    for cell_index in range(cell_count):
+        playback_offset = _cell_playback_base(playback_base, cell_index + 1)
+        position_offset = position_base + cell_index * _CELL_POS_ENTRY.size
+        block_mode = (ifo_data[playback_offset] >> 6) & 0x03
+        first_sector = _read_u32(ifo_data, playback_offset + _CELL_PB_FIRST_SECTOR_OFF)
+        last_sector = _read_u32(ifo_data, playback_offset + _CELL_PB_LAST_SECTOR_OFF)
+        vob_id, cell_id = _CELL_POS_ENTRY.unpack_from(ifo_data, position_offset)
+        if first_sector == 0 and last_sector == 0:
+            continue
+
+        cell = _EditionCell(
+            first_sector=first_sector,
+            last_sector=last_sector,
+            vob_id=vob_id,
+            cell_id=cell_id,
+            duration_seconds=_bcd_playback_seconds(
+                ifo_data,
+                playback_offset + _PGCOffset.CELL_DURATION_OFFSET,
+            ),
+            block_mode=block_mode,
+            cell_index=cell_index,
+        )
+        if block_mode == 0:
+            finalize_block()
+            selected_cells.append(cell)
+        elif block_mode == 1:
+            finalize_block()
+            current_block = [cell]
+        else:
+            current_block.append(cell)
+            if block_mode == 3:
+                finalize_block()
+        if block_mode != 0:
+            any_interleaved = True
+    finalize_block()
+
+    if not selected_cells:
+        return None
+    return _trim_trailing_thumbnail_cells(selected_cells), any_interleaved
+
+
+def _noninterleaved_vobu_ranges(
+    cells: list[_EditionCell], vobu_admap: list[int]
+) -> list[tuple[int, int]]:
+    """Build direct byte ranges when cells contain no interleaving."""
+    return [
+        (
+            cell.first_sector * _DVD_SECTOR_SIZE,
+            (
+                _vobu_end_byte(cell.last_sector, vobu_admap)
+                if vobu_admap
+                else (cell.last_sector + 1) * _DVD_SECTOR_SIZE
+            ),
+        )
+        for cell in cells
+    ]
+
+
+def _interleaved_scan_sectors(
+    cells: list[_EditionCell], vobu_admap: list[int]
+) -> tuple[dict[int, int], list[int]] | None:
+    """Return ADMAP indices and sectors covering every interleaved cell."""
+    low_sector = min(cell.first_sector for cell in cells)
+    high_sector = max(cell.last_sector for cell in cells)
+    admap_index = {sector: index for index, sector in enumerate(vobu_admap)}
+    scan_sectors = sorted(
+        sector for sector in vobu_admap if low_sector <= sector <= high_sector
+    )
+    if not scan_sectors:
+        return None
+    return admap_index, scan_sectors
+
+
+def _interleaved_vobu_ranges(
+    cells: list[_EditionCell],
+    vobu_admap: list[int],
+    inputs: list[Path],
+) -> list[tuple[int, int]] | None:
+    """Build playback-ordered ranges from each VOBU's NAV-pack cell identity."""
+    bounds = _interleaved_scan_sectors(cells, vobu_admap)
+    if bounds is None:
+        return None
+    admap_index, scan_sectors = bounds
+    target_ids = {(cell.vob_id, cell.cell_id) for cell in cells}
+    block_mode_counts: dict[int, int] = {}
+    for cell in cells:
+        block_mode_counts[cell.block_mode] = (
+            block_mode_counts.get(cell.block_mode, 0) + 1
+        )
+    log_debug(
+        f"NAV scan targets: {len(target_ids)} unique (vob_id,cell_id) pairs, "
+        f"block_mode distribution: {block_mode_counts}, "
+        f"first 5 targets: {sorted(target_ids)[:5]}"
+    )
+    log_debug(
+        f"Seamless-branching disc detected ({len(cells)} cells, "
+        f"{len(target_ids)} unique (vob_id,cell_id) target(s)); "
+        f"scanning {len(scan_sectors)} VOBU NAV packs for cell ownership..."
+    )
+    nav_ids = _scan_vobu_cell_ids(inputs, scan_sectors)
+    nav_unique = set(nav_ids.values())
+    log_debug(
+        f"NAV scan found {len(nav_unique)} unique (vob_id,cell_id) "
+        f"in {len(nav_ids)} VOBUs; sample: {sorted(nav_unique)[:10]}"
+    )
+
+    cell_order: dict[tuple[int, int], int] = {}
+    for playback_index, cell in enumerate(cells):
+        cell_order.setdefault((cell.vob_id, cell.cell_id), playback_index)
+    cell_vobus: dict[int, list[int]] = {}
+    for sector in scan_sectors:
+        ids = nav_ids.get(sector)
+        if ids is None or ids not in target_ids:
+            continue
+        playback_index = cell_order.get(ids)
+        if playback_index is not None:
+            cell_vobus.setdefault(playback_index, []).append(admap_index[sector])
+
+    runs: list[tuple[int, int]] = []
+    total_matched = 0
+    for playback_index in sorted(cell_vobus):
+        indices = sorted(cell_vobus[playback_index])
+        total_matched += len(indices)
+        run_start = indices[0]
+        previous = indices[0]
+        for index in indices[1:]:
+            if index != previous + 1:
+                runs.append(
+                    (
+                        vobu_admap[run_start] * _DVD_SECTOR_SIZE,
+                        _vobu_end_byte(vobu_admap[previous], vobu_admap),
+                    )
+                )
+                run_start = index
+            previous = index
+        runs.append(
+            (
+                vobu_admap[run_start] * _DVD_SECTOR_SIZE,
+                _vobu_end_byte(vobu_admap[previous], vobu_admap),
+            )
+        )
+
+    if not runs:
+        log_debug("NAV scan matched 0 VOBUs against target cells; falling back")
+        return None
+    log_debug(
+        f"Main-edition VOBU ranges via NAV scan: {len(runs)} run(s) "
+        f"across {len(cell_vobus)} cells (playback-ordered), "
+        f"{total_matched}/{len(scan_sectors)} VOBUs matched"
+    )
+    return runs
+
+
 def _build_main_edition_vobu_ranges(
     ifo_data: bytes,
     vobu_admap: list[int],
@@ -2118,243 +2324,19 @@ def _build_main_edition_vobu_ranges(
     if n_cells < 1:
         return None
 
-    pb_off_raw = (
-        _read_u16(ifo_data, pgc_abs + _PGCOffset.CELL_PLAYBACK_INFO_TABLE_OFFSET)
-        if pgc_abs + _PGCOffset.CELL_PLAYBACK_INFO_TABLE_OFFSET + 2 <= len(ifo_data)
-        else 0
-    )
-    if not pb_off_raw:
+    selection = _select_main_edition_cells(ifo_data, pgc_abs, n_cells)
+    if selection is None:
         return None
-    pb_base = pgc_abs + pb_off_raw
-    if pb_base + n_cells * _PGCOffset.CELL_PLAYBACK_INFO_LEN > len(ifo_data):
-        return None
-
-    pos_off = (
-        _read_u16(ifo_data, pgc_abs + _PGCOffset.CELL_POSITION_INFO_TABLE_OFFSET)
-        if pgc_abs + _PGCOffset.CELL_POSITION_INFO_TABLE_OFFSET + 2 <= len(ifo_data)
-        else 0
-    )
-    if not pos_off:
-        return None
-    pos_base = pgc_abs + pos_off
-
-    # Detect which angle this PGC selects via its pre-commands.
-    # On multi-angle seamless-branching discs, different editions share the
-    # same PGC cell table but set different angles. Angle N selects the Nth
-    # cell within each interleaved (angle) block.
-    pgc_angle = _pgc_angle_from_commands(ifo_data, pgc_abs)
-    if pgc_angle != 1:
-        log_debug(f"  PGC uses Angle {pgc_angle}")
-    # Angle is 1-based; we'll select the (angle-1)-th cell in each block.
-    angle_idx = pgc_angle - 1
-
-    # Gather each cell's block_mode, sector range, duration, and (vob_id, cell_id).
-    # Walk the cell table, collecting interleaved block cells and selecting
-    # the angle-appropriate cell from each block.
-    cells: list[dict[str, int | float]] = []
-    any_interleaved = False
-    current_block: list[dict[str, int | float]] = []
-
-    def _finalize_block():
-        """Select the angle-appropriate cell from a completed block."""
-        nonlocal current_block
-        if not current_block:
-            return
-        if angle_idx < len(current_block):
-            cells.append(current_block[angle_idx])
-        else:
-            # Angle index exceeds block size; take last cell.
-            cells.append(current_block[-1])
-        current_block = []
-
-    for cell_idx in range(n_cells):
-        pb_off = pb_base + cell_idx * _PGCOffset.CELL_PLAYBACK_INFO_LEN
-        if pb_off + _CELL_PB_LAST_SECTOR_OFF + 4 > len(ifo_data):
-            break
-        pos_entry_off = pos_base + cell_idx * _CELL_POS_ENTRY.size
-        if pos_entry_off + _CELL_POS_ENTRY.size > len(ifo_data):
-            break
-        block_mode = (ifo_data[pb_off] >> 6) & 0x03
-        first_sector = _read_u32(ifo_data, pb_off + _CELL_PB_FIRST_SECTOR_OFF)
-        last_sector = _read_u32(ifo_data, pb_off + _CELL_PB_LAST_SECTOR_OFF)
-        vob_id, cell_id = _CELL_POS_ENTRY.unpack_from(ifo_data, pos_entry_off)
-        if first_sector == 0 and last_sector == 0:
-            continue
-        if block_mode != 0:
-            any_interleaved = True
-        cell_dur = _bcd_playback_seconds(
-            ifo_data, pb_off + _PGCOffset.CELL_DURATION_OFFSET
-        )
-        cell_data = {
-            "first": first_sector,
-            "last": last_sector,
-            "vob_id": vob_id,
-            "cell_id": cell_id,
-            "dur": cell_dur,
-            "block_mode": block_mode,
-            "cell_idx": cell_idx,
-        }
-        if block_mode == 0:
-            # Normal cell - finalize any pending block, then include directly.
-            _finalize_block()
-            cells.append(cell_data)
-        elif block_mode == 1:
-            # Start of a new interleaved block.
-            _finalize_block()
-            current_block = [cell_data]
-        elif block_mode in (2, 3):
-            # Continuation or end of an interleaved block.
-            current_block.append(cell_data)
-            if block_mode == 3:
-                _finalize_block()
-    # Finalize any trailing block.
-    _finalize_block()
-
-    if not cells:
-        return None
-
-    # Some discs append a run of tiny (sub-second) cells after the real
-    # movie content - e.g. per-chapter thumbnail/keyframe cells used by a
-    # scene-selection menu, which technically belong to the main PGC's cell
-    # table but are not meant to be played back-to-back with the movie.
-    # Trim any such trailing run: real movie cells are essentially always
-    # several seconds or longer, so a contiguous tail of sub-second cells is
-    # a reliable signal of non-content data rather than a legitimate quick
-    # scene cut.
-    _MIN_REAL_CELL_SECONDS = 1.0
-    trimmed = 0
-    while len(cells) > 1 and cells[-1]["dur"] < _MIN_REAL_CELL_SECONDS:
-        cells.pop()
-        trimmed += 1
-    if trimmed:
-        log_debug(
-            f"Main-edition cells: trimmed {trimmed} trailing sub-second "
-            "cell(s) (thumbnail/keyframe data, not movie content)"
-        )
+    cells, any_interleaved = selection
 
     if not any_interleaved:
-        # Fast path: no interleaving, so each cell's own range is already
-        # exact and there is no need to scan individual VOBUs.
-        runs: list[tuple[int, int]] = []
-        for c in cells:
-            c_first = int(c["first"])
-            c_last = int(c["last"])
-            end_byte = (
-                _vobu_end_byte(c_last, vobu_admap)
-                if vobu_admap
-                else (c_last + 1) * 2048
-            )
-            runs.append((c_first * 2048, end_byte))
+        runs = _noninterleaved_vobu_ranges(cells, vobu_admap)
         log_debug(f"Main-edition ranges (no interleaving): {len(runs)} run(s)")
         return runs
 
     if not vobu_admap:
         return None
-
-    # Interleaved: scan every VOBU across our PGC's overall sector span and
-    # keep only the ones whose own NAV pack identifies them as belonging to
-    # one of our PGC's (VOB_ID, Cell_ID) pairs.
-    target = {(int(c["vob_id"]), int(c["cell_id"])) for c in cells}
-    # Diagnostic: log the target cell set and block_mode distribution.
-    _bm_counts: dict[int, int] = {}
-    for c in cells:
-        _bm_counts[int(c["block_mode"])] = _bm_counts.get(int(c["block_mode"]), 0) + 1
-    log_debug(
-        f"NAV scan targets: {len(target)} unique (vob_id,cell_id) pairs, "
-        f"block_mode distribution: {_bm_counts}, "
-        f"first 5 targets: {sorted(target)[:5]}"
-    )
-    # Use all gathered cells (block_mode 0 and 1) to determine the scan range.
-    # Block_mode 1 cells have sector ranges spanning the entire interleaved
-    # block, so their first_sector/last_sector define the bounds that contain
-    # the VOBUs we need to check.
-    if cells:
-        lo = min(int(c["first"]) for c in cells)
-        hi = max(int(c["last"]) for c in cells)
-    else:
-        lo = vobu_admap[0]
-        hi = vobu_admap[-1]
-    admap_index = {vs: i for i, vs in enumerate(vobu_admap)}
-    scan_sectors = sorted(vs for vs in vobu_admap if lo <= vs <= hi)
-    if not scan_sectors:
-        return None
-
-    log_debug(
-        f"Seamless-branching disc detected ({len(cells)} cells, "
-        f"{len(target)} unique (vob_id,cell_id) target(s)); "
-        f"scanning {len(scan_sectors)} VOBU NAV packs for cell ownership..."
-    )
-    nav_ids = _scan_vobu_cell_ids(inputs, scan_sectors)
-
-    # Diagnostic: count unique cell IDs found in NAV packs.
-    _nav_unique: set[tuple[int, int]] = set()
-    for ids in nav_ids.values():
-        _nav_unique.add(ids)
-    _nav_sample = sorted(_nav_unique)[:10]
-    log_debug(
-        f"NAV scan found {len(_nav_unique)} unique (vob_id,cell_id) "
-        f"in {len(nav_ids)} VOBUs; sample: {_nav_sample}"
-    )
-
-    # Build a mapping from (vob_id, cell_id) -> cell playback order index.
-    # The cells list is already in PGC cell-table order (cell_idx 0, 1, 2, ...),
-    # which is the playback sequence.
-    cell_order: dict[tuple[int, int], int] = {}
-    for i, c in enumerate(cells):
-        key = (int(c["vob_id"]), int(c["cell_id"]))
-        if key not in cell_order:
-            cell_order[key] = i
-
-    # Group matched VOBUs by their cell, preserving sector order within each cell.
-    # Then output cells in PGC playback order (not sector order).
-    # This is critical for seamless-branching discs where interleaved VOBUs
-    # from different editions are physically mixed in sector order but must
-    # be extracted in cell-playback order to produce the correct movie.
-    cell_vobus: dict[int, list[int]] = {}  # cell_order_idx -> [admap_indices]
-    for vs in scan_sectors:
-        ids = nav_ids.get(vs)
-        if ids is not None and ids in target:
-            co = cell_order.get(ids)
-            if co is not None:
-                cell_vobus.setdefault(co, []).append(admap_index[vs])
-
-    # Build runs: iterate cells in playback order, output each cell's VOBUs
-    # as one or more contiguous byte ranges.
-    runs: list[tuple[int, int]] = []
-    total_matched = 0
-    for co in sorted(cell_vobus.keys()):
-        indices = sorted(cell_vobus[co])  # sector order within cell
-        total_matched += len(indices)
-        # Group contiguous VOBUs within this cell into runs.
-        run_start = indices[0]
-        prev = indices[0]
-        for idx in indices[1:]:
-            if idx != prev + 1:
-                runs.append(
-                    (
-                        vobu_admap[run_start] * 2048,
-                        _vobu_end_byte(vobu_admap[prev], vobu_admap),
-                    )
-                )
-                run_start = idx
-            prev = idx
-        runs.append(
-            (
-                vobu_admap[run_start] * 2048,
-                _vobu_end_byte(vobu_admap[prev], vobu_admap),
-            )
-        )
-
-    if not runs:
-        log_debug("NAV scan matched 0 VOBUs against target cells; falling back")
-        return None
-
-    log_debug(
-        f"Main-edition VOBU ranges via NAV scan: {len(runs)} run(s) "
-        f"across {len(cell_vobus)} cells (playback-ordered), "
-        f"{total_matched}/{len(scan_sectors)} VOBUs matched"
-    )
-    return runs
+    return _interleaved_vobu_ranges(cells, vobu_admap, inputs)
 
 
 def _pgc_cell_playback_table_base(

@@ -1262,6 +1262,71 @@ def _verify_vobsub_tracks(idx_path: Path) -> list[dict[str, Any]]:
     return tracks
 
 
+def _filter_vobsub_streams(
+    spus_by_id: dict[int, list[tuple[int, bytes]]],
+    lang_by_id: dict[int, str],
+) -> tuple[dict[int, list[tuple[int, bytes]]], dict[int, str]]:
+    """Filter VOB streams against IFO metadata and recover raw stream zero."""
+    filtered: dict[int, list[tuple[int, bytes]]] = {}
+    languages = dict(lang_by_id)
+    if not lang_by_id:
+        return dict(spus_by_id), languages
+
+    missing_ifo_ids = [
+        sub_stream_id
+        for sub_stream_id in sorted(lang_by_id)
+        if not spus_by_id.get(sub_stream_id)
+    ]
+    for sub_stream_id in sorted(spus_by_id):
+        entries = spus_by_id[sub_stream_id]
+        if sub_stream_id in lang_by_id:
+            filtered[sub_stream_id] = entries
+            continue
+        if sub_stream_id == 0 and missing_ifo_ids:
+            sorted_entries = sorted(entries, key=lambda entry: entry[0])
+            for entry_index, entry in enumerate(sorted_entries):
+                target_id = missing_ifo_ids[entry_index % len(missing_ifo_ids)]
+                filtered.setdefault(target_id, []).append(entry)
+            log_debug(
+                "  Distributed %d sub_id=0 entries across %d missing IFO sub_ids: %s"
+                % (
+                    len(sorted_entries),
+                    len(missing_ifo_ids),
+                    ", ".join("0x%02x" % stream_id for stream_id in missing_ifo_ids),
+                )
+            )
+            continue
+        if sub_stream_id == 0:
+            log_debug(
+                "  Skipped sub_id=0 distribution "
+                "(all IFO sub_ids already present from PES scan)"
+            )
+            continue
+
+        log_debug(
+            "  Including sub_id 0x%02x from VOB (not in IFO, lang=und)" % sub_stream_id
+        )
+        filtered[sub_stream_id] = entries
+        languages[sub_stream_id] = "und"
+    return filtered, languages
+
+
+def _vobsub_pts_offset(vob_paths: list[Path]) -> int:
+    """Return the first video PTS used to normalize VobSub timestamps."""
+    try:
+        first_pts = _scan_vob_pts(vob_paths, max_bytes=32 * 1024 * 1024)
+        if first_pts:
+            pts_offset = first_pts[0][0]
+            log_debug(
+                "VobSub: normalizing subtitle PTS to video baseline "
+                f"{pts_offset / 90000.0:.3f}s"
+            )
+            return pts_offset
+    except Exception as exc:
+        log_debug(f"VobSub: PTS baseline scan failed ({exc}); using offset 0")
+    return 0
+
+
 def _write_vobsub_files(
     spus_by_id: dict[int, list[tuple[int, bytes]]],
     lang_by_id: dict[int, str],
@@ -1413,69 +1478,13 @@ def _extract_dvd_vobsubs(
         )
         return None
 
-    # Only keep sub_ids that the IFO tells us about.
-    # Handle sub_id=0 (from 0xBF / raw scanning) specially.
-    ifo_sub_ids = sorted(lang_by_id) if lang_by_id else []
-    filtered: dict[int, list[tuple[int, bytes]]] = {}
-    for sid in sorted(spus):
-        if sid in lang_by_id or not lang_by_id:
-            filtered[sid] = spus[sid]
-        elif sid == 0 and ifo_sub_ids:
-            # Unknown sub_id data from 0xBF/raw scanning.
-            # Only distribute if any IFO sub_id is still missing data
-            # from the PES scan — avoids contaminating good streams
-            # with 0xBF false positives.
-            missing_ids = [s for s in ifo_sub_ids if s not in filtered]
-            if missing_ids:
-                entries = spus[sid]
-                # Sort by pts then by original scan order for consistency.
-                entries.sort(key=lambda e: e[0])
-                for i, entry in enumerate(entries):
-                    target_sid = missing_ids[i % len(missing_ids)]
-                    filtered.setdefault(target_sid, []).append(entry)
-                log_debug(
-                    "  Distributed %d sub_id=0 entries across %d missing IFO sub_ids: %s"
-                    % (
-                        len(entries),
-                        len(missing_ids),
-                        ", ".join("0x%02x" % s for s in missing_ids),
-                    )
-                )
-            else:
-                log_debug(
-                    "  Skipped sub_id=0 distribution (all IFO sub_ids already present from PES scan)"
-                )
-        else:
-            # Sub stream found in VOB but not in IFO attribute table.
-            # This can happen on seamless branching discs where the
-            # IFO only lists subtitle streams for the first edition.
-            # Include it with undetermined language rather than dropping.
-            log_debug("  Including sub_id 0x%02x from VOB (not in IFO, lang=und)" % sid)
-            filtered[sid] = spus[sid]
-            if sid not in lang_by_id:
-                lang_by_id[sid] = "und"
+    filtered, lang_by_id = _filter_vobsub_streams(spus, lang_by_id)
 
     if not filtered:
         log_debug("_extract_dvd_vobsubs: no IFO-matching subpicture streams")
         return None
 
-    # Find the muxed video's own first PTS in this same (trimmed) VOB, so
-    # subtitle timestamps can be normalized to the same zero-point mkvmerge
-    # uses when it reads video/audio directly from the VOB. Without this,
-    # subtitles are offset from the video by exactly the VOB's true (often
-    # non-zero) starting PTS - typically small, but a consistent, disc-wide
-    # sync error rather than an isolated mistake.
-    pts_offset = 0
-    try:
-        _first_pts = _scan_vob_pts(vob_paths, max_bytes=32 * 1024 * 1024)
-        if _first_pts:
-            pts_offset = _first_pts[0][0]
-            log_debug(
-                f"VobSub: normalizing subtitle PTS to video baseline {pts_offset / 90000.0:.3f}s"
-            )
-    except Exception as e:
-        log_debug(f"VobSub: PTS baseline scan failed ({e}); using offset 0")
-
+    pts_offset = _vobsub_pts_offset(vob_paths)
     base = Path(tempfile.NamedTemporaryFile(suffix="_vobsub", delete=False).name)
     temp_files.append(base)
     return _write_vobsub_files(

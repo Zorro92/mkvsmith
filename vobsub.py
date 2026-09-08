@@ -1114,6 +1114,154 @@ def _build_pes_entry(spu_data: bytes, pts: int, sub_stream_id: int) -> list[byte
     return sectors
 
 
+def _build_vobsub_subfile(
+    spus_by_id: dict[int, list[tuple[int, bytes]]],
+) -> tuple[bytearray, dict[int, list[tuple[int, int]]]]:
+    """Interleave SPU sectors by PTS and record each event's file position."""
+    entries: list[tuple[int, int, bytes]] = []
+    for sub_stream_id in sorted(spus_by_id):
+        entries.extend(
+            (pts, sub_stream_id, spu_data)
+            for pts, spu_data in spus_by_id[sub_stream_id]
+        )
+    entries.sort(key=lambda entry: entry[0])
+
+    sub_data = bytearray()
+    track_positions: dict[int, list[tuple[int, int]]] = {}
+    for pts, sub_stream_id, spu_data in entries:
+        sectors = _build_pes_entry(spu_data, pts, sub_stream_id)
+        track_positions.setdefault(sub_stream_id, []).append((pts, len(sub_data)))
+        for sector in sectors:
+            sub_data.extend(sector)
+    return sub_data, track_positions
+
+
+def _select_vobsub_palette(
+    spus_by_id: dict[int, list[tuple[int, bytes]]],
+    ifo_palette: list[tuple[int, int, int]] | None,
+) -> list[tuple[int, int, int]] | None:
+    """Choose an IFO CLUT, SPU control palette, or the default fallback."""
+    found_palette: list[tuple[int, int, int]] | None = None
+    valid_clut: list[tuple[int, int, int]] | None = None
+    if ifo_palette is not None and len(ifo_palette) == 16:
+        if any(red or green or blue for red, green, blue in ifo_palette):
+            found_palette = ifo_palette
+            valid_clut = ifo_palette
+            log_debug("VobSub: using IFO PGC palette")
+        else:
+            log_debug("VobSub: IFO palette is all-black (zeroed); trying SPU")
+
+    if found_palette is not None:
+        return found_palette
+    for sub_stream_id in sorted(spus_by_id):
+        for entry_index, (_pts, spu_data) in enumerate(spus_by_id[sub_stream_id][:10]):
+            found_palette = _extract_spu_palette(spu_data, clut=valid_clut)
+            if found_palette is not None:
+                log_debug(
+                    "VobSub: using SPU SET_COLOR palette "
+                    "(entry %d of sid=0x%02x, %d entries)"
+                    % (entry_index, sub_stream_id, len(found_palette))
+                )
+                return found_palette
+    return None
+
+
+def _format_vobsub_timestamp(pts: int, pts_offset: int) -> str:
+    seconds = max(0, pts - pts_offset) / 90000.0
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    whole_seconds = int(seconds - hours * 3600 - minutes * 60)
+    milliseconds = int(round((seconds - int(seconds)) * 1000))
+    return "%02d:%02d:%02d:%03d" % (hours, minutes, whole_seconds, milliseconds)
+
+
+def _build_vobsub_idx_lines(
+    sorted_ids: list[int],
+    track_positions: dict[int, list[tuple[int, int]]],
+    lang_by_id: dict[int, str],
+    forced_by_id: dict[int, bool],
+    found_palette: list[tuple[int, int, int]] | None,
+    pts_offset: int,
+) -> list[str]:
+    palette = found_palette or []
+    palette_string = (
+        ", ".join("%02x%02x%02x" % (red, green, blue) for red, green, blue in palette)
+        if palette
+        else _default_vobsub_palette()
+    )
+    lines = [
+        "# VobSub index file, v7 (do not modify this line!)",
+        "",
+        "size: 720x480",
+        "org: 0, 0",
+        "alpha: 100%",
+        "smooth: OFF",
+        "fadein/out: 50, 50",
+        "align: OFF at LEFT TOP",
+        "time offset: 0",
+        "forced subs: OFF",
+        "langidx: 0",
+        "palette: %s" % palette_string,
+        "",
+    ]
+
+    for track_index, sub_stream_id in enumerate(sorted_ids):
+        positions = sorted(track_positions.get(sub_stream_id, []))
+        language_three = lang_by_id.get(sub_stream_id, "und")
+        language_two = _LANG_MAP_3_TO_2.get(
+            language_three,
+            "en" if language_three == "und" else language_three[:2],
+        )
+        language_name = get_language_name(language_three) or "Unknown"
+        lines.append("id: %s, index: %d" % (language_two, track_index))
+        if language_three != "und":
+            lines.append("# %s: %s" % (language_name, language_three))
+        if forced_by_id.get(sub_stream_id, False):
+            lines.append("forced: on")
+        lines.extend(
+            "timestamp: %s, filepos: %09x"
+            % (_format_vobsub_timestamp(pts, pts_offset), file_position)
+            for pts, file_position in positions
+        )
+        lines.append("")
+    return lines
+
+
+def _verify_vobsub_tracks(idx_path: Path) -> list[dict[str, Any]]:
+    if not _HAS_MKVMERGE:
+        return []
+    try:
+        process = subprocess.run(
+            ["mkvmerge", "-J", str(idx_path)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if process.returncode != 0:
+            log_debug("mkvmerge -J failed on .idx file")
+            return []
+        tracks = json.loads(process.stdout).get("tracks", [])
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+        log_debug("mkvmerge -J exception on .idx: %s" % exc)
+        return []
+
+    log_debug(
+        "VobSub .idx verified: %d track(s): %s"
+        % (
+            len(tracks),
+            ", ".join(
+                "%s lang=%s"
+                % (
+                    track.get("codec", "?"),
+                    track.get("properties", {}).get("language", "?"),
+                )
+                for track in tracks
+            ),
+        )
+    )
+    return tracks
+
+
 def _write_vobsub_files(
     spus_by_id: dict[int, list[tuple[int, bytes]]],
     lang_by_id: dict[int, str],
@@ -1159,114 +1307,22 @@ def _write_vobsub_files(
     sub_path = base.with_suffix(".sub")
     idx_path = base.with_suffix(".idx")
     sorted_ids = sorted(spus_by_id)
-
-    # Build .sub binary: PES-wrapped SPU entries, each at a 2048-byte boundary.
-    # All entries from all tracks are interleaved by PTS.
-    entries_flat: list[tuple[int, int, bytes]] = []  # (pts, sub_id, spu_data)
-    for sub_id in sorted_ids:
-        for pts, spu_data in spus_by_id[sub_id]:
-            entries_flat.append((pts, sub_id, spu_data))
-
-    # Sort by PTS for proper interleaving.
-    entries_flat.sort(key=lambda e: e[0])
-
-    sub_data = bytearray()
-    # Track file positions: {sub_id: [(pts, filepos), ...]}
-    track_positions: dict[int, list[tuple[int, int]]] = {}
-    for pts, sub_id, spu_data in entries_flat:
-        sectors = _build_pes_entry(spu_data, pts, sub_id)
-        track_positions.setdefault(sub_id, []).append((pts, len(sub_data)))
-        for sector in sectors:
-            sub_data.extend(sector)
+    sub_data, track_positions = _build_vobsub_subfile(spus_by_id)
 
     sub_path.write_bytes(bytes(sub_data))
     temp_files.append(sub_path)
 
-    # Palette: try SPU data (rarely has SET_COLOR), otherwise use
-    # MakeMKV's hardcoded greyscale palette.  MakeMKV ignores the
-    # Palette: IFO PGC → SPU SET_COLOR → default greyscale
-    found_palette: list[tuple[int, int, int]] | None = None
-    # Pass the IFO palette as CLUT to SPU extraction.  Reject only if
-    # every single entry is pure black (indicating a genuinely zeroed
-    # PGC palette — some discs leave Y=0 for all entries).  A palette
-    # with any non-black entry is legitimate and should be used.
-    _valid_clut: list[tuple[int, int, int]] | None = None
-    if ifo_palette is not None and len(ifo_palette) == 16:
-        _has_color = any(r != 0 or g != 0 or b != 0 for r, g, b in ifo_palette)
-        if _has_color:
-            found_palette = ifo_palette
-            _valid_clut = ifo_palette
-            log_debug("VobSub: using IFO PGC palette")
-        else:
-            log_debug("VobSub: IFO palette is all-black (zeroed); trying SPU")
+    found_palette = _select_vobsub_palette(spus_by_id, ifo_palette)
     if found_palette is None:
-        # Sample the first several SPU packets — the very first one might
-        # be an oddball (fade-in, forced narrow subtitle, etc.) that
-        # doesn't represent the track's normal palette mapping.
-        _SAMPLE_LIMIT = 10
-        for sid in sorted_ids:
-            if not spus_by_id[sid]:
-                continue
-            for _spu_idx in range(min(_SAMPLE_LIMIT, len(spus_by_id[sid]))):
-                found_palette = _extract_spu_palette(
-                    spus_by_id[sid][_spu_idx][1], clut=_valid_clut
-                )
-                if found_palette:
-                    log_debug(
-                        "VobSub: using SPU SET_COLOR palette "
-                        "(entry %d of sid=0x%02x, %d entries)"
-                        % (_spu_idx, sid, len(found_palette))
-                    )
-                    break
-            if found_palette:
-                break
-    if found_palette:
-        palette_str = ", ".join("%02x%02x%02x" % (r, g, b) for r, g, b in found_palette)
-    else:
-        palette_str = _default_vobsub_palette()
         log_debug("VobSub: using default greyscale palette (no valid IFO/SPU palette)")
-
-    # Build .idx content.
-    lines: list[str] = [
-        "# VobSub index file, v7 (do not modify this line!)",
-        "",
-        "size: 720x480",
-        "org: 0, 0",
-        "alpha: 100%",
-        "smooth: OFF",
-        "fadein/out: 50, 50",
-        "align: OFF at LEFT TOP",
-        "time offset: 0",
-        "forced subs: OFF",
-        "langidx: 0",
-        "palette: %s" % palette_str,
-        "",
-    ]
-
-    track_idx = 0
-    for sub_id in sorted_ids:
-        positions = track_positions.get(sub_id, [])
-        positions.sort(key=lambda e: e[0])
-        lang_3 = lang_by_id.get(sub_id, "und")
-        lang_2 = _LANG_MAP_3_TO_2.get(lang_3, "en" if lang_3 == "und" else lang_3[:2])
-        lang_name = get_language_name(lang_3) or "Unknown"
-
-        lines.append("id: %s, index: %d" % (lang_2, track_idx))
-        if lang_3 != "und":
-            lines.append("# %s: %s" % (lang_name, lang_3))
-        if forced_by_id.get(sub_id, False):
-            lines.append("forced: on")
-
-        for pts, fpos in positions:
-            pts_sec = max(0, pts - pts_offset) / 90000.0
-            hh = int(pts_sec // 3600)
-            mm = int((pts_sec % 3600) // 60)
-            ss = int(pts_sec - hh * 3600 - mm * 60)
-            ms = int(round((pts_sec - int(pts_sec)) * 1000))
-            ts = "%02d:%02d:%02d:%03d" % (hh, mm, ss, ms)
-            lines.append("timestamp: %s, filepos: %09x" % (ts, fpos))
-        lines.append("")
-        track_idx += 1
+    lines = _build_vobsub_idx_lines(
+        sorted_ids,
+        track_positions,
+        lang_by_id,
+        forced_by_id,
+        found_palette,
+        pts_offset,
+    )
 
     idx_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     temp_files.append(idx_path)
@@ -1289,39 +1345,7 @@ def _write_vobsub_files(
         % (len(sorted_ids), len(sub_data) // 1024)
     )
 
-    # Verify with mkvmerge -J.
-    if not _HAS_MKVMERGE:
-        return idx_path, []
-    try:
-        proc = subprocess.run(
-            ["mkvmerge", "-J", str(idx_path)],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if proc.returncode != 0:
-            log_debug("mkvmerge -J failed on .idx file")
-            return idx_path, []
-        track_data = json.loads(proc.stdout).get("tracks", [])
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
-        log_debug("mkvmerge -J exception on .idx: %s" % exc)
-        return idx_path, []
-
-    log_debug(
-        "VobSub .idx verified: %d track(s): %s"
-        % (
-            len(track_data),
-            ", ".join(
-                "%s lang=%s"
-                % (
-                    t.get("codec", "?"),
-                    t.get("properties", {}).get("language", "?"),
-                )
-                for t in track_data
-            ),
-        )
-    )
-    return idx_path, track_data
+    return idx_path, _verify_vobsub_tracks(idx_path)
 
 
 def _extract_dvd_vobsubs(

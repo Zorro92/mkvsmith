@@ -517,6 +517,9 @@ _VTS_VOBU_ADMAP_ENTRY = struct.Struct(">I")
 # Cell position info entry in a PGC: VOB_ID(2:16-bit BE) + Reserved(1) + Cell_ID(1)
 _CELL_POS_ENTRY = struct.Struct(">HxB")
 
+# A DVD logical sector is always 2 KiB (libdvdread DVD_BLOCK_SIZE).
+_DVD_SECTOR_SIZE = 2048
+
 # Cell playback info sector fields, per libdvdread's cell_playback_t:
 #   +0x08: first_sector             (first VOBU of the cell)
 #   +0x0C: first_ilvu_end_sector    (end of first interleaved unit only —
@@ -2495,6 +2498,91 @@ def _lookup_pgc_cell_playback_sector_range(
     return start_sector, end_sector
 
 
+def _pgc_cell_position_table_base(
+    ifo_data: bytes,
+    pgc_abs: int,
+    cell_count: int,
+) -> int | None:
+    """Return the absolute PGC Cell Position Info table base."""
+    offset_field = _PGCOffset.CELL_POSITION_INFO_TABLE_OFFSET
+    if pgc_abs + offset_field + 2 > len(ifo_data):
+        return None
+    table_offset = _read_u16(ifo_data, pgc_abs + offset_field)
+    if not table_offset:
+        return None
+    table_base = pgc_abs + table_offset
+    if table_base + cell_count * _CELL_POS_ENTRY.size > len(ifo_data):
+        return None
+    return table_base
+
+
+def _lookup_pgc_c_adt_sector_range(
+    ifo_data: bytes,
+    position_base: int,
+    cell_count: int,
+    cell_map: dict[tuple[int, int], tuple[int, int]],
+) -> tuple[int | None, int | None, int]:
+    """Match PGC cell positions against VTS_C_ADT entries.
+
+    A cell first tries its exact ``(VOB_ID, Cell_ID)`` key. Some authored discs
+    disagree on VOB_ID between the position and address tables, so Cell_ID is
+    the documented fallback rather than silently dropping that cell.
+    """
+    start_sector: int | None = None
+    end_sector: int | None = None
+    matched_count = 0
+    for cell_index in range(cell_count):
+        offset = position_base + cell_index * _CELL_POS_ENTRY.size
+        if offset + _CELL_POS_ENTRY.size > len(ifo_data):
+            break
+        vob_id, cell_id = _CELL_POS_ENTRY.unpack_from(ifo_data, offset)
+        entry = cell_map.get((vob_id, cell_id))
+        if entry is None:
+            entry = next(
+                (value for key, value in cell_map.items() if key[1] == cell_id),
+                None,
+            )
+        if entry is None:
+            continue
+        matched_count += 1
+        cell_start, cell_end = entry
+        if start_sector is None or cell_start < start_sector:
+            start_sector = cell_start
+        if end_sector is None or cell_end > end_sector:
+            end_sector = cell_end
+    return start_sector, end_sector, matched_count
+
+
+def _sequential_vob1_sector_range(
+    cells: list[CadtCell],
+    cell_count: int,
+) -> tuple[int, int] | None:
+    """Recover a sequential title from VOB 1 C_ADT entries."""
+    vob1_cells = [cell for cell in cells if cell["vob_id"] == 1]
+    if len(vob1_cells) < cell_count:
+        return None
+    start_sector = vob1_cells[0]["start_sector"]
+    end_sector = vob1_cells[cell_count - 1]["end_sector"]
+    log_debug(
+        "IFO cell trim: sequential fallback (VOB 1) "
+        f"sectors {start_sector}-{end_sector}"
+    )
+    return start_sector, end_sector
+
+
+def _sector_range_to_bytes(
+    start_sector: int,
+    end_sector: int,
+    vob_total_bytes: int,
+) -> tuple[int, int] | None:
+    """Convert VOB-relative sector bounds to clamped byte bounds."""
+    start_byte = max(0, start_sector * _DVD_SECTOR_SIZE)
+    end_byte = min((end_sector + 1) * _DVD_SECTOR_SIZE, vob_total_bytes)
+    if end_byte <= start_byte:
+        return None
+    return start_byte, end_byte
+
+
 def _lookup_main_feature_range(
     ifo_data: bytes,
     vob_total_bytes: int,
@@ -2527,7 +2615,11 @@ def _lookup_main_feature_range(
     else:
         log_debug(f"IFO cell trim: {len(cells)} cells in VTS_C_ADT")
     cell_map: dict[tuple[int, int], tuple[int, int]] = {
-        (c["vob_id"], c["cell_id"]): (c["start_sector"], c["end_sector"]) for c in cells
+        (cell["vob_id"], cell["cell_id"]): (
+            cell["start_sector"],
+            cell["end_sector"],
+        )
+        for cell in cells
     }
 
     # 2. Parse VTS_VOBU_ADMAP (sector pointer 0xE4) for precise end-boundary
@@ -2548,17 +2640,13 @@ def _lookup_main_feature_range(
     angle_bm_lmr = _pgc_angle_from_commands(ifo_data, pgc_abs)
     angle_idx_lmr = angle_bm_lmr - 1  # 0-based position within block
 
-    # 4. Read cell position info from the main PGC.
-    #    Position info table offset is at PGC + 0xEA (2 bytes).
-    pos_off = (
-        _read_u16(ifo_data, pgc_abs + 0xEA) if pgc_abs + 0xEC <= len(ifo_data) else 0
-    )
-    if not pos_off:
+    position_base = _pgc_cell_position_table_base(ifo_data, pgc_abs, n_cells)
+    if position_base is None:
         log_debug(
-            f"IFO cell trim: cell position table offset is 0 (pgc_abs=0x{pgc_abs:x})"
+            "IFO cell trim: invalid cell position table "
+            f"(pgc_abs=0x{pgc_abs:x}, cells={n_cells})"
         )
         return None
-    pos_base = pgc_abs + pos_off
 
     # 5. Look up each PGC cell in the C_ADT to find the sector range.
     #    Only accept the range when ALL PGC cells are found in C_ADT.
@@ -2566,36 +2654,15 @@ def _lookup_main_feature_range(
     #    happen to share Cell_ID values, producing an incorrect range.
     #    When matching fails, the CellPlaybackInfo fallback (below)
     #    provides the correct range from the PGC's own cell table.
-    start_sector: int | None = None
-    end_sector: int | None = None
-    n_matched = 0
-    for cell_idx in range(1, n_cells + 1):
-        off = pos_base + (cell_idx - 1) * _CELL_POS_ENTRY.size
-        if off + _CELL_POS_ENTRY.size > len(ifo_data):
-            break
-        vob_id, cell_id = _CELL_POS_ENTRY.unpack_from(ifo_data, off)
-        key = (vob_id, cell_id)
-        entry = cell_map.get(key)
-        if entry is None:
-            # Fallback: match by Cell_ID alone (discs where
-            # VOB_ID differs between C_ADT and position table).
-            entry = next(
-                (v for k, v in cell_map.items() if k[1] == cell_id),
-                None,
-            )
-        if entry is not None:
-            n_matched += 1
-            cs, ce = entry
-            if start_sector is None or cs < start_sector:
-                start_sector = cs
-            if end_sector is None or ce > end_sector:
-                end_sector = ce
+    start_sector, end_sector, matched_count = _lookup_pgc_c_adt_sector_range(
+        ifo_data, position_base, n_cells, cell_map
+    )
 
     # Only use C_ADT-based range if ALL cells matched.
     # Partial matches can pick cells from unrelated PGCs.
-    if n_matched < n_cells:
+    if matched_count < n_cells:
         log_debug(
-            f"IFO cell trim: {n_matched}/{n_cells} PGC cells matched in C_ADT, "
+            f"IFO cell trim: {matched_count}/{n_cells} PGC cells matched in C_ADT, "
             "falling back to PGC cell playback table"
         )
         start_sector = None
@@ -2614,33 +2681,21 @@ def _lookup_main_feature_range(
             start_sector, end_sector = sector_range
 
     if start_sector is None or end_sector is None or end_sector <= start_sector:
-        # Last resort: use all C_ADT entries that belong to VOB 1.
-        cadt_vob1 = [c for c in cells if c["vob_id"] == 1]
-        if len(cadt_vob1) >= n_cells:
-            start_sector = cadt_vob1[0]["start_sector"]
-            end_sector = cadt_vob1[n_cells - 1]["end_sector"]
-            log_debug(
-                "IFO cell trim: sequential fallback (VOB 1) "
-                f"sectors {start_sector}-{end_sector}"
-            )
-        else:
+        sequential_range = _sequential_vob1_sector_range(cells, n_cells)
+        if sequential_range is None:
             log_debug(
                 "IFO cell trim: no cell sector range "
                 f"(start={start_sector}, end={end_sector}, "
-                f"cadt_vob1={len(cadt_vob1)}, need={n_cells})"
+                f"cadt_vob1={sum(cell['vob_id'] == 1 for cell in cells)}, "
+                f"need={n_cells})"
             )
             return None
+        start_sector, end_sector = sequential_range
 
     # 5. Convert sector addresses to byte offsets. C_ADT sectors are already
     #    VOB-relative (per the DVD spec / mpucoder), so we just multiply by
     #    2048 without subtracting any VTS_VOB_Start offset.
-    start_byte = start_sector * 2048
-    end_byte = (end_sector + 1) * 2048
-    start_byte = max(0, start_byte)
-    end_byte = min(end_byte, vob_total_bytes)
-    if end_byte <= start_byte:
-        return None
-    return start_byte, end_byte
+    return _sector_range_to_bytes(start_sector, end_sector, vob_total_bytes)
 
 
 # =============================================================================

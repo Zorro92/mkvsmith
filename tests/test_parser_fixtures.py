@@ -40,7 +40,7 @@ from dvdifo import (
     _build_main_edition_vobu_ranges,
 )
 from models import StreamType
-from vobsub import _extract_spu_palette, _scan_vob_subpictures
+from vobsub import _extract_spu_palette, _scan_vob_pts, _scan_vob_subpictures
 
 # Disc-derived fixtures are not committed (to avoid redistributing disc
 # metadata). These tests skip on a fresh clone; capture the fixtures locally
@@ -402,3 +402,17 @@ def test_scan_multi_angle_vob_subpictures(fixtures_dir: Path) -> None:
         assert [(pts, len(data)) for pts, data in entries] == [(25257, 988)]
         assert entries[0][1][:8] == bytes.fromhex("03dc03c400000000")
         assert entries[0][1][-8:] == bytes.fromhex("21df06000601e6ff")
+
+
+@pytest.mark.skipif(
+    not (
+        Path(__file__).parent / "fixtures" / "beauty_vts_09_subpictures.vob"
+    ).is_file(),
+    reason="Beauty and the Beast VOB subpicture fixture not present",
+)
+def test_scan_multi_angle_vob_video_pts(fixtures_dir: Path) -> None:
+    result = _scan_vob_pts(
+        [fixtures_dir / "beauty_vts_09_subpictures.vob"], max_bytes=8192
+    )
+
+    assert result == [(25257, 2062)]

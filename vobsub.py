@@ -59,6 +59,7 @@ _PS_PACK_SID = 0xBA
 # DVD subpicture sub-stream IDs range: 0x20-0x3F.
 _PS_SUBP_START = 0x20
 _PS_SUBP_END = 0x3F
+_RAW_SPU_SCAN_LIMIT = 64 * 1024 * 1024
 
 _FFMPEG_SPU_LEVEL_MAP = [
     [0xFF],
@@ -79,6 +80,13 @@ class _SubpicturePayload:
 class _Private1Packet:
     end: int | None
     subpicture: _SubpicturePayload | None
+
+
+@dataclass(slots=True)
+class _VobScanCounts:
+    private_one: int = 0
+    private_two: int = 0
+    subpictures: int = 0
 
 
 class _SpuAccumulator:
@@ -638,6 +646,44 @@ def _raw_vobsub_spu_scan(data: bytes, start: int = 0) -> list[tuple[int, int, by
     return results
 
 
+def _raw_scan_vob_subpictures(
+    inputs: list[Path], max_bytes: int
+) -> dict[int, list[tuple[int, bytes]]]:
+    """Search VOB prefixes and tails directly for standalone SPU blobs."""
+    result: dict[int, list[tuple[int, bytes]]] = {}
+    total_raw = 0
+    for vob_file in inputs:
+        if not vob_file.exists():
+            continue
+        file_size = vob_file.stat().st_size
+        file_limit = file_size if max_bytes <= 0 else min(max_bytes, file_size)
+        raw_limit = min(file_limit, _RAW_SPU_SCAN_LIMIT)
+        for tail in (False, True):
+            if tail and file_size > _RAW_SPU_SCAN_LIMIT * 2:
+                start = file_size - _RAW_SPU_SCAN_LIMIT
+                length = _RAW_SPU_SCAN_LIMIT
+                raw_data = _read_concat_bytes([vob_file], start, length)
+            else:
+                raw_data = _read_concat_bytes([vob_file], 0, raw_limit)
+            if not raw_data:
+                continue
+            raw_hits = _raw_vobsub_spu_scan(raw_data)
+            if raw_hits:
+                total_raw += len(raw_hits)
+                for _offset, _sid_hint, spu_data in raw_hits:
+                    result.setdefault(0, []).append((0, spu_data))
+                log_debug(
+                    "  Raw SPU scan: %s -> %d SPU candidates"
+                    % (vob_file.name, len(raw_hits))
+                )
+                break
+    if total_raw > 0:
+        log_debug("Raw SPU scan found %d total candidates" % total_raw)
+    else:
+        log_debug("Raw SPU scan found nothing either.")
+    return result
+
+
 def _parse_private1_packet(
     data: bytearray | bytes | mmap.mmap, offset: int, data_len: int
 ) -> _Private1Packet | None:
@@ -701,6 +747,127 @@ def _parse_private2_subpictures(
     return packet_end, pts, _try_scan_private2_for_spu(payload)
 
 
+def _scan_vob_subpicture_window(
+    data: bytearray | bytes | mmap.mmap,
+    source_name: str,
+    window_offset: int,
+    result: dict[int, list[tuple[int, bytes]]],
+    spu_accumulator: _SpuAccumulator,
+) -> _VobScanCounts:
+    counts = _VobScanCounts()
+    data_len = len(data)
+    scan = 0
+    diagnostic_count = 0
+    diagnostic_limit = 5
+
+    while scan < data_len - 3:
+        index = data.find(b"\x00\x00\x01", scan)
+        if index < 0:
+            break
+        if index + 4 >= data_len:
+            scan = index + 1
+            break
+        stream_id = data[index + 3]
+        if diagnostic_count < diagnostic_limit:
+            log_debug(
+                "  [DIAG] %s offset=0x%x start_code=00 00 01 %02x"
+                % (source_name, window_offset + index, stream_id)
+            )
+            diagnostic_count += 1
+
+        if stream_id == _PS_PRIVATE1_SID:
+            counts.private_one += 1
+            packet = _parse_private1_packet(data, index, data_len)
+            if packet is None:
+                scan = index + 4
+                break
+            if packet.end is None:
+                scan = _vob_pes_skip(data, index)
+                continue
+            subpicture = packet.subpicture
+            if subpicture is not None:
+                counts.subpictures += 1
+                spu_chunk = bytes(data[subpicture.start : packet.end])
+                completed_spu = spu_accumulator.add(
+                    subpicture.sub_stream_id, subpicture.pts, spu_chunk
+                )
+                if completed_spu is not None:
+                    result.setdefault(subpicture.sub_stream_id, []).append(
+                        completed_spu
+                    )
+            scan = max(packet.end, index + 4)
+        elif stream_id == _PS_PRIVATE2_SID:
+            counts.private_two += 1
+            packet_end, pts, spu_chunks = _parse_private2_subpictures(
+                data, index, data_len
+            )
+            if spu_chunks:
+                counts.subpictures += len(spu_chunks)
+                for _pts, spu_data in spu_chunks:
+                    result.setdefault(0, []).append((pts, spu_data))
+            scan = max(packet_end, index + 4)
+        elif stream_id == _PS_PACK_SID:
+            scan = index + 4
+        else:
+            scan = _vob_pes_skip(data, index)
+    return counts
+
+
+def _scan_vob_subpicture_file(
+    vob_file: Path,
+    file_limit: int,
+    spu_accumulator: _SpuAccumulator,
+) -> tuple[dict[int, list[tuple[int, bytes]]], _VobScanCounts]:
+    result: dict[int, list[tuple[int, bytes]]] = {}
+    counts = _VobScanCounts()
+    scan_window = 64 * 1024 * 1024
+
+    try:
+        descriptor = os.open(str(vob_file), os.O_RDONLY | os.O_LARGEFILE)
+    except OSError:
+        log_debug(f"  VOB scan: could not open {vob_file.name}")
+        return result, counts
+
+    try:
+        offset = 0
+        while offset < file_limit:
+            window_size = min(scan_window, file_limit - offset)
+            try:
+                data = mmap.mmap(
+                    descriptor,
+                    window_size,
+                    access=mmap.ACCESS_READ,
+                    offset=offset,
+                )
+            except (ValueError, OSError) as exc:
+                log_debug(f"  mmap failed at offset {offset}: {exc}")
+                break
+            try:
+                window_counts = _scan_vob_subpicture_window(
+                    data, vob_file.name, offset, result, spu_accumulator
+                )
+                counts.private_one += window_counts.private_one
+                counts.private_two += window_counts.private_two
+                counts.subpictures += window_counts.subpictures
+            finally:
+                data.close()
+            offset += window_size
+    finally:
+        os.close(descriptor)
+
+    if counts.private_one > 0 or counts.private_two > 0:
+        log_debug(
+            "  VOB %s: %d private1, %d private2, %d subpic"
+            % (
+                vob_file.name,
+                counts.private_one,
+                counts.private_two,
+                counts.subpictures,
+            )
+        )
+    return result, counts
+
+
 def _scan_vob_subpictures(
     inputs: list[Path],
     max_bytes: int = 0,
@@ -725,15 +892,10 @@ def _scan_vob_subpictures(
         return {}
 
     result: dict[int, list[tuple[int, bytes]]] = {}
-    total_found_private1 = 0
-    total_found_private2 = 0
-    total_found_subpic = 0
+    totals = _VobScanCounts()
     spu_accumulator = _SpuAccumulator()
 
-    _SCAN_WINDOW = 64 * 1024 * 1024  # 64 MB sliding window
-    _SEARCH_PATTERN = b"\x00\x00\x01"
-
-    for vob_idx, vob_file in enumerate(inputs):
+    for vob_file in inputs:
         if not vob_file.exists():
             log_debug("  VOB scan: skipping %s (not found)" % vob_file.name)
             continue
@@ -742,142 +904,21 @@ def _scan_vob_subpictures(
             continue
         file_limit = file_size if max_bytes <= 0 else min(max_bytes, file_size)
 
-        found_private1 = 0
-        found_private2 = 0
-        found_subpic = 0
-
-        try:
-            fd = os.open(str(vob_file), os.O_RDONLY | os.O_LARGEFILE)
-        except OSError:
-            log_debug(f"  VOB scan: could not open {vob_file.name}")
-            continue
-
-        try:
-            offset = 0
-            while offset < file_limit:
-                window_size = min(_SCAN_WINDOW, file_limit - offset)
-                try:
-                    buf = mmap.mmap(
-                        fd, window_size, access=mmap.ACCESS_READ, offset=offset
-                    )
-                except (ValueError, OSError) as exc:
-                    log_debug(f"  mmap failed at offset {offset}: {exc}")
-                    break
-
-                try:
-                    data_len = len(buf)
-                    scan = 0
-                    _diag_count = 0
-                    _diag_limit = 5
-
-                    while scan < data_len - 3:
-                        idx = buf.find(_SEARCH_PATTERN, scan)
-                        if idx < 0:
-                            break
-                        if idx + 4 >= data_len:
-                            scan = idx + 1
-                            break
-                        sid = buf[idx + 3]
-
-                        if _diag_count < _diag_limit:
-                            log_debug(
-                                "  [DIAG] %s offset=0x%x start_code=00 00 01 %02x"
-                                % (vob_file.name, offset + idx, sid)
-                            )
-                            _diag_count += 1
-
-                        if sid == _PS_PRIVATE1_SID:
-                            found_private1 += 1
-                            packet = _parse_private1_packet(buf, idx, data_len)
-                            if packet is None:
-                                scan = idx + 4
-                                break
-                            if packet.end is None:
-                                scan = _vob_pes_skip(buf, idx)
-                                continue
-
-                            subpicture = packet.subpicture
-                            if subpicture is not None:
-                                found_subpic += 1
-                                sub_stream_id = subpicture.sub_stream_id
-                                pts = subpicture.pts
-                                spu_chunk = bytes(buf[subpicture.start : packet.end])
-
-                                completed_spu = spu_accumulator.add(
-                                    sub_stream_id, pts, spu_chunk
-                                )
-                                if completed_spu is not None:
-                                    result.setdefault(sub_stream_id, []).append(
-                                        completed_spu
-                                    )
-                            scan = max(packet.end, idx + 4)
-
-                        elif sid == _PS_PRIVATE2_SID:
-                            found_private2 += 1
-                            packet_end, bf_pts, spu_chunks = (
-                                _parse_private2_subpictures(buf, idx, data_len)
-                            )
-                            if spu_chunks:
-                                found_subpic += len(spu_chunks)
-                                for _pts, spu_data in spu_chunks:
-                                    result.setdefault(0, []).append((bf_pts, spu_data))
-                            scan = max(packet_end, idx + 4)
-
-                        elif sid == _PS_PACK_SID:
-                            scan = idx + 4
-
-                        else:
-                            scan = _vob_pes_skip(buf, idx)
-                finally:
-                    buf.close()
-                offset += window_size
-        finally:
-            os.close(fd)
-
-        if found_private1 > 0 or found_private2 > 0:
-            log_debug(
-                "  VOB %s: %d private1, %d private2, %d subpic"
-                % (vob_file.name, found_private1, found_private2, found_subpic)
-            )
-        total_found_private1 += found_private1
-        total_found_private2 += found_private2
-        total_found_subpic += found_subpic
+        file_result, counts = _scan_vob_subpicture_file(
+            vob_file, file_limit, spu_accumulator
+        )
+        for sub_stream_id, entries in file_result.items():
+            result.setdefault(sub_stream_id, []).extend(entries)
+        totals.private_one += counts.private_one
+        totals.private_two += counts.private_two
+        totals.subpictures += counts.subpictures
 
     # If standard PES-based scanning found nothing, try raw SPU pattern scan
     # as a last resort (scan all VOBs for \x00\x04 SPU headers).
     if not result and inputs:
         log_debug("PES-based scan found no subpictures; trying raw SPU pattern scan...")
-        total_raw = 0
-        _RAW_SCAN_LIMIT = 64 * 1024 * 1024  # 64 MB per file
-        for vob_file in inputs:
-            if not vob_file.exists():
-                continue
-            file_size = vob_file.stat().st_size
-            file_limit = file_size if max_bytes <= 0 else min(max_bytes, file_size)
-            raw_limit = min(file_limit, _RAW_SCAN_LIMIT)
-            for tail in (False, True):
-                if tail and file_size > _RAW_SCAN_LIMIT * 2:
-                    start = file_size - _RAW_SCAN_LIMIT
-                    length = _RAW_SCAN_LIMIT
-                    raw_data = _read_concat_bytes([vob_file], start, length)
-                else:
-                    raw_data = _read_concat_bytes([vob_file], 0, raw_limit)
-                if not raw_data:
-                    continue
-                raw_hits = _raw_vobsub_spu_scan(raw_data)
-                if raw_hits:
-                    total_raw += len(raw_hits)
-                    for offset, _sid_hint, spu_data in raw_hits:
-                        result.setdefault(0, []).append((0, spu_data))
-                    log_debug(
-                        "  Raw SPU scan: %s -> %d SPU candidates"
-                        % (vob_file.name, len(raw_hits))
-                    )
-                    break
-        if total_raw > 0:
-            log_debug("Raw SPU scan found %d total candidates" % total_raw)
-        else:
-            log_debug("Raw SPU scan found nothing either.")
+        for sid, entries in _raw_scan_vob_subpictures(inputs, max_bytes).items():
+            result.setdefault(sid, []).extend(entries)
 
     # Flush any remaining SPUs in the accumulator (PTS-based boundaries already
     # handled all splits; just emit everything remaining, no spu_size truncation).
@@ -908,8 +949,8 @@ def _scan_vob_subpictures(
         "VobSub scan: %d private1, %d private2, %d subpicture entries, "
         "%d stream(s)"
         % (
-            total_found_private1,
-            total_found_private2,
+            totals.private_one,
+            totals.private_two,
             sum(len(v) for v in result.values()),
             len(result),
         )
@@ -960,8 +1001,6 @@ _PACK_HEADER_TEMPLATE = bytes(
         0x00,  # stuffing_length = 0
     ]
 )
-
-_VOBSUB_SECTOR_SIZE = 2048
 
 _VOBSUB_SECTOR_SIZE = 2048
 _SECTOR_PES_MAX = (

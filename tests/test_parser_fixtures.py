@@ -21,6 +21,7 @@ import pytest
 from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from dvdifo import (
     _EditionCell,
+    _detect_episode_pgcs,
     _enumerate_vts_pgcs,
     _find_main_pgc,
     _get_active_pgc_streams,
@@ -256,6 +257,8 @@ def test_find_main_pgc_and_enumerate_vts_pgcs(fixtures_dir: Path) -> None:
         (38, 20072, 1104.4337666666668, 14),
     ]
 
+    assert _detect_episode_pgcs(data) == ([32, 35, 36], None)
+
 
 @pytest.mark.skipif(
     not (Path(__file__).parent / "fixtures" / "beauty_vts_09_0.ifo").is_file(),
@@ -345,6 +348,8 @@ def test_select_multi_angle_edition_cells(fixtures_dir: Path) -> None:
     assert angle_two_interleaved is True
     assert len(angle_two_cells) == 71
     assert (angle_two_cells[1].vob_id, angle_two_cells[1].block_mode) == (4, 3)
+
+    assert _detect_episode_pgcs(data) == ([], None)
 
 
 def _select_main_pgc_cells(

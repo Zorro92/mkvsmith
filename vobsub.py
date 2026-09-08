@@ -15,6 +15,7 @@ import mmap
 import os
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,19 @@ _PS_SUBP_START = 0x20
 _PS_SUBP_END = 0x3F
 
 
+@dataclass(slots=True)
+class _SubpicturePayload:
+    sub_stream_id: int
+    start: int
+    pts: int
+
+
+@dataclass(slots=True)
+class _Private1Packet:
+    end: int | None
+    subpicture: _SubpicturePayload | None
+
+
 def _read_concat_bytes(inputs: list[Path], start: int, length: int) -> bytes:
     """Read ``length`` bytes starting at global offset ``start`` across inputs."""
     out = bytearray()
@@ -80,6 +94,28 @@ def _read_concat_bytes(inputs: list[Path], start: int, length: int) -> bytes:
         if remaining <= 0:
             break
     return bytes(out)
+
+
+def _decode_pes_pts(data: bytearray | bytes | mmap.mmap, offset: int) -> int | None:
+    """Decode a five-byte MPEG PES PTS at *offset*.
+
+    Layout per ISO/IEC 13818-1: ``'0010'``, PTS[32:30], marker, PTS[29:15],
+    marker, PTS[14:0], marker. Invalid prefix or marker bits return None.
+    """
+    if offset < 0 or offset + 5 > len(data):
+        return None
+    byte_0, byte_1, byte_2, byte_3, byte_4 = data[offset : offset + 5]
+    if (byte_0 & 0xF0) not in (0x20, 0x30):
+        return None
+    if not (byte_2 & 0x01 and byte_4 & 0x01):
+        return None
+    return (
+        ((byte_0 & 0x0E) << 29)
+        | (byte_1 << 22)
+        | ((byte_2 & 0xFE) << 14)
+        | (byte_3 << 7)
+        | ((byte_4 & 0xFE) >> 1)
+    )
 
 
 def _snap_to_pack(inputs: list[Path], pos: int, total: int) -> int:
@@ -181,15 +217,8 @@ def _scan_vob_pts(
                 hdr_data_len = data[idx + 8]
                 pts_off = idx + 9
                 if pts_off + 4 < data_len and hdr_data_len >= 5:
-                    b0, b1, b2, b3, b4 = data[pts_off : pts_off + 5]
-                    if (b0 & 0xF0) in (0x20, 0x30):  # PTS-only or PTS+DTS
-                        pts = (
-                            ((b0 & 0x0E) << 29)
-                            | (b1 << 22)
-                            | ((b2 & 0xFE) << 14)
-                            | (b3 << 7)
-                            | ((b4 & 0xFE) >> 1)
-                        )
+                    pts = _decode_pes_pts(data, pts_off)
+                    if pts is not None:
                         result.append((pts, idx))
                         found_pts += 1
 
@@ -567,6 +596,69 @@ def _raw_vobsub_spu_scan(data: bytes, start: int = 0) -> list[tuple[int, int, by
     return results
 
 
+def _parse_private1_packet(
+    data: bytearray | bytes | mmap.mmap, offset: int, data_len: int
+) -> _Private1Packet | None:
+    """Parse one private stream 1 PES packet and its optional SPU payload."""
+    if offset + 10 > data_len:
+        return None
+    pes_length = (data[offset + 4] << 8) | data[offset + 5]
+    packet_end = offset + 6 + pes_length if pes_length > 0 else data_len
+    packet_end = min(packet_end, data_len)
+
+    if data[offset + 6] & 0xC0 == 0x80:
+        header_length = data[offset + 8]
+        sub_stream_offset = offset + 9 + header_length
+    else:
+        sub_stream_offset = offset + 6
+    if sub_stream_offset + 1 > data_len or sub_stream_offset >= packet_end:
+        return _Private1Packet(None, None)
+
+    sub_stream_id = data[sub_stream_offset]
+    spu_start = sub_stream_offset + 1
+    if not (_PS_SUBP_START <= sub_stream_id <= _PS_SUBP_END):
+        return _Private1Packet(packet_end, None)
+    if spu_start >= packet_end:
+        return _Private1Packet(packet_end, None)
+
+    pts = 0
+    if (data[offset + 6] & 0xC0) == 0x80 and (data[offset + 7] & 0xC0) != 0:
+        decoded_pts = _decode_pes_pts(data, offset + 9)
+        if decoded_pts is not None:
+            pts = decoded_pts
+    return _Private1Packet(
+        packet_end,
+        _SubpicturePayload(sub_stream_id, spu_start, pts),
+    )
+
+
+def _parse_private2_subpictures(
+    data: bytearray | bytes | mmap.mmap, offset: int, data_len: int
+) -> tuple[int, int, list[tuple[int, bytes]]]:
+    """Parse private stream 2 data and retain any embedded SPU candidates."""
+    if offset + 6 > data_len:
+        return offset + 4, 0, []
+    pes_length = (data[offset + 4] << 8) | data[offset + 5]
+    packet_end = offset + 6 + pes_length if pes_length > 0 else data_len
+    packet_end = min(packet_end, data_len)
+
+    pts = 0
+    if offset + 8 <= packet_end and data[offset + 6] & 0xC0 == 0x80:
+        header_length = data[offset + 7]
+        payload_start = offset + 8 + header_length
+        if data[offset + 6] & 0x80:
+            decoded_pts = _decode_pes_pts(data, offset + 8)
+            if decoded_pts is not None:
+                pts = decoded_pts
+    else:
+        payload_start = offset + 6
+
+    if payload_start >= packet_end:
+        return packet_end, pts, []
+    payload = bytes(data[payload_start:packet_end])
+    return packet_end, pts, _try_scan_private2_for_spu(payload)
+
+
 def _scan_vob_subpictures(
     inputs: list[Path],
     max_bytes: int = 0,
@@ -656,123 +748,58 @@ def _scan_vob_subpictures(
 
                         if sid == _PS_PRIVATE1_SID:
                             found_private1 += 1
-                            if idx + 10 > data_len:
+                            packet = _parse_private1_packet(buf, idx, data_len)
+                            if packet is None:
                                 scan = idx + 4
                                 break
-                            pes_len = (buf[idx + 4] << 8) | buf[idx + 5]
-                            if pes_len > 0:
-                                packet_end = idx + 6 + pes_len
-                            else:
-                                packet_end = data_len
-                            packet_end = min(packet_end, data_len)
-                            if buf[idx + 6] & 0xC0 == 0x80:
-                                hdr_len = buf[idx + 8]
-                                sub_id_off = idx + 9 + hdr_len
-                            else:
-                                sub_id_off = idx + 6
-                            if sub_id_off + 1 > data_len or sub_id_off >= packet_end:
+                            if packet.end is None:
                                 scan = _vob_pes_skip(buf, idx)
                                 continue
-                            sub_stream_id = buf[sub_id_off]
-                            if _PS_SUBP_START <= sub_stream_id <= _PS_SUBP_END:
-                                found_subpic += 1
-                                spu_start = sub_id_off + 1
-                                if spu_start < packet_end:
-                                    pts = 0
-                                    if (buf[idx + 6] & 0xC0) == 0x80 and (
-                                        buf[idx + 7] & 0xC0
-                                    ) != 0:
-                                        pts_off = idx + 9
-                                        if pts_off + 5 <= packet_end:
-                                            b0, b1, b2, b3, b4 = buf[
-                                                pts_off : pts_off + 5
-                                            ]
-                                            if (b0 & 0xF0) in (0x20, 0x30):
-                                                pts = (
-                                                    ((b0 & 0x0E) << 29)
-                                                    | (b1 << 22)
-                                                    | ((b2 & 0xFE) << 14)
-                                                    | (b3 << 7)
-                                                    | ((b4 & 0xFE) >> 1)
-                                                )
-                                    spu_chunk = bytes(buf[spu_start:packet_end])
 
-                                    # Accumulator for multi-packet SPUs.
-                                    # On Warner Bros. DVDs a single SPU is split across
-                                    # multiple consecutive 0xBD PES packets (one per DVD
-                                    # sector). The first packet carries the SPU header
-                                    # (SPU_size). Continuation packets carry more pixel
-                                    # data until the SPU is complete.
-                                    #
-                                    # Unlike the SPU_size field (which Warner Bros. discs
-                                    # often set too small, causing premature emission),
-                                    # the PTS is a reliable boundary: each real SPU
-                                    # starts with a new PTS value.  Continuation packets
-                                    # carry no PTS.  A PTS change for the same sub_id
-                                    # signals the end of the current SPU.
-                                    if sub_stream_id in _spu_accum:
-                                        acc_pts, chunks = _spu_accum[sub_stream_id]
-                                        if pts and pts != acc_pts and len(chunks) >= 1:
-                                            # PTS changed → emit current SPU, start fresh
-                                            full_data = b"".join(chunks)
-                                            result.setdefault(sub_stream_id, []).append(
-                                                (acc_pts, full_data)
-                                            )
+                            subpicture = packet.subpicture
+                            if subpicture is not None:
+                                found_subpic += 1
+                                sub_stream_id = subpicture.sub_stream_id
+                                pts = subpicture.pts
+                                spu_chunk = bytes(buf[subpicture.start : packet.end])
+
+                                # Accumulator for multi-packet SPUs. On Warner
+                                # Bros. DVDs a single SPU is split across multiple
+                                # consecutive 0xBD PES packets. The first packet
+                                # carries the SPU header; continuation packets carry
+                                # pixel data. A PTS change for the same sub_id
+                                # signals the end of the current SPU.
+                                if sub_stream_id in _spu_accum:
+                                    acc_pts, chunks = _spu_accum[sub_stream_id]
+                                    if pts and pts != acc_pts and len(chunks) >= 1:
+                                        full_data = b"".join(chunks)
+                                        result.setdefault(sub_stream_id, []).append(
+                                            (acc_pts, full_data)
+                                        )
+                                        _spu_accum[sub_stream_id] = (
+                                            pts,
+                                            [spu_chunk],
+                                        )
+                                    else:
+                                        chunks.append(spu_chunk)
+                                        if pts and not acc_pts:
                                             _spu_accum[sub_stream_id] = (
                                                 pts,
-                                                [spu_chunk],
+                                                chunks,
                                             )
-                                        else:
-                                            # Same PTS or continuation without PTS
-                                            chunks.append(spu_chunk)
-                                            if pts and not acc_pts:
-                                                _spu_accum[sub_stream_id] = (
-                                                    pts,
-                                                    chunks,
-                                                )
-                                    else:
-                                        # Start new accumulator
-                                        _spu_accum[sub_stream_id] = (pts, [spu_chunk])
-                            scan = max(packet_end, idx + 4)
+                                else:
+                                    _spu_accum[sub_stream_id] = (pts, [spu_chunk])
+                            scan = max(packet.end, idx + 4)
 
                         elif sid == _PS_PRIVATE2_SID:
                             found_private2 += 1
-                            if idx + 6 > data_len:
-                                scan = idx + 4
-                                break
-                            pes_len = (buf[idx + 4] << 8) | buf[idx + 5]
-                            if pes_len > 0:
-                                packet_end = idx + 6 + pes_len
-                            else:
-                                packet_end = data_len
-                            packet_end = min(packet_end, data_len)
-                            bf_pts = 0
-                            if idx + 8 <= packet_end and buf[idx + 6] & 0xC0 == 0x80:
-                                bf_hdr_len = buf[idx + 7]
-                                payload_start = idx + 8 + bf_hdr_len
-                                if buf[idx + 6] & 0x80:
-                                    pts_off = idx + 8
-                                    if pts_off + 4 < packet_end:
-                                        b0, b1, b2, b3, b4 = buf[pts_off : pts_off + 5]
-                                        if (b0 & 0xF0) in (0x20, 0x30):
-                                            bf_pts = (
-                                                ((b0 & 0x0E) << 29)
-                                                | (b1 << 22)
-                                                | ((b2 & 0xFE) << 14)
-                                                | (b3 << 7)
-                                                | ((b4 & 0xFE) >> 1)
-                                            )
-                            else:
-                                payload_start = idx + 6
-                            if payload_start < packet_end:
-                                payload = bytes(buf[payload_start:packet_end])
-                                spu_chunks = _try_scan_private2_for_spu(payload)
-                                if spu_chunks:
-                                    found_subpic += len(spu_chunks)
-                                    for _pts, spu_data in spu_chunks:
-                                        result.setdefault(0, []).append(
-                                            (bf_pts, spu_data)
-                                        )
+                            packet_end, bf_pts, spu_chunks = (
+                                _parse_private2_subpictures(buf, idx, data_len)
+                            )
+                            if spu_chunks:
+                                found_subpic += len(spu_chunks)
+                                for _pts, spu_data in spu_chunks:
+                                    result.setdefault(0, []).append((bf_pts, spu_data))
                             scan = max(packet_end, idx + 4)
 
                         elif sid == _PS_PACK_SID:

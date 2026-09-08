@@ -8,6 +8,8 @@ Fixtures (see ``tests/fixtures/``):
   - ``00800.mpls`` / ``00875.clpi`` / ``bdmt_eng.xml`` — Monsters University
     (2013) Blu-ray.
   - ``dvd_video_ts.ifo`` / ``dvd_vts_01_0.ifo`` — Cats Don't Dance (1997) DVD.
+  - ``beauty_vts_09_0.ifo`` / ``beauty_vts_09_subpictures.vob`` — Beauty and
+    the Beast (1991) multi-angle DVD.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from dvdifo import (
     _vts_ttn1_pgc_abs,
 )
 from models import StreamType
+from vobsub import _scan_vob_subpictures
 
 # Disc-derived fixtures are not committed (to avoid redistributing disc
 # metadata). These tests skip on a fresh clone; capture the fixtures locally
@@ -285,6 +288,10 @@ def test_parse_multi_angle_pgc_chapters(fixtures_dir: Path) -> None:
     )
 
 
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "beauty_vts_09_0.ifo").is_file(),
+    reason="Beauty and the Beast multi-angle VTS fixture not present",
+)
 def test_lookup_multi_angle_main_feature_ranges(fixtures_dir: Path) -> None:
     data = (fixtures_dir / "beauty_vts_09_0.ifo").read_bytes()
     vob_total_bytes = 254_951_424 + 1_073_739_776 * 4 + 38_658_048
@@ -301,3 +308,24 @@ def test_lookup_multi_angle_main_feature_ranges(fixtures_dir: Path) -> None:
         8_192,
         4_333_617_152,
     )
+
+
+@pytest.mark.skipif(
+    not (
+        Path(__file__).parent / "fixtures" / "beauty_vts_09_subpictures.vob"
+    ).is_file(),
+    reason="Beauty and the Beast VOB subpicture fixture not present",
+)
+def test_scan_multi_angle_vob_subpictures(fixtures_dir: Path) -> None:
+    result = _scan_vob_subpictures(
+        [fixtures_dir / "beauty_vts_09_subpictures.vob"],
+        max_bytes=8192,
+    )
+
+    assert 0x20 in result
+    assert 0x21 in result
+    for sub_stream_id in (0x20, 0x21):
+        entries = result[sub_stream_id]
+        assert [(pts, len(data)) for pts, data in entries] == [(25257, 988)]
+        assert entries[0][1][:8] == bytes.fromhex("03dc03c400000000")
+        assert entries[0][1][-8:] == bytes.fromhex("21df06000601e6ff")

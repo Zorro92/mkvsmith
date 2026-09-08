@@ -27,3 +27,13 @@ def test_scan_vob_subpictures_joins_generated_continuation_packets(
     result = _scan_vob_subpictures([vob], max_bytes=vob.stat().st_size)
 
     assert result == {0x20: [(12345, payload)]}
+
+
+def test_scan_vob_subpictures_uses_raw_spu_fallback(tmp_path: Path) -> None:
+    spu = b"\x00\x0a\x00\x04\x00\x08abcd"
+    vob = tmp_path / "raw-spu.vob"
+    vob.write_bytes(spu)
+
+    result = _scan_vob_subpictures([vob])
+
+    assert result == {0: [(0, spu)]}

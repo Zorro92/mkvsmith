@@ -62,7 +62,7 @@ from settings import SETTINGS_PATH, load_settings, save_settings
 from scan import Scanner, _get_notable_titles, pick_main_feature
 from mkv import MKVCreator
 
-__version__ = "0.1.0"  # keep in sync with pyproject.toml [project].version
+__version__ = "0.2.0"  # keep in sync with pyproject.toml [project].version
 
 
 # =============================================================================

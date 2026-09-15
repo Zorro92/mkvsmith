@@ -3,16 +3,44 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    # Non-Linux runners are informational until the suite is green there:
+    # failures stay visible but do not block merges. Remove this line (or
+    # split the matrix into per-OS jobs) as each platform reaches green.
+    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.12", "3.13"]
+        exclude:
+          # Full Python matrix on Linux; one Python per non-Linux OS to keep
+          # runner usage (macOS/Windows bill at higher multipliers) low.
+          - { os: macos-latest, python-version: "3.12" }
+          - { os: windows-latest, python-version: "3.12" }
     steps:
       - uses: actions/checkout@v5
+
+      - name: Install external tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y mkvtoolnix p7zip-full
+
+      - name: Install external tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install mkvtoolnix
+          # p7zip is deprecated upstream and may disappear from Homebrew;
+          # the unit suite mocks 7z invocations, so this is best-effort.
+          brew install p7zip || true
+
+      - name: Install external tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install -y mkvtoolnix 7zip
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -26,10 +54,38 @@ jobs:
         run: uv run pytest -ra
 
       - name: Lint
-        run: uv run ruff check $(git ls-files '*.py')
+        run: uv run ruff check .
 
       - name: Format check
-        run: uv run ruff format --check $(git ls-files '*.py')
+        run: uv run ruff format --check .
 
       - name: Type check
-        run: uv run ty check --config-file ty.toml
+        run: uv run ty check --config-file ty.toml .
+
+  test-linux-arm64:
+    # Experimental: QEMU-emulated ARM64 Linux (Raspberry Pi / ARM NAS class).
+    # ~5-10x slower than native and not required for merge while marked
+    # continue-on-error; delete this job if it proves too flaky.
+    name: test (linux-arm64, qemu)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      # Plain pip inside the container: uv.lock is per-platform and the unit
+      # suite only needs rich + pytest.
+      - name: Run tests under emulation
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/src" -w /src \
+            python:3.12-slim \
+            bash -lc 'apt-get update && \
+                      apt-get install -y --no-install-recommends mkvtoolnix p7zip-full && \
+                      pip install --no-cache-dir rich pytest && \
+                      python -m pytest -ra'

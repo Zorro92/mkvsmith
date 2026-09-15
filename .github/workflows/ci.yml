@@ -9,10 +9,6 @@ jobs:
   test:
     name: test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    # Non-Linux runners are informational until the suite is green there:
-    # failures stay visible but do not block merges. Remove this line (or
-    # split the matrix into per-OS jobs) as each platform reaches green.
-    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:

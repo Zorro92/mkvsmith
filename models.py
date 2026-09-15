@@ -216,6 +216,36 @@ def _kill_active_muxers() -> None:
     RUNTIME_STATE.active_processes.kill_muxers()
 
 
+def _kill_process_group(pid: int) -> None:
+    """Best-effort SIGKILL of a tracked process and, on POSIX, its group.
+
+    Mux children run in their own session (see ``mkv.py``), so the whole
+    process group must be killed on POSIX. Windows has no process groups;
+    ``os.kill`` with SIGKILL maps to TerminateProcess there. Missing or
+    already-exited PIDs are ignored.
+    """
+    if os.name != "posix":
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+        return
+    except ProcessLookupError:
+        return
+    except OSError:
+        pass
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
 def set_progress_active(active: bool) -> None:
     """Mark whether a carriage-return progress line is currently on screen."""
     RUNTIME_STATE.active_processes.set_progress_active(active)
@@ -769,13 +799,7 @@ class ActiveProcesses:
     def kill_muxers(self) -> None:
         """SIGKILL in-flight muxers and delete partial output files."""
         for pgid in self.muxer_pgids:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except OSError:
-                try:
-                    os.kill(pgid, signal.SIGKILL)
-                except OSError:
-                    pass
+            _kill_process_group(pgid)
         self.muxer_pgids.clear()
         for out_file in self.output_files:
             try:

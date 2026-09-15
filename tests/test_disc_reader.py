@@ -130,6 +130,7 @@ def prepare_direct_mount(
     monkeypatch.setattr(
         disc_reader, "_confirm_direct_mount", lambda _iso_path: confirmed
     )
+    monkeypatch.setattr(disc_reader, "_IS_LINUX", True)
     monkeypatch.setattr(disc_reader.tempfile, "mkdtemp", make_mountpoint)
     monkeypatch.setattr(disc_reader, "_run_direct_mount", run_direct_mount)
     return calls
@@ -206,6 +207,20 @@ def test_direct_mount_exception_removes_empty_mountpoint(
     assert direct_mounts == []
 
 
+def test_direct_mount_skipped_on_non_linux_platforms(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    iso_path = tmp_path / "movie.iso"
+    mountpoint = tmp_path / "mount"
+    prepare_direct_mount(monkeypatch, tmp_path, mountpoint=mountpoint)
+    monkeypatch.setattr(disc_reader, "_IS_LINUX", False)
+
+    result = disc_reader._try_direct_mount(iso_path, direct_mounts=[])
+
+    assert result is None
+    assert not mountpoint.exists()
+
+
 def test_parse_7z_listing_filters_media_paths_and_sizes() -> None:
     stdout = "\n".join(
         [
@@ -270,7 +285,13 @@ def test_run_7z_listing_uses_expected_arguments(
     assert calls == [
         (
             ["7z", "l", "-slt", "safe.iso"],
-            {"capture_output": True, "text": True, "timeout": 120},
+            {
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "timeout": 120,
+            },
         )
     ]
 
@@ -403,3 +424,22 @@ def test_detect_source_type_matches_files_devices_and_unknown(
         disc_reader.detect_source_type(Path("missing.txt"))
         == disc_reader.SourceType.UNKNOWN
     )
+
+
+def test_is_device_path_matches_platform_device_paths() -> None:
+    # POSIX block-device nodes (Linux /dev/sr0, macOS /dev/diskN).
+    assert disc_reader._is_device_path(Path("/dev/sr0"))
+    assert disc_reader._is_device_path(Path("/dev/disk4"))
+    # Windows bare drive letters.
+    assert disc_reader._is_device_path(Path("Q:"))
+    assert disc_reader._is_device_path(Path("Z:/"))
+    assert disc_reader._is_device_path(Path("q:\\"))
+    # Regular files, directories, and near-misses are not devices.
+    assert not disc_reader._is_device_path(Path("movie.iso"))
+    assert not disc_reader._is_device_path(Path("Q:/VIDEO_TS"))
+    assert not disc_reader._is_device_path(Path("EQ:"))
+
+
+def test_detect_source_type_matches_windows_drive_paths() -> None:
+    assert disc_reader.detect_source_type(Path("Q:")) == disc_reader.SourceType.DEVICE
+    assert disc_reader.detect_source_type(Path("Z:/")) == disc_reader.SourceType.DEVICE

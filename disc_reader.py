@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections.abc import Sequence
 from enum import Enum
@@ -27,6 +28,11 @@ from models import (
     log_warn,
 )
 from i18n import tr
+
+
+# Loop-mounting an ISO with sudo is a Linux-only fallback; macOS mounts
+# images via hdiutil and Windows has no sudo/loop mount at all.
+_IS_LINUX = sys.platform.startswith("linux")
 
 
 # =============================================================================
@@ -102,6 +108,21 @@ def _file_source_type(source: Path) -> SourceType | None:
     return None
 
 
+def _is_device_path(source: Path) -> bool:
+    """True for optical-device style sources on any supported platform.
+
+    Linux and macOS expose block devices as ``/dev/...`` nodes (e.g.
+    ``/dev/sr0``, ``/dev/disk4``); Windows exposes drives as bare
+    ``E:`` / ``E:\\`` style paths. Browsable Windows/macOS discs are usually
+    detected earlier as DVD/Blu-ray directories, so this only needs to catch
+    the device-node cases.
+    """
+    text = str(source)
+    if text.startswith("/dev/"):
+        return True
+    return bool(re.fullmatch(r"[A-Za-z]:[\\\\/]?", text))
+
+
 def detect_source_type(source: Path) -> SourceType:
     directory_type = _directory_source_type(source)
     if directory_type is not None:
@@ -111,7 +132,7 @@ def detect_source_type(source: Path) -> SourceType:
     if file_type is not None:
         return file_type
 
-    if str(source).startswith("/dev/"):
+    if _is_device_path(source):
         return SourceType.DEVICE
     return SourceType.UNKNOWN
 
@@ -423,6 +444,8 @@ def _run_7z_listing(target_path: Path) -> subprocess.CompletedProcess[str]:
         ["7z", "l", "-slt", str(target_path)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
     )
 
@@ -515,6 +538,8 @@ def _extract_with_7z(
         ["7z", "e", str(target_path), f"-o{out_dir}"] + internal_paths + ["-y"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=300,
     )
     if res.returncode != 0:
@@ -634,6 +659,8 @@ def _run_direct_mount(
         ["sudo", "mount", "-o", "loop,ro", str(iso_path), str(mountpoint)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
 
@@ -665,6 +692,11 @@ def _try_direct_mount(
     """
     if (config or RUNTIME_STATE.config).no_sudo:
         log_info(tr("Skipping direct mount (--no-sudo is set)"))
+        return None
+    if not _IS_LINUX:
+        # 7z has already handled the ISO upstream, so skip instead of
+        # prompting for a sudo command that cannot work on this platform.
+        log_debug("Skipping direct mount (Linux-only fallback)")
         return None
     if not _confirm_direct_mount(iso_path):
         return None

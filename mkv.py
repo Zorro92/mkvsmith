@@ -27,9 +27,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import json
-import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -65,6 +63,7 @@ from models import (
     log_warn,
     log_debug,
     _HAS_MKVMERGE,
+    _kill_process_group,
     RuntimeState,
     RUNTIME_STATE,
 )
@@ -322,6 +321,8 @@ def _identify_input_tracks(path: Path) -> list[dict[str, Any]]:
             ["mkvmerge", "-J", str(path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         if proc.returncode != 0:
@@ -1157,15 +1158,7 @@ class _MkvmergeTimeoutState:
 
 
 def _kill_mkvmerge_process(process: subprocess.Popen[str]) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except OSError:
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        except OSError:
-            process.kill()
+    _kill_process_group(process.pid)
 
 
 def _start_mkvmerge_watchdog(
@@ -1498,6 +1491,8 @@ class MKVCreator:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             start_new_session=True,
         )
         # mkvmerge runs in its own session, so the terminal's Ctrl+C never

@@ -27,13 +27,13 @@ def load_settings() -> dict[str, Any]:
     """
     # New settings file present -> use it directly.
     try:
-        return json.loads(SETTINGS_PATH.read_text())
+        return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         pass
 
     # One-time migration from the old tagger-only config.
     try:
-        legacy = json.loads(_LEGACY_CONFIG_PATH.read_text())
+        legacy = json.loads(_LEGACY_CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         legacy = {}
 
@@ -44,4 +44,4 @@ def load_settings() -> dict[str, Any]:
 
 def save_settings(cfg: dict[str, Any]) -> None:
     """Write *cfg* to the settings path, creating it if necessary."""
-    SETTINGS_PATH.write_text(json.dumps(cfg, indent=2))
+    SETTINGS_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
@@ -161,11 +162,14 @@ def _total_ram_bytes() -> int | None:
                     return int(line.split()[1]) * 1024  # KiB -> bytes
     except (OSError, ValueError, IndexError):
         pass
-    # macOS / *BSD: POSIX sysconf.
-    try:
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-    except (ValueError, OSError, AttributeError):
-        pass
+    # macOS / *BSD: POSIX sysconf. os.sysconf is absent on Windows; resolve
+    # it through getattr so the code stays valid on every platform's types.
+    sysconf: Callable[[str], int] | None = getattr(os, "sysconf", None)
+    if sysconf is not None:
+        try:
+            return sysconf("SC_PAGE_SIZE") * sysconf("SC_PHYS_PAGES")
+        except (ValueError, OSError, AttributeError):
+            pass
     # Windows.
     try:
         import ctypes

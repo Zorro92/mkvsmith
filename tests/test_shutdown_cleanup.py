@@ -235,7 +235,10 @@ def test_sigint_handler_kills_muxer_and_cleans_up(tmp_path: Path) -> None:
     finally:
         if not _proc_gone_or_zombie(gpid):
             try:
-                os.kill(gpid, signal.SIGKILL)
+                # _SIGKILL rather than signal.SIGKILL: the Windows signal
+                # module does not define SIGKILL (this test skips there, but
+                # type checking still resolves the reference).
+                os.kill(gpid, _SIGKILL)
             except OSError:
                 pass
 

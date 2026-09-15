@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 import disc_reader
 
@@ -417,19 +420,26 @@ def test_detect_source_type_matches_files_devices_and_unknown(
     video.write_bytes(b"video")
     assert disc_reader.detect_source_type(video) == disc_reader.SourceType.VIDEO_FILE
     assert (
-        disc_reader.detect_source_type(Path("/dev/nonexistent-optical"))
-        == disc_reader.SourceType.DEVICE
-    )
-    assert (
         disc_reader.detect_source_type(Path("missing.txt"))
         == disc_reader.SourceType.UNKNOWN
     )
 
+    if os.name == "posix":
+        # Path("/dev/...") normalises to backslashes on Windows, where such
+        # nodes do not exist; assert the POSIX spelling only where it is real.
+        assert (
+            disc_reader.detect_source_type(Path("/dev/nonexistent-optical"))
+            == disc_reader.SourceType.DEVICE
+        )
 
-def test_is_device_path_matches_platform_device_paths() -> None:
-    # POSIX block-device nodes (Linux /dev/sr0, macOS /dev/diskN).
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX /dev block-device nodes")
+def test_is_device_path_matches_posix_device_nodes() -> None:
     assert disc_reader._is_device_path(Path("/dev/sr0"))
     assert disc_reader._is_device_path(Path("/dev/disk4"))
+
+
+def test_is_device_path_matches_windows_drive_paths() -> None:
     # Windows bare drive letters.
     assert disc_reader._is_device_path(Path("Q:"))
     assert disc_reader._is_device_path(Path("Z:/"))

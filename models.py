@@ -216,6 +216,11 @@ def _kill_active_muxers() -> None:
     RUNTIME_STATE.active_processes.kill_muxers()
 
 
+# Windows defines neither killpg nor SIGKILL; ``os.kill(pid, 9)`` maps to
+# TerminateProcess there, and 9 is SIGKILL's conventional POSIX value.
+_SIGKILL: int = getattr(signal, "SIGKILL", 9)
+
+
 def _kill_process_group(pid: int) -> None:
     """Best-effort SIGKILL of a tracked process and, on POSIX, its group.
 
@@ -226,22 +231,22 @@ def _kill_process_group(pid: int) -> None:
     """
     if os.name != "posix":
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, _SIGKILL)
         except OSError:
             pass
         return
     try:
-        os.killpg(pid, signal.SIGKILL)
+        os.killpg(pid, _SIGKILL)
         return
     except ProcessLookupError:
         return
     except OSError:
         pass
     try:
-        os.killpg(os.getpgid(pid), signal.SIGKILL)
+        os.killpg(os.getpgid(pid), _SIGKILL)
     except OSError:
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, _SIGKILL)
         except OSError:
             pass
 

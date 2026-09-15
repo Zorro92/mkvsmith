@@ -97,7 +97,9 @@ def test_scan_bluray_source_falls_back_to_raw_m2ts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = tmp_path / "disc"
-    stream_dir = source / "bdmv" / "STREAM"
+    # Uppercase BDMV keeps the expected path identical on case-insensitive
+    # filesystems (macOS APFS) and case-sensitive ones (Linux) alike.
+    stream_dir = source / "BDMV" / "STREAM"
     stream_dir.mkdir(parents=True)
     fallback_calls: list[tuple[Path, list[Title]]] = []
 

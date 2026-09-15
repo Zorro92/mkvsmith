@@ -24,6 +24,7 @@ import pytest
 
 from models import (
     RuntimeState,
+    _SIGKILL,
     _kill_active_muxers,
     cleanup_temp_dirs,
     finish_progress_line,
@@ -93,7 +94,13 @@ def test_kill_active_muxers_kills_child_and_removes_partial_output(
         register_active_output(out)
         _kill_active_muxers()
 
-        assert child.wait(timeout=10) == -signal.SIGKILL
+        if os.name == "posix":
+            # POSIX Popen.wait() reports death-by-signal as a negative code.
+            assert child.wait(timeout=10) == -_SIGKILL
+        else:
+            # Windows os.kill(pid, 9) terminates via TerminateProcess, which
+            # reports the passed value back as the (positive) exit code.
+            assert child.wait(timeout=10) == _SIGKILL
         assert not out.exists()
         assert models.RUNTIME_STATE.active_processes.muxer_pgids == []
         assert models.RUNTIME_STATE.active_processes.output_files == []
@@ -121,8 +128,8 @@ def test_kill_process_group_falls_back_to_current_process_group(
     models._kill_process_group(123)
 
     assert killpg_calls == [
-        (123, signal.SIGKILL),
-        (432, signal.SIGKILL),
+        (123, _SIGKILL),
+        (432, _SIGKILL),
     ]
 
 

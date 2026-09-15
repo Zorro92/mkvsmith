@@ -112,6 +112,12 @@ mkvsmith> q          # salir
 
 ## Notas
 
+- **Soporte de plataformas:** Linux es la plataforma principal. Las fuentes
+  de carpetas, ISO (vía 7z) y archivos de vídeo están escritas para ser
+  multiplataforma, y las letras de unidad de Windows (`E:`) se reconocen como
+  fuentes de dispositivo, pero el montaje de ISO con `sudo mount -o loop` y la
+  entrada de dispositivos ópticos `/dev/...` son exclusivos de Linux. El
+  soporte de Windows y macOS no está probado.
 - Los discos comerciales cifrados necesitan `libdvdcss` (DVD) / `libaacs`
   (Blu-ray) a nivel de sistema.
 - El directorio temporal por defecto suele ser un tmpfs respaldado en RAM en

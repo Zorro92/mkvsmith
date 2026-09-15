@@ -937,7 +937,9 @@ def _configure_runtime(runtime_state: RuntimeState | None = None) -> None:
 def _scan_source(
     source: Path, runtime_state: RuntimeState | None = None
 ) -> tuple[list[Title], str | None]:
-    if not source.exists() and not str(source).startswith("/dev/"):
+    from disc_reader import _is_device_path
+
+    if not source.exists() and not _is_device_path(source):
         log_error(tr("Not found: {path}", path=source))
         sys.exit(1)
     scanner = Scanner(source, runtime_state=runtime_state)

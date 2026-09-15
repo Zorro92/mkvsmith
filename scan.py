@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 import xml.etree.ElementTree as ET
@@ -1546,7 +1547,8 @@ class Scanner:
         )
         if not mnt:
             log_error("All ISO reading methods failed.")
-            log_error(f"Try: sudo mount -o loop,ro '{self.source}' /mnt/iso")
+            if sys.platform.startswith("linux"):
+                log_error(f"Try: sudo mount -o loop,ro '{self.source}' /mnt/iso")
             return
         log_info(f"Direct mount succeeded at {mnt}")
         if (mnt / "BDMV").is_dir():

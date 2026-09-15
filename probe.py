@@ -77,6 +77,8 @@ def _probe_with_mkvmerge(path: Path) -> dict[str, Any] | None:
             ["mkvmerge", "-J", str(path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         if proc.returncode != 0:

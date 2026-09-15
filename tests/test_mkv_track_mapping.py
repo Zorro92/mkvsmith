@@ -835,36 +835,16 @@ def test_parse_and_read_mkvmerge_progress_across_chunks() -> None:
     assert progress == [42, 100]
 
 
-def test_kill_mkvmerge_process_falls_back_to_current_process_group(
+def test_kill_mkvmerge_process_delegates_to_platform_kill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    killpg_calls: list[tuple[int, int]] = []
+    killed: list[int] = []
+    monkeypatch.setattr(mkv, "_kill_process_group", killed.append)
 
-    class _FakeProcess:
-        pid = 123
-        killed = False
-
-        def kill(self) -> None:
-            self.killed = True
-
-    process = _FakeProcess()
-
-    def killpg(process_id: int, sig: int) -> None:
-        killpg_calls.append((process_id, sig))
-        if len(killpg_calls) == 1:
-            raise OSError(process_id)
-
-    monkeypatch.setattr(mkv.os, "killpg", killpg)
-    monkeypatch.setattr(mkv.os, "getpgid", lambda _pid: 432)
-
-    process_for_kill: Any = process
+    process_for_kill: Any = SimpleNamespace(pid=123)
     mkv._kill_mkvmerge_process(process_for_kill)
 
-    assert killpg_calls == [
-        (123, mkv.signal.SIGKILL),
-        (432, mkv.signal.SIGKILL),
-    ]
-    assert process.killed is False
+    assert killed == [123]
 
 
 def test_mkvmerge_watchdog_records_timeout_and_kills_process(

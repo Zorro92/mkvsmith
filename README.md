@@ -110,6 +110,11 @@ mkvsmith> q          # quit
 
 ## Notes
 
+- **Platform support:** Linux is the primary platform. Folder, ISO (via 7z),
+  and video-file sources are written to be cross-platform, and Windows drive
+  letters (`E:`) are recognised as device sources, but the `sudo mount -o
+  loop` ISO fallback and `/dev/...` optical-device input are Linux-only.
+  Windows and macOS support is otherwise untested.
 - Encrypted commercial discs need `libdvdcss` (DVD) / `libaacs` (Blu-ray) at
   the OS level.
 - The default temp dir is often a RAM-backed tmpfs on Linux. `mkvsmith`

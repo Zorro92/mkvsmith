@@ -103,6 +103,29 @@ def test_kill_active_muxers_kills_child_and_removes_partial_output(
             child.wait()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
+def test_kill_process_group_falls_back_to_current_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    killpg_calls: list[tuple[int, int]] = []
+
+    def killpg(process_id: int, sig: int) -> None:
+        killpg_calls.append((process_id, sig))
+        if len(killpg_calls) == 1:
+            # First attempt fails (e.g. PID was reused / permission error).
+            raise OSError(process_id)
+
+    monkeypatch.setattr(models.os, "killpg", killpg)
+    monkeypatch.setattr(models.os, "getpgid", lambda _pid: 432)
+
+    models._kill_process_group(123)
+
+    assert killpg_calls == [
+        (123, signal.SIGKILL),
+        (432, signal.SIGKILL),
+    ]
+
+
 def test_register_unregister_roundtrip(tmp_path: Path) -> None:
     out = tmp_path / "movie_t01.mkv"
     register_active_muxer(42)

@@ -835,8 +835,10 @@ def _scan_vob_subpicture_file(
     counts = _VobScanCounts()
     scan_window = 64 * 1024 * 1024
 
+    # O_LARGEFILE is a no-op on 64-bit systems and does not exist on Windows;
+    # keep it only where the platform defines it.
     try:
-        descriptor = os.open(str(vob_file), os.O_RDONLY | os.O_LARGEFILE)
+        descriptor = os.open(str(vob_file), os.O_RDONLY | getattr(os, "O_LARGEFILE", 0))
     except OSError:
         log_debug(f"  VOB scan: could not open {vob_file.name}")
         return result, counts
@@ -1248,6 +1250,8 @@ def _verify_vobsub_tracks(idx_path: Path) -> list[dict[str, Any]]:
             ["mkvmerge", "-J", str(idx_path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
         if process.returncode != 0:

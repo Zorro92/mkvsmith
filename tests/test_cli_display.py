@@ -79,8 +79,8 @@ def test_display_titles_adds_playlist_information_without_renaming_title(
     cli.display_titles([title], config=cli.Config(show_all=True))
 
     output = capsys.readouterr().out
-    assert "Name" + " " * 29 + "Playlist  Streams" in output
-    assert "Green Room" + " " * 23 + "00100     V:0 A:0 S:0" in output
+    assert "Name" + " " * 30 + "Playlist  Streams" in output
+    assert "Green Room" + " " * 24 + "00100     V:0 A:0 S:0" in output
     assert "Blu-ray" not in output
     assert title.name == "Green Room - Blu-ray\u2122"
 
@@ -100,9 +100,36 @@ def test_display_titles_limits_name_to_terminal_width(monkeypatch, tmp_path, cap
     title_lines = [
         line
         for line in capsys.readouterr().out.splitlines()
-        if line.startswith(" 0  00:01:40")
+        if line.startswith("0  00:01:40")
     ]
-    assert title_lines == [" 0  00:01:40  Gr..  00100  V:0 A:0 S:0 ★"]
+    assert title_lines == ["0  00:01:40  Gre..  00100  V:0 A:0 S:0 ★"]
+
+
+def test_display_titles_sizes_index_column_to_max_title_number(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(cli, "get_terminal_width", lambda: 80)
+    titles = [
+        Title(
+            index=index,
+            source_file=tmp_path / f"{playlist}.mpls",
+            name="Green Room",
+            duration_seconds=100.0,
+        )
+        for index, playlist in ((99, "00382"), (100, "00384"))
+    ]
+    for title, playlist in zip(titles, ("00382", "00384"), strict=True):
+        title.playlist_name = playlist
+
+    cli.display_titles(titles, config=cli.Config(show_all=True))
+
+    output = capsys.readouterr().out.splitlines()
+    title_lines = [line for line in output if line[:3] in {" 99", "100"}]
+    assert len(title_lines) == 2
+    assert title_lines == [
+        " 99  00:01:40  Green Room" + " " * 32 + "00382     V:0 A:0 S:0 ★",
+        "100  00:01:40  Green Room" + " " * 32 + "00384     V:0 A:0 S:0",
+    ]
 
 
 def test_display_titles_omits_playlist_column_without_playlists(
@@ -120,9 +147,7 @@ def test_display_titles_omits_playlist_column_without_playlists(
 
     output = capsys.readouterr().out
     assert "Playlist" not in output
-    assert (
-        " 0  00:01:40  Green Room                                 V:0 A:0 S:0" in output
-    )
+    assert "0  00:01:40  Green Room" + " " * 34 + "V:0 A:0 S:0" in output
 
 
 def test_stream_lines_include_dimensions_channels_and_extensions() -> None:

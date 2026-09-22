@@ -64,6 +64,25 @@ def test_stream_flag_formatting() -> None:
     assert cli._stream_flags(both) == " [DEF,FOR]"
 
 
+def test_display_titles_adds_playlist_information_without_renaming_title(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(cli, "get_terminal_width", lambda: 100)
+    title = Title(
+        index=0,
+        source_file=tmp_path / "movie.m2ts",
+        name="Green Room - Blu-ray\u2122",
+        duration_seconds=100.0,
+    )
+    title.playlist_name = "00100"
+
+    cli.display_titles([title], config=cli.Config(show_all=True))
+
+    output = capsys.readouterr().out
+    assert "Green Room - Blu-ray\u2122 [Playlist 00100]" in output
+    assert title.name == "Green Room - Blu-ray\u2122"
+
+
 def test_stream_lines_include_dimensions_channels_and_extensions() -> None:
     title = make_detail_title(Path("/tmp"))
     video, audio, subtitle = title.streams

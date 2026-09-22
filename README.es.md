@@ -140,6 +140,15 @@ mkvsmith> q          # salir
   hace), y no está verificado si la entrada de la capa de mejora del disco
   puede aparecer como una pista de vídeo extra espuria.
 
+## Mejoras futuras
+
+- **Integración con TheDiscDB** — consultar la API de
+  [TheDiscDB](https://thediscdb.com/) para identificar discos y títulos, y
+  para resolver la ofuscación de playlists (discos con "screen pass" que
+  ocultan la película real entre docenas de playlists señuelo casi
+  idénticas) comparando los metadatos locales del disco con la base de
+  datos comunitaria.
+
 ## Fixtures de disco
 
 Las pruebas de regresión de los analizadores (`tests/test_parser_fixtures.py`)

@@ -64,7 +64,6 @@ def test_scan_bluray_source_orders_filters_and_skips_incomplete(
         clip_paths: list[Path],
         _info: dict[str, Any],
         disc_name: str | None,
-        _disc_barcode: str | None,
     ) -> Title:
         built.append(playlist.stem)
         title = make_title(
@@ -84,9 +83,11 @@ def test_scan_bluray_source_orders_filters_and_skips_incomplete(
     monkeypatch.setattr(scan, "_dedup_duplicate_playlists", lambda titles: titles)
     monkeypatch.setattr(scan, "_scan_m2ts_dir", lambda *_args: None)
 
-    titles, disc_name = scan._scan_bluray_source(bluray_source, Config(min_duration=50))
+    titles, metadata = scan._scan_bluray_source(bluray_source, Config(min_duration=50))
 
-    assert disc_name == "Test Disc"
+    assert metadata.name == "Test Disc"
+    assert metadata.upc_ean == "12345"
+    assert metadata.metadata_hash is not None
     assert parsed == ["00800", "00801", "00802"]
     assert built == ["00800"]
     assert [title.name for title in titles] == ["Playlist 00800"]
@@ -112,9 +113,9 @@ def test_scan_bluray_source_falls_back_to_raw_m2ts(
     monkeypatch.setattr(scan, "_scan_m2ts_dir", scan_m2ts)
     monkeypatch.setattr(scan, "_dedup_duplicate_playlists", lambda titles: titles)
 
-    titles, disc_name = scan._scan_bluray_source(source)
+    titles, metadata = scan._scan_bluray_source(source)
 
-    assert disc_name is None
+    assert metadata.name is None
     assert fallback_calls == [(stream_dir, [])]
     assert [title.name for title in titles] == ["Raw"]
 

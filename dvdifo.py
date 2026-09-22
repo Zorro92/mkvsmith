@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import re
 import struct
+import hashlib
 from dataclasses import dataclass
 from fractions import Fraction
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Callable, ClassVar, TypedDict
 
@@ -717,6 +719,106 @@ def _parse_vmg_ifo(vmg_path: Path) -> VmgInfo:
         f"titles={len(title_map)}"
     )
     return result
+
+
+@dataclass(frozen=True)
+class _DvdFileFingerprint:
+    name: str
+    size: int
+    creation_filetime: int
+
+
+def _dvd_crc64_lookup_table(polynomial: int) -> tuple[int, ...]:
+    table = []
+    for index in range(256):
+        value = index
+        for _ in range(8):
+            value = (value >> 1) ^ polynomial if value & 1 else value >> 1
+        table.append(value)
+    return tuple(table)
+
+
+def _dvd_crc64(
+    inputs: Iterable[bytes],
+    polynomial: int = 0x92C64265D32139A4,
+    initial_xor: int = 0xFFFFFFFFFFFFFFFF,
+) -> int:
+    lookup = _dvd_crc64_lookup_table(polynomial)
+    value = initial_xor
+    for data in inputs:
+        for byte in data:
+            value = (value >> 8) ^ lookup[(value & 0xFF) ^ byte]
+    return int(value)
+
+
+def _dvd_creation_filetime(path: Path) -> int:
+    # pydvdid/Windows truncate the timestamp through datetime before FILETIME
+    # conversion, so match that behavior and omit sub-second precision.
+    unix_seconds = int(path.stat().st_ctime)
+    return (unix_seconds + 11_644_473_600) * 10_000_000
+
+
+def _dvd_file_fingerprints(video_ts: Path) -> list[_DvdFileFingerprint]:
+    fingerprints: list[_DvdFileFingerprint] = []
+    for path in sorted(file for file in video_ts.iterdir() if file.is_file()):
+        fingerprints.append(
+            _DvdFileFingerprint(
+                name=path.name,
+                size=path.stat().st_size,
+                creation_filetime=_dvd_creation_filetime(path),
+            )
+        )
+    return fingerprints
+
+
+def _dvd_fingerprint_bytes(fingerprint: _DvdFileFingerprint) -> bytes:
+    # IDvdInfo2::GetDiscID hashes each entry as little-endian creation time,
+    # little-endian uint32 size, and a NUL-terminated UTF-8 filename.
+    return b"".join(
+        (
+            struct.pack("<Q", fingerprint.creation_filetime),
+            struct.pack("<I", fingerprint.size),
+            fingerprint.name.encode("utf-8"),
+            b"\0",
+        )
+    )
+
+
+def _first_64k(path: Path) -> bytes:
+    with path.open("rb") as file_handle:
+        return file_handle.read(0x10000)
+
+
+def _compute_dvd_disc_id(video_ts: Path) -> str:
+    """Compute an IDvdInfo2::GetDiscID-compatible CRC-64.
+
+    This follows the pydvdid implementation: every VIDEO_TS file contributes
+    its creation FILETIME, uint32 size, and filename; VIDEO_TS.IFO and
+    VTS_01_0.IFO additionally contribute their first 64 KiB.
+    """
+    fingerprints = _dvd_file_fingerprints(video_ts)
+    vmg_path = video_ts / "VIDEO_TS.IFO"
+    vts_path = video_ts / "VTS_01_0.IFO"
+    if not vmg_path.is_file() or not vts_path.is_file():
+        raise FileNotFoundError("VIDEO_TS.IFO and VTS_01_0.IFO are required")
+
+    chunks = [_dvd_fingerprint_bytes(fingerprint) for fingerprint in fingerprints]
+    chunks.extend((_first_64k(vmg_path), _first_64k(vts_path)))
+    return format(_dvd_crc64(chunks), "016x")
+
+
+def _compute_dvd_metadata_hash(
+    entries: Iterable[tuple[str, int]], vmg_data: bytes, vts_data: bytes
+) -> str:
+    """Compute mkvsmith's stable DVD ISO metadata hash."""
+    digest = hashlib.sha256(b"mkvsmith-dvd-v1\0")
+    for internal_path, size in sorted(entries):
+        digest.update(internal_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(size.to_bytes(8, "little"))
+    digest.update(vmg_data[:0x10000])
+    digest.update(vts_data[:0x10000])
+    return f"dvd-{digest.hexdigest()[:32]}"
 
 
 def _extract_vmg_text_strings(ifo_data: bytes, base_off: int) -> list[str]:

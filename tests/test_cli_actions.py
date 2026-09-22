@@ -9,6 +9,7 @@ import pytest
 import cli
 import models
 from models import Stream, StreamType, Title
+from models import DiscMetadata
 
 
 def make_title(index: int) -> Title:
@@ -164,26 +165,27 @@ def test_run_action_forwards_interactive_runtime_state(
 ) -> None:
     state = models.RuntimeState()
     title = make_title(0)
-    calls: list[tuple[list[Title], str | None, models.RuntimeState]] = []
+    metadata = DiscMetadata(name="Test Disc")
+    calls: list[tuple[list[Title], DiscMetadata | None, models.RuntimeState]] = []
 
     def interactive(
         titles: list[Title],
-        disc_name: str | None = None,
+        disc_metadata: DiscMetadata | None = None,
         runtime_state=None,
     ) -> None:
         assert runtime_state is not None
-        calls.append((titles, disc_name, runtime_state))
+        calls.append((titles, disc_metadata, runtime_state))
 
     monkeypatch.setattr(cli, "interactive_mode", interactive)
 
     cli._run_action(
         "interactive",
         [title],
-        "Test Disc",
+        metadata,
         None,
         None,
         None,
         runtime_state=state,
     )
 
-    assert calls == [([title], "Test Disc", state)]
+    assert calls == [([title], metadata, state)]

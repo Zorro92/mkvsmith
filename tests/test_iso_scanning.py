@@ -71,14 +71,11 @@ def test_build_bluray_title_from_mpls(fixtures_dir: Path, tmp_path: Path) -> Non
     for clip_path in clip_paths:
         clip_path.write_bytes(b"0123456789")
 
-    title = _build_bluray_title_from_mpls(
-        [], playlist, clip_paths, info, "Test Disc", "12345"
-    )
+    title = _build_bluray_title_from_mpls([], playlist, clip_paths, info, "Test Disc")
     assert title is not None
 
     assert title.name == "Playlist 00800"
     assert title.disc_name == "Test Disc"
-    assert title.disc_barcode == "12345"
     assert title.source_file == clip_paths[0]
     assert title.append_clips == clip_paths[1:]
     assert len(title.streams) == 15
@@ -179,7 +176,8 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     ]
     assert title.estimated_size_bytes == 60
     assert title.disc_name == "Test Disc"
-    assert title.disc_barcode == "12345"
+    assert scanner.disc_metadata.upc_ean == "12345"
+    assert scanner.disc_metadata.metadata_hash is not None
 
 
 def test_first_iso_playlist_clpi_reads_first_clip_name(

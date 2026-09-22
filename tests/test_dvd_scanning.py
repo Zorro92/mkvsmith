@@ -70,9 +70,9 @@ def test_scan_dvd_source_builds_episodes_play_all_and_extra(
         ],
     )
 
-    titles, disc_name = dvdbuild._scan_dvd_source(source)
+    titles, metadata = dvdbuild._scan_dvd_source(source)
 
-    assert disc_name == "Test Disc"
+    assert metadata.name == "Test Disc"
     assert [title.name for title in titles] == [
         "Title 7 (VTS 1)",
         "Title 7 (VTS 1) - Episode 2",
@@ -81,7 +81,9 @@ def test_scan_dvd_source_builds_episodes_play_all_and_extra(
     ]
     assert [title.dvd_episode_number for title in titles] == [1, 2, None, None]
     assert titles[2].dvd_play_all is True
-    assert [title.disc_barcode for title in titles] == ["12345"] * 4
+    assert metadata.upc_ean == "12345"
+    assert metadata.dvd_disc_id is not None
+    assert metadata.metadata_hash is not None
     assert titles[0].append_clips == [
         source / "VTS_01_2.VOB",
         source / "VTS_01_3.VOB",
@@ -108,9 +110,9 @@ def test_scan_dvd_source_builds_alternate_editions(
         dvdbuild, "_find_alternate_edition_pgcs", lambda _data, _minimum: [2, 3]
     )
 
-    titles, disc_name = dvdbuild._scan_dvd_source(source)
+    titles, metadata = dvdbuild._scan_dvd_source(source)
 
-    assert disc_name is None
+    assert metadata.name is None
     assert [title.name for title in titles] == [
         "Title 1",
         "Title 1 - Edition 2",

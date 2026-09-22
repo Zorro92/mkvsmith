@@ -28,7 +28,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 # IFO parsing helpers live in dvdifo.py (imported explicitly below).
@@ -56,8 +56,19 @@ from dvdifo import (
     _find_alternate_edition_pgcs,
     _detect_episode_pgcs,
     _default_pgc_number,
+    _compute_dvd_disc_id,
+    _compute_dvd_metadata_hash,
 )
-from models import Config, RUNTIME_STATE, StreamType, Stream, Title, log_debug, log_info
+from models import (
+    Config,
+    DiscMetadata,
+    RUNTIME_STATE,
+    StreamType,
+    Stream,
+    Title,
+    log_debug,
+    log_info,
+)
 from probe import _probe_with_mkvmerge, _parse_mkvmerge_streams
 from vobsub import _scan_vob_subpictures
 from i18n import tr
@@ -65,8 +76,7 @@ from i18n import tr
 
 @dataclass(frozen=True)
 class _DvdDiscMetadata:
-    disc_name: str | None
-    disc_barcode: str | None
+    disc: DiscMetadata
     vts_to_title_num: dict[int, int]
 
 
@@ -83,10 +93,9 @@ def _read_dvd_disc_metadata(base: Path) -> _DvdDiscMetadata:
     """Read VMG metadata and map each VTS to its first logical DVD title."""
     vmg_path = base / "VIDEO_TS.IFO"
     vmg_info: VmgInfo | None = None
-    disc_name: str | None = None
-    disc_barcode: str | None = None
+    disc = DiscMetadata()
     if not vmg_path.exists():
-        return _DvdDiscMetadata(None, None, {})
+        return _DvdDiscMetadata(disc, {})
 
     try:
         vmg_info = _parse_vmg_ifo(vmg_path)
@@ -96,18 +105,22 @@ def _read_dvd_disc_metadata(base: Path) -> _DvdDiscMetadata:
 
     vts_to_title_num: dict[int, int] = {}
     if not vmg_info:
-        return _DvdDiscMetadata(disc_name, disc_barcode, vts_to_title_num)
+        return _DvdDiscMetadata(disc, vts_to_title_num)
 
     vmg_disc_name = vmg_info.get("disc_name")
     if vmg_disc_name:
         log_info(tr("VMG disc name: {name}", name=vmg_disc_name))
-        disc_name = vmg_disc_name
-    disc_barcode = vmg_info.get("barcode")
-    if disc_barcode:
-        log_debug(f"VMG barcode: {disc_barcode}")
+    vmg_barcode = vmg_info.get("barcode")
+    if vmg_barcode:
+        log_debug(f"VMG UPC/EAN: {vmg_barcode}")
     vmg_provider = vmg_info.get("provider_id", "")
     if vmg_provider:
         log_debug(f"VMG Provider ID: {vmg_provider}")
+    disc = DiscMetadata(
+        name=vmg_disc_name,
+        upc_ean=vmg_barcode,
+        provider_id=vmg_provider or None,
+    )
 
     title_map = vmg_info.get("title_map")
     if title_map:
@@ -115,7 +128,20 @@ def _read_dvd_disc_metadata(base: Path) -> _DvdDiscMetadata:
             if vts_num not in vts_to_title_num:
                 vts_to_title_num[vts_num] = title_idx
 
-    return _DvdDiscMetadata(disc_name, disc_barcode, vts_to_title_num)
+    vts_path = base / "VTS_01_0.IFO"
+    try:
+        disc = replace(
+            disc,
+            dvd_disc_id=_compute_dvd_disc_id(base),
+            metadata_hash=_compute_dvd_metadata_hash(
+                ((path.name, path.stat().st_size) for path in base.iterdir()),
+                vmg_path.read_bytes(),
+                vts_path.read_bytes(),
+            ),
+        )
+    except (OSError, FileNotFoundError) as exc:
+        log_debug(f"DVD disc ID/hash unavailable: {exc}")
+    return _DvdDiscMetadata(disc, vts_to_title_num)
 
 
 def _vob_sort_key(path: Path) -> int:
@@ -149,8 +175,7 @@ def _dvd_vts_layouts(
 
 
 def _apply_dvd_disc_metadata(title: Title, metadata: _DvdDiscMetadata) -> None:
-    title.disc_name = metadata.disc_name
-    title.disc_barcode = metadata.disc_barcode
+    title.disc_name = metadata.disc.name
 
 
 def _append_default_dvd_title(
@@ -962,8 +987,8 @@ def _apply_dvd_ifo_languages(title: Title, ifo_path: Path) -> None:
 
 def _scan_dvd_source(
     source: Path, config: Config | None = None
-) -> tuple[list[Title], str | None]:
-    """Scan DVD VIDEO_TS structure and return (titles, disc_name)."""
+) -> tuple[list[Title], DiscMetadata]:
+    """Scan DVD VIDEO_TS structure and return (titles, disc metadata)."""
     base = source / "VIDEO_TS" if (source / "VIDEO_TS").is_dir() else source
     metadata = _read_dvd_disc_metadata(base)
     titles: list[Title] = []
@@ -977,4 +1002,4 @@ def _scan_dvd_source(
             titles, default_title, layout, metadata, ifo_bytes, config
         )
 
-    return titles, metadata.disc_name
+    return titles, metadata.disc

@@ -30,7 +30,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, final
@@ -40,6 +40,7 @@ from bluray import (
     _apply_stn_languages,
     _parse_bdmv_catalog_number,
     _parse_bdmv_disc_name,
+    _parse_bdmv_metadata_hash,
     _parse_mpls,
     _set_video_color_from_info,
 )
@@ -51,6 +52,7 @@ from dvdifo import (
     _read_u32,
     _find_alternate_edition_pgcs,
     _parse_vmg_ifo,
+    _compute_dvd_metadata_hash,
 )
 from dvdbuild import (
     _apply_dvd_ifo_languages,
@@ -69,6 +71,7 @@ from models import (
     StreamType,
     Stream,
     Title,
+    DiscMetadata,
     log_info,
     log_warn,
     log_error,
@@ -628,7 +631,6 @@ def _build_combined_edition_title(
 
     combined.streams = [Stream(**vars(stream)) for stream in first.streams]
     combined.disc_name = first.disc_name
-    combined.disc_barcode = first.disc_barcode
     combined.playlist_name = first.playlist_name
     combined.clip_durations = clip_union.durations
     combined.clip_sizes = clip_union.sizes
@@ -702,7 +704,6 @@ def _build_bluray_title_from_mpls(
     clip_paths: list[Path],
     info: dict[str, Any],
     disc_name: str | None,
-    disc_barcode: str | None,
 ) -> Title | None:
     total_duration = sum(play_item["duration"] for play_item in info["play_items"])
     title_streams = _streams_from_mpls(info.get("streams", []))
@@ -730,7 +731,6 @@ def _build_bluray_title_from_mpls(
     title.append_clips = clip_paths[1:]
     title.chapters = info.get("chapter_times", [])
     title.disc_name = disc_name
-    title.disc_barcode = disc_barcode
     title.playlist_name = mpls.stem
     title.clip_durations = [play_item["duration"] for play_item in info["play_items"]]
     try:
@@ -770,14 +770,27 @@ def _find_bdmv_directory(source: Path) -> Path:
     return source / "BDMV" if (source / "BDMV").is_dir() else source / "bdmv"
 
 
-def _read_bdmv_metadata(bdmv: Path) -> tuple[str | None, str | None]:
+def _bdmv_metadata_files(bdmv: Path) -> list[Path]:
+    candidates = [
+        bdmv / "index.bdmv",
+        bdmv / "MovieObject.bdmv",
+    ]
+    for pattern in ("CLIPINF/*.clpi", "PLAYLIST/*.mpls", "META/DL/bdmt_*.xml"):
+        candidates.extend(bdmv.glob(pattern))
+    return [path for path in candidates if path.is_file()]
+
+
+def _read_bdmv_metadata(bdmv: Path) -> DiscMetadata:
     disc_name = _parse_bdmv_disc_name(bdmv)
-    disc_barcode = _parse_bdmv_catalog_number(bdmv)
+    upc_ean = _parse_bdmv_catalog_number(bdmv)
+    metadata_hash = _parse_bdmv_metadata_hash(_bdmv_metadata_files(bdmv))
     if disc_name:
         log_info(tr("Disc name: {name}", name=disc_name))
-    if disc_barcode:
-        log_debug(f"BD catalog number: {disc_barcode}")
-    return disc_name, disc_barcode
+    if upc_ean:
+        log_debug(f"BD UPC/EAN/catalog number: {upc_ean}")
+    if metadata_hash:
+        log_debug(f"BD metadata hash: {metadata_hash}")
+    return DiscMetadata(name=disc_name, upc_ean=upc_ean, metadata_hash=metadata_hash)
 
 
 def _playlist_clip_paths(
@@ -798,7 +811,6 @@ def _scan_playlist_titles(
     clpi_dir: Path | None,
     stream_dir: Path,
     disc_name: str | None,
-    disc_barcode: str | None,
     config: Config | None,
 ) -> None:
     minimum_duration = (config or RUNTIME_STATE.config).min_duration
@@ -822,7 +834,6 @@ def _scan_playlist_titles(
             clip_paths,
             playlist_info,
             disc_name,
-            disc_barcode,
         )
         if title is None:
             continue
@@ -842,11 +853,11 @@ def _fallback_raw_m2ts_dir(bdmv: Path) -> Path | None:
 
 def _scan_bluray_source(
     source: Path, config: Config | None = None
-) -> tuple[list[Title], str | None]:
-    """Scan a Blu-ray BDMV directory and return (titles, disc_name)."""
+) -> tuple[list[Title], DiscMetadata]:
+    """Scan a Blu-ray BDMV directory and return (titles, disc metadata)."""
     bdmv = _find_bdmv_directory(source)
     titles: list[Title] = []
-    disc_name, disc_barcode = _read_bdmv_metadata(bdmv)
+    metadata = _read_bdmv_metadata(bdmv)
 
     clpi_dir = bdmv / "CLIPINF"
     playlist_dir = bdmv / "PLAYLIST"
@@ -857,8 +868,7 @@ def _scan_bluray_source(
             playlist_dir,
             clpi_dir if clpi_dir.is_dir() else None,
             stream_dir,
-            disc_name,
-            disc_barcode,
+            metadata.name,
             config,
         )
 
@@ -868,10 +878,10 @@ def _scan_bluray_source(
             _scan_m2ts_dir(raw_stream_dir, titles)
 
     titles = _dedup_duplicate_playlists(titles)
-    return titles, disc_name
+    return titles, metadata
 
 
-def _scan_bluray_raw_source(source: Path) -> tuple[list[Title], str | None]:
+def _scan_bluray_raw_source(source: Path) -> tuple[list[Title], DiscMetadata]:
     """Scan a directory of raw .m2ts files (no BDMV structure)."""
     titles: list[Title] = []
     for d in [
@@ -882,7 +892,7 @@ def _scan_bluray_raw_source(source: Path) -> tuple[list[Title], str | None]:
         if d.is_dir():
             _scan_m2ts_dir(d, titles)
             break
-    return titles, None
+    return titles, DiscMetadata()
 
 
 def _scan_m2ts_dir(sd: Path, titles: list[Title]) -> None:
@@ -1050,21 +1060,25 @@ class Scanner:
         runtime_state: RuntimeState | None = None,
     ):
         state = runtime_state or RUNTIME_STATE
+        self._runtime_state = state
         self.source = source
         self.config = config if config is not None else state.config
         self.cleanup = state.cleanup
         self.titles: list[Title] = []
+        self.disc_metadata = DiscMetadata()
         self.disc_name: str | None = None
 
     def _scan_source_type(self, source_type) -> None:
         from disc_reader import SourceType
 
         if source_type in (SourceType.DVD, SourceType.DVD_RAW):
-            self.titles, self.disc_name = _scan_dvd_source(self.source, self.config)
+            self.titles, self.disc_metadata = _scan_dvd_source(self.source, self.config)
         elif source_type == SourceType.BLURAY:
-            self.titles, self.disc_name = _scan_bluray_source(self.source, self.config)
+            self.titles, self.disc_metadata = _scan_bluray_source(
+                self.source, self.config
+            )
         elif source_type == SourceType.BLURAY_RAW:
-            self.titles, self.disc_name = _scan_bluray_raw_source(self.source)
+            self.titles, self.disc_metadata = _scan_bluray_raw_source(self.source)
         elif source_type == SourceType.VIDEO_FILE:
             self.titles = _scan_video_source(self.source)
         elif source_type == SourceType.DEVICE:
@@ -1081,6 +1095,8 @@ class Scanner:
         else:
             self._scan_source_type(source_type)
 
+        self.disc_name = self.disc_metadata.name
+        self._runtime_state.disc_metadata = self.disc_metadata
         _sort_and_reindex_titles(self.titles)
         if self.titles:
             self._apply_disc_name()
@@ -1104,6 +1120,7 @@ class Scanner:
             if not disc:
                 return
             self.disc_name = disc
+            self.disc_metadata = replace(self.disc_metadata, name=disc)
         main_idx = pick_main_feature(self.titles, self.config)
         for t in self.titles:
             if t.dvd_episode_number is not None:
@@ -1195,10 +1212,16 @@ class Scanner:
             and "meta" in path.lower()
             and Path(path).stem.startswith("bdmt")
         ]
+        bdmv_files = [
+            path
+            for path in paths
+            if path.lower().endswith(("index.bdmv", "movieobject.bdmv"))
+        ]
 
         files_to_extract = list(mpls_files)
         files_to_extract.extend(clpi_internal.values())
         files_to_extract.extend(bdmt_files)
+        files_to_extract.extend(bdmv_files)
         extracted_paths = _extract_with_7z(
             self.source, files_to_extract, tmp_dir, self.cleanup.symlinks
         )
@@ -1207,8 +1230,7 @@ class Scanner:
             for path in extracted_paths
             if path.suffix.lower() == ".clpi"
         }
-        if bdmt_files and not self.disc_name:
-            self._read_iso_disc_name(extracted_paths)
+        self._read_iso_bdmv_metadata(extracted_paths)
 
         for ext_path in extracted_paths:
             if ext_path.suffix.lower() == ".mpls":
@@ -1223,7 +1245,9 @@ class Scanner:
                 "or missing M2TS clips)."
             )
 
-    def _read_iso_disc_name(self, extracted_paths: list[Path]) -> None:
+    def _read_iso_bdmv_metadata(self, extracted_paths: list[Path]) -> None:
+        disc_name: str | None = None
+        upc_ean: str | None = None
         for ext_path in extracted_paths:
             if ext_path.suffix.lower() != ".xml" or not ext_path.stem.startswith(
                 "bdmt"
@@ -1231,20 +1255,37 @@ class Scanner:
                 continue
             try:
                 for elem in ET.parse(ext_path).iter():
-                    if elem.tag.endswith("name") and elem.text and elem.text.strip():
+                    tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                    if (
+                        tag == "name"
+                        and disc_name is None
+                        and elem.text
+                        and elem.text.strip()
+                    ):
                         raw = elem.text.strip()
-                        self.disc_name = (
+                        disc_name = (
                             raw.replace("\r\n", " - ")
                             .replace("\r", " - ")
                             .replace("\n", " - ")
                         )
-                        log_info(
-                            tr("Disc name from bdmt.xml: {name}", name=self.disc_name)
-                        )
-                        break
+                        log_info(tr("Disc name from bdmt.xml: {name}", name=disc_name))
+                    elif (
+                        tag == "catalogNumber"
+                        and upc_ean is None
+                        and elem.text
+                        and elem.text.strip()
+                    ):
+                        upc_ean = elem.text.strip()
             except (ET.ParseError, OSError, UnicodeError, LookupError) as exc:
                 log_debug(f"Failed to parse bdmt.xml: {exc}")
-            break
+            if disc_name is not None and upc_ean is not None:
+                break
+        self.disc_metadata = DiscMetadata(
+            name=disc_name,
+            upc_ean=upc_ean,
+            metadata_hash=_parse_bdmv_metadata_hash(extracted_paths),
+        )
+        self.disc_name = disc_name
 
     def _scan_iso_dvd(self, paths: list[str], sizes: dict[str, int]) -> None:
         from disc_reader import _extract_with_7z
@@ -1273,13 +1314,13 @@ class Scanner:
         extracted = _extract_with_7z(
             self.source, ifo_files, tmp_dir, self.cleanup.symlinks
         )
-        vmg_info, disc_barcode = self._parse_iso_vmg(extracted)
+        vmg_info = self._parse_iso_vmg(extracted)
+        self._read_iso_dvd_metadata(paths, sizes, vmg_info, extracted)
         self._scan_iso_dvd_vts(
             extracted,
             vts_first_vob,
             vts_all_vobs,
             self._vts_title_numbers(vmg_info),
-            disc_barcode,
             sizes,
         )
 
@@ -1307,15 +1348,13 @@ class Scanner:
             parts.sort(key=part_number)
         return vts_first_vob, vts_all_vobs
 
-    def _parse_iso_vmg(
-        self, extracted: list[Path]
-    ) -> tuple[VmgInfo | None, str | None]:
+    def _parse_iso_vmg(self, extracted: list[Path]) -> VmgInfo | None:
         vmg_path = next(
             (path for path in extracted if path.name.upper() == "VIDEO_TS.IFO"),
             None,
         )
         if not vmg_path or not vmg_path.exists():
-            return None, None
+            return None
 
         vmg_info: VmgInfo | None = None
         try:
@@ -1323,12 +1362,43 @@ class Scanner:
         except DvdIfoError as exc:
             log_debug(f"VMG IFO parse failed: {exc}")
         if not vmg_info:
-            return None, None
+            return None
 
         disc_name = vmg_info.get("disc_name")
         if disc_name:
             self.disc_name = disc_name
-        return vmg_info, vmg_info.get("barcode")
+        return vmg_info
+
+    def _read_iso_dvd_metadata(
+        self,
+        paths: list[str],
+        sizes: dict[str, int],
+        vmg_info: VmgInfo | None,
+        extracted: list[Path],
+    ) -> None:
+        if not vmg_info:
+            return
+
+        def extracted_data(filename: str) -> bytes:
+            path = next(
+                (item for item in extracted if item.name.upper() == filename),
+                None,
+            )
+            return path.read_bytes() if path is not None else b""
+
+        metadata_hash = _compute_dvd_metadata_hash(
+            ((path, sizes.get(path, 0)) for path in paths),
+            extracted_data("VIDEO_TS.IFO"),
+            extracted_data("VTS_01_0.IFO"),
+        )
+        provider_id = vmg_info.get("provider_id") or None
+        self.disc_metadata = DiscMetadata(
+            name=vmg_info.get("disc_name"),
+            upc_ean=vmg_info.get("barcode"),
+            provider_id=provider_id,
+            metadata_hash=metadata_hash,
+        )
+        self.disc_name = self.disc_metadata.name
 
     @staticmethod
     def _vts_title_numbers(vmg_info: VmgInfo | None) -> dict[int, int]:
@@ -1347,7 +1417,6 @@ class Scanner:
         vts_first_vob: dict[int, str],
         vts_all_vobs: dict[int, list[str]],
         vts_to_title_num: dict[int, int],
-        disc_barcode: str | None,
         sizes: dict[str, int],
     ) -> None:
         from disc_reader import _extract_partial_7z
@@ -1391,14 +1460,12 @@ class Scanner:
             if title is None:
                 if title := _create_title(self.titles, first_vob_extracted, title_name):
                     title.disc_name = self.disc_name
-                    title.disc_barcode = disc_barcode
                     _apply_dvd_ifo_languages(title, ifo_path)
                     self._apply_iso_dvd_source(
                         title,
                         vts,
                         first_vob_internal,
                         vts_all_vobs,
-                        disc_barcode,
                         sizes,
                     )
                     self.titles.append(title)
@@ -1409,7 +1476,6 @@ class Scanner:
                 vts,
                 first_vob_internal,
                 vts_all_vobs,
-                disc_barcode,
                 sizes,
             )
             self.titles.append(title)
@@ -1420,7 +1486,6 @@ class Scanner:
                 vts,
                 first_vob_internal,
                 vts_all_vobs,
-                disc_barcode,
                 sizes,
             )
 
@@ -1442,7 +1507,6 @@ class Scanner:
         vts: int,
         first_vob_internal: str,
         vts_all_vobs: dict[int, list[str]],
-        disc_barcode: str | None,
         sizes: dict[str, int],
     ) -> None:
         title.source_file = self.source
@@ -1451,7 +1515,6 @@ class Scanner:
             sizes.get(internal_path, 0) for internal_path in title.iso_internal_paths
         )
         title.disc_name = self.disc_name
-        title.disc_barcode = disc_barcode
 
     def _scan_iso_dvd_alternate_editions(
         self,
@@ -1461,7 +1524,6 @@ class Scanner:
         vts: int,
         first_vob_internal: str,
         vts_all_vobs: dict[int, list[str]],
-        disc_barcode: str | None,
         sizes: dict[str, int],
     ) -> None:
         try:
@@ -1494,7 +1556,6 @@ class Scanner:
                 vts,
                 first_vob_internal,
                 vts_all_vobs,
-                disc_barcode,
                 sizes,
             )
             alternate.dvd_edition_label = f"Edition {edition_num}"
@@ -1550,15 +1611,15 @@ class Scanner:
             return
         log_info(f"Direct mount succeeded at {mnt}")
         if (mnt / "BDMV").is_dir():
-            blu_titles, disc_name = _scan_bluray_source(mnt, self.config)
+            blu_titles, metadata = _scan_bluray_source(mnt, self.config)
             self.titles.extend(blu_titles)
-            if disc_name:
-                self.disc_name = disc_name
+            self.disc_metadata = metadata
+            self.disc_name = metadata.name
         elif (mnt / "VIDEO_TS").is_dir():
-            dvd_titles, disc_name = _scan_dvd_source(mnt, self.config)
+            dvd_titles, metadata = _scan_dvd_source(mnt, self.config)
             self.titles.extend(dvd_titles)
-            if disc_name:
-                self.disc_name = disc_name
+            self.disc_metadata = metadata
+            self.disc_name = metadata.name
         else:
             log_error(
                 tr(

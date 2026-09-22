@@ -13,7 +13,7 @@ import models
 import scan
 import tagger
 from cli import _InteractiveRipper, _InteractiveTagState
-from models import Config, RuntimeState, Stream, StreamType, Title
+from models import Config, DiscMetadata, RuntimeState, Stream, StreamType, Title
 
 
 @pytest.fixture
@@ -268,9 +268,10 @@ def test_interactive_mode_uses_injected_runtime_state(
     monkeypatch.setattr(tagger, "_resolve_tmdb_key", lambda _options: None)
     monkeypatch.setattr(cli, "_InteractiveRipper", _FakeRipper)
 
-    cli.interactive_mode([title], "Injected", runtime_state)
+    metadata = DiscMetadata(name="Injected")
+    cli.interactive_mode([title], metadata, runtime_state)
 
-    assert displayed == [([title], "Injected")]
+    assert displayed == [([title], metadata)]
     assert len(creators) == 1
     assert creators[0].out == tmp_path
     assert creators[0].tag_opts is runtime_state.tag_options

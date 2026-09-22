@@ -52,6 +52,7 @@ from vobsub import (
 )
 from models import (
     Config,
+    DiscMetadata,
     EditionSpec,
     StreamType,
     Stream,
@@ -590,6 +591,7 @@ def _prepare_mux_tags(
     title: Title,
     tag_opts: TagOptions | None,
     temp_files: list[Path],
+    disc_metadata: DiscMetadata | None = None,
 ) -> tuple[MovieMetadata | None, list[ArtAttachment]]:
     if tag_opts is None or not tag_opts.enabled:
         return None, []
@@ -606,8 +608,12 @@ def _prepare_mux_tags(
         return None, art
 
     metadata.custom_properties["ENCODER"] = "mkvsmith"
-    if title.disc_barcode:
-        metadata.custom_properties["BARCODE"] = title.disc_barcode
+    if disc_metadata and disc_metadata.upc_ean:
+        metadata.custom_properties["BARCODE"] = disc_metadata.upc_ean
+    if disc_metadata and disc_metadata.dvd_disc_id:
+        metadata.custom_properties["DVD_DISC_ID"] = disc_metadata.dvd_disc_id
+    if disc_metadata and disc_metadata.metadata_hash:
+        metadata.custom_properties["DISC_METADATA_HASH"] = disc_metadata.metadata_hash
 
     source_name = title.source_file.name.lower()
     iso_paths = title.iso_internal_paths
@@ -1223,6 +1229,7 @@ class MKVCreator:
         state = runtime_state or RUNTIME_STATE
         self.out = out
         self.tag_opts = tag_opts
+        self.disc_metadata = state.disc_metadata
         self.config = config or state.config
         state.logger.configure(self.config)
         self.logger = state.logger
@@ -1439,7 +1446,7 @@ class MKVCreator:
         input_plan = self._prepare_inputs(title, streams)
         prepared_tracks = self._prepare_tracks(title, streams, input_plan)
         tag_md, tag_art = _prepare_mux_tags(
-            title, self.tag_opts, self.cleanup.temp_files
+            title, self.tag_opts, self.cleanup.temp_files, self.disc_metadata
         )
 
         try:

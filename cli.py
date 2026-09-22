@@ -37,6 +37,7 @@ from typing import final
 import dvdifo
 from models import (
     Config,
+    DiscMetadata,
     RuntimeState,
     TagOptions,
     RUNTIME_STATE,
@@ -99,7 +100,7 @@ def _title_list_name(title: Title, width: int) -> str:
 
 def display_titles(
     titles: list[Title],
-    disc_name: str | None = None,
+    disc_metadata: DiscMetadata | None = None,
     config: Config | None = None,
 ) -> None:
     w = get_terminal_width()
@@ -126,8 +127,12 @@ def display_titles(
     else:
         nw = max(w - summary_width - index_width - 16, 8)
     rule_w = w
+    disc_name = disc_metadata.name if disc_metadata else None
     print("\n" + "═" * rule_w)
     print(tr("  SCANNED TITLES") + (f" - {disc_name}" if disc_name else ""))
+    identifier_summary = _disc_identifier_summary(disc_metadata)
+    if identifier_summary:
+        print(f"  {identifier_summary}")
     print("═" * rule_w)
     hdr_dur = tr("Dur")
     hdr_name = tr("Name")
@@ -156,6 +161,21 @@ def display_titles(
         )
     total_msg += "  " + tr("\u2605 = main feature")
     print("═" * rule_w + f"\n{total_msg}\n")
+
+
+def _disc_identifier_summary(metadata: DiscMetadata | None) -> str | None:
+    if metadata is None:
+        return None
+    identifiers: list[str] = []
+    if metadata.upc_ean:
+        identifiers.append(tr("UPC/EAN: {value}", value=metadata.upc_ean))
+    if metadata.provider_id:
+        identifiers.append(tr("Provider ID: {value}", value=metadata.provider_id))
+    if metadata.dvd_disc_id:
+        identifiers.append(tr("DVD Disc ID: {value}", value=metadata.dvd_disc_id))
+    if metadata.metadata_hash:
+        identifiers.append(tr("Metadata hash: {value}", value=metadata.metadata_hash))
+    return "  ".join(identifiers) if identifiers else None
 
 
 def _stream_flags(stream: Stream) -> str:
@@ -487,11 +507,11 @@ class _InteractiveRipper:
 
 def interactive_mode(
     titles: list[Title],
-    disc_name: str | None = None,
+    disc_metadata: DiscMetadata | None = None,
     runtime_state: RuntimeState | None = None,
 ) -> None:
     state = runtime_state or RUNTIME_STATE
-    display_titles(titles, disc_name, state.config)
+    display_titles(titles, disc_metadata, state.config)
     creator = MKVCreator(
         state.config.output_dir,
         state.tag_options,
@@ -982,7 +1002,7 @@ def _configure_runtime(runtime_state: RuntimeState | None = None) -> None:
 
 def _scan_source(
     source: Path, runtime_state: RuntimeState | None = None
-) -> tuple[list[Title], str | None]:
+) -> tuple[list[Title], DiscMetadata | None]:
     from disc_reader import _is_device_path
 
     if not source.exists() and not _is_device_path(source):
@@ -993,7 +1013,7 @@ def _scan_source(
     if not titles:
         log_warn(tr("No titles found"))
         sys.exit(0)
-    return titles, scanner.disc_name
+    return titles, scanner.disc_metadata
 
 
 def _run_main_feature_rip(
@@ -1057,9 +1077,9 @@ def _require_title_index(action: str, number: int | None, titles: list[Title]) -
 
 
 def _show_action_info(
-    titles: list[Title], disc_name: str | None, state: RuntimeState
+    titles: list[Title], disc_metadata: DiscMetadata | None, state: RuntimeState
 ) -> None:
-    display_titles(titles, disc_name, state.config)
+    display_titles(titles, disc_metadata, state.config)
 
 
 def _show_action_details(titles: list[Title], number: int | None, action: str) -> None:
@@ -1135,7 +1155,7 @@ def _reject_unknown_action(action: str) -> None:
 def _run_action(
     action: str,
     titles: list[Title],
-    disc_name: str | None,
+    disc_metadata: DiscMetadata | None,
     number: int | None,
     stream_ids: list[str] | None,
     edition_indices: list[int] | None,
@@ -1143,7 +1163,7 @@ def _run_action(
 ) -> None:
     state = runtime_state or RUNTIME_STATE
     if action == "info":
-        _show_action_info(titles, disc_name, state)
+        _show_action_info(titles, disc_metadata, state)
     elif action == "details":
         _show_action_details(titles, number, action)
     elif action == "rip_title":
@@ -1157,7 +1177,7 @@ def _run_action(
     elif action == "rip_episodes":
         _rip_episode_batch(titles, state)
     elif action == "interactive":
-        interactive_mode(titles, disc_name, state)
+        interactive_mode(titles, disc_metadata, state)
     else:
         _reject_unknown_action(action)
 
@@ -1171,11 +1191,11 @@ def main():
         log_error(tr("Run with -h to see usage, e.g. script.py /path/to/media"))
         sys.exit(1)
 
-    titles, disc_name = _scan_source(source, runtime_state)
+    titles, disc_metadata = _scan_source(source, runtime_state)
     _run_action(
         action,
         titles,
-        disc_name,
+        disc_metadata,
         number,
         stream_ids,
         edition_indices,

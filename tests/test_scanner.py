@@ -259,6 +259,38 @@ def test_playlist_rank_prefers_chapters_streams_then_audio_subtitles() -> None:
     )
 
 
+def test_main_feature_prefers_chapters_before_duration() -> None:
+    fewer_chapters = make_title(
+        0,
+        200.0,
+        chapters=[0.0],
+    )
+    more_chapters = make_title(
+        1,
+        100.0,
+        chapters=[0.0, 10.0, 20.0, 30.0],
+    )
+
+    assert scan.pick_main_feature([fewer_chapters, more_chapters]) == 1
+
+
+def test_main_feature_prefers_default_edition_before_chapters() -> None:
+    default_edition = make_title(
+        0,
+        100.0,
+        chapters=[0.0],
+        dvd_pgc_number=None,
+    )
+    alternate_edition = make_title(
+        1,
+        200.0,
+        chapters=[0.0, 10.0, 20.0],
+        dvd_pgc_number=1,
+    )
+
+    assert scan.pick_main_feature([alternate_edition, default_edition]) == 0
+
+
 def test_dedup_duplicate_playlists_keeps_first_title_on_exact_tie() -> None:
     first = make_playlist_title(1, ["A.m2ts"], 100.0, chapters=2, stream_count=3)
     second = make_playlist_title(2, ["A.m2ts"], 100.0, chapters=2, stream_count=3)

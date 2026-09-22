@@ -116,6 +116,25 @@ def test_scan_routes_bluray_raw_and_applies_names_once(
     assert name_calls == [scanner]
 
 
+def test_apply_disc_name_omits_redundant_title_number() -> None:
+    scanner = scan.Scanner(Path("green-room"))
+    scanner.disc_name = "Green Room - Blu-ray\u2122"
+    titles = [
+        make_title(0, 300.0),
+        make_title(1, 100.0),
+        make_title(2, 100.0, dvd_edition_label="Edition 2"),
+    ]
+    scanner.titles = titles
+
+    scanner._apply_disc_name()
+
+    assert [title.name for title in titles] == [
+        "Green Room - Blu-ray\u2122",
+        "Green Room - Blu-ray\u2122",
+        "Green Room - Blu-ray\u2122 - Edition 2",
+    ]
+
+
 def test_clean_release_name_cuts_scene_metadata() -> None:
     assert (
         scan._clean_release_name("Banjo.The.Woodpile.Cat.1979.USA.NTSC.DVD5")

@@ -1091,8 +1091,8 @@ class Scanner:
 
         When a disc name is known (e.g. from Blu-ray bdmt.xml metadata) it is
         used directly. Otherwise the source folder/file name is cleaned up and
-        used as the disc name. The main feature gets the bare name; extras get
-        a " - Title N" suffix so they stay distinct.
+        used as the disc name. Menu indices and output ``_tNN`` suffixes keep
+        same-named extras distinct; meaningful edition labels are retained.
 
         TV-series episodes (``dvd_episode_number``) are labelled "Episode N"
         regardless of main-feature status, and the "play all" chain is
@@ -1113,11 +1113,9 @@ class Scanner:
             elif t.index == main_idx:
                 t.name = self.disc_name
             elif t.dvd_edition_label:
-                t.name = (
-                    f"{self.disc_name} - Title {t.index + 1} ({t.dvd_edition_label})"
-                )
+                t.name = f"{self.disc_name} - {t.dvd_edition_label}"
             else:
-                t.name = f"{self.disc_name} - Title {t.index + 1}"
+                t.name = self.disc_name
 
     def _scan_iso(self) -> None:
         from disc_reader import _probe_has_iso9660_pvd

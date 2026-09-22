@@ -94,23 +94,7 @@ def _title_list_name(title: Title, width: int) -> str:
         flags=re.IGNORECASE,
     )
     base_name = base_name or title.name
-    if not title.playlist_name:
-        return _truncate_display_text(base_name, width)
-
-    playlist = title.playlist_name
-    suffixes = (
-        f" [Playlist {playlist}]",
-        f" [PL {playlist}]",
-        f" [{playlist}]",
-    )
-    suffix = next(
-        (suffix for suffix in suffixes if len(suffix) <= width),
-        _truncate_display_text(suffixes[-1], width),
-    )
-    base_width = width - len(suffix)
-    if base_width <= 0:
-        return suffix
-    return _truncate_display_text(base_name, base_width) + suffix
+    return _truncate_display_text(base_name, width)
 
 
 def display_titles(
@@ -124,7 +108,19 @@ def display_titles(
     summary_width = max(
         [len("Streams"), *(len(title.streams_summary) for title in visible)]
     )
-    nw = max(w - summary_width - 18, 8)
+    playlists = [title.playlist_name for title in visible if title.playlist_name]
+    show_playlist = bool(playlists)
+    hdr_playlist = tr("PL")
+    playlist_width = max([len(hdr_playlist), *(len(value) for value in playlists)])
+    full_playlist_header = tr("Playlist")
+    full_playlist_width = max(playlist_width, len(full_playlist_header))
+    if show_playlist and w - summary_width - 18 - full_playlist_width - 2 >= 5:
+        hdr_playlist = full_playlist_header
+        playlist_width = full_playlist_width
+    if show_playlist:
+        nw = max(w - summary_width - playlist_width - 20, 1)
+    else:
+        nw = max(w - summary_width - 18, 8)
     rule_w = w
     print("\n" + "═" * rule_w)
     print(tr("  SCANNED TITLES") + (f" - {disc_name}" if disc_name else ""))
@@ -132,12 +128,19 @@ def display_titles(
     hdr_dur = tr("Dur")
     hdr_name = tr("Name")
     hdr_streams = tr("Streams")
-    print(f"{'#':>2}  {hdr_dur:<8}  {hdr_name:<{nw}}  {hdr_streams}\n" + "─" * rule_w)
+    playlist_header = f"{hdr_playlist:<{playlist_width}}  " if show_playlist else ""
+    print(
+        f"{'#':>2}  {hdr_dur:<8}  {hdr_name:<{nw}}  "
+        f"{playlist_header}{hdr_streams}\n" + "─" * rule_w
+    )
     for t in visible:
         n = _title_list_name(t, nw)
+        playlist = t.playlist_name or ""
+        playlist_value = f"{playlist:<{playlist_width}}  " if show_playlist else ""
         marker = " \u2605" if t.index == main_idx else ""
         print(
-            f"{t.index:>2}  {t.duration_display:<8}  {n:<{nw}}  {t.streams_summary}{marker}"
+            f"{t.index:>2}  {t.duration_display:<8}  {n:<{nw}}  "
+            f"{playlist_value}{t.streams_summary}{marker}"
         )
     total_msg = tr("Total: {n} title(s)", n=len(visible))
     ep_count = sum(1 for t in titles if t.dvd_episode_number is not None)

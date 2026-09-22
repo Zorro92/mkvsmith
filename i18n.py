@@ -71,6 +71,8 @@ _ES: dict[str, str] = {
     "  SCANNED TITLES": "  TÍTULOS ESCANEADOS",
     "Dur": "Dur",
     "Name": "Nombre",
+    "Playlist": "Lista",
+    "PL": "PL",
     "Streams": "Pistas",
     "Total: {n} title(s)": "Total: {n} título(s)",
     "({n} episode(s) detected)": "({n} episodio(s) detectado(s))",

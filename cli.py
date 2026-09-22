@@ -77,6 +77,12 @@ def get_terminal_width() -> int:
         return 80
 
 
+def _title_list_name(title: Title) -> str:
+    if title.playlist_name:
+        return f"{title.name} [Playlist {title.playlist_name}]"
+    return title.name
+
+
 def display_titles(
     titles: list[Title],
     disc_name: str | None = None,
@@ -95,7 +101,8 @@ def display_titles(
     hdr_streams = tr("Streams")
     print(f"{'#':>2}  {hdr_dur:<8}  {hdr_name:<{nw}}  {hdr_streams}\n" + "─" * rule_w)
     for t in visible:
-        n = t.name[: nw - 2] + ".." if len(t.name) > nw else t.name
+        list_name = _title_list_name(t)
+        n = list_name[: nw - 2] + ".." if len(list_name) > nw else list_name
         marker = " \u2605" if t.index == main_idx else ""
         print(
             f"{t.index:>2}  {t.duration_display:<8}  {n:<{nw}}  {t.streams_summary}{marker}"

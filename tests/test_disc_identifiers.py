@@ -18,6 +18,13 @@ from models import DiscMetadata, Stream, StreamType, TagOptions, Title
 from models import Config, RuntimeState
 
 
+@pytest.mark.skipif(
+    not all(
+        (Path(__file__).parent / "fixtures" / name).is_file()
+        for name in ("dvd_video_ts.ifo", "dvd_vts_01_0.ifo")
+    ),
+    reason="disc fixtures not present; capture them locally to run this test",
+)
 def test_dvd_identifiers_use_real_ifo_fixtures(
     monkeypatch, fixtures_dir: Path, tmp_path: Path
 ) -> None:

@@ -13,7 +13,7 @@ import disc_reader
 import dvdifo
 import models
 import scan
-from models import Config, RuntimeState
+from models import Config, DiscMetadata, RuntimeState
 
 
 def test_config_instances_do_not_share_defaults() -> None:
@@ -203,7 +203,8 @@ def test_scanner_uses_injected_config(
         scan,
         "_scan_dvd_source",
         lambda source, config=None: (
-            scan_calls.append((source, config or Config())) or ([], "Injected Disc")
+            scan_calls.append((source, config or Config()))
+            or ([], DiscMetadata(name="Injected Disc"))
         ),
     )
 

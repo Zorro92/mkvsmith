@@ -440,6 +440,7 @@ _ISO_MEDIA_EXTENSIONS = (
     ".xml",
     ".ifo",
     ".bup",
+    ".bdmv",
 )
 
 

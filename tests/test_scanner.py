@@ -6,7 +6,7 @@ from pathlib import Path
 
 import disc_reader
 import scan
-from models import Stream, StreamType, Title
+from models import DiscMetadata, Stream, StreamType, Title
 
 
 def make_title(index: int, duration: float, **attributes) -> Title:
@@ -102,7 +102,8 @@ def test_scan_routes_bluray_raw_and_applies_names_once(
         scan,
         "_scan_bluray_raw_source",
         lambda scanned_source: (
-            routing_calls.append(scanned_source) or (titles, "Injected Disc")
+            routing_calls.append(scanned_source)
+            or (titles, DiscMetadata(name="Injected Disc"))
         ),
     )
     monkeypatch.setattr(scanner, "_apply_disc_name", lambda: name_calls.append(scanner))

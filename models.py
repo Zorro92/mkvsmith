@@ -573,9 +573,6 @@ class Title:
     # Disc-level name parsed from BDMV metadata (bdmt.xml / ID.bdmv) or DVD VMG IFO.
     # Used as the container-level title when TMDB tagging is not available.
     disc_name: str | None = None
-    # Disc-level barcode / EAN / catalog number, extracted from VMG TXTDT for DVD
-    # or from bdmt_eng.xml (<catalogNumber>) for Blu-ray.
-    disc_barcode: str | None = None
     # DVD VTS .IFO stream-ID -> language maps. Set during DVD scanning so the
     # muxer can label streams correctly: some media tools enumerate PS streams by
     # first packet appearance (not by ID), so per-type positional order is
@@ -661,6 +658,17 @@ class Title:
         s = len(self.subtitle_streams)
         log_debug(f"streams_summary: {v}v {a}a {s}s (total {len(self.streams)})")
         return f"V:{v} A:{a} S:{s}"
+
+
+@dataclass(frozen=True)
+class DiscMetadata:
+    """Disc-level identity parsed from disc metadata."""
+
+    name: str | None = None
+    upc_ean: str | None = None
+    provider_id: str | None = None
+    dvd_disc_id: str | None = None
+    metadata_hash: str | None = None
 
 
 # =============================================================================
@@ -833,6 +841,7 @@ class RuntimeState:
 
     config: Config = field(default_factory=Config)
     tag_options: TagOptions = field(default_factory=TagOptions)
+    disc_metadata: DiscMetadata = field(default_factory=DiscMetadata)
     logger: RuntimeLogger = field(default_factory=RuntimeLogger)
     cleanup: RuntimeCleanup = field(default_factory=RuntimeCleanup)
     active_processes: ActiveProcesses = field(default_factory=ActiveProcesses)

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import re
 import struct
-import hashlib
 from dataclasses import dataclass
 from fractions import Fraction
 from collections.abc import Iterable
@@ -805,20 +804,6 @@ def _compute_dvd_disc_id(video_ts: Path) -> str:
     chunks = [_dvd_fingerprint_bytes(fingerprint) for fingerprint in fingerprints]
     chunks.extend((_first_64k(vmg_path), _first_64k(vts_path)))
     return format(_dvd_crc64(chunks), "016x")
-
-
-def _compute_dvd_metadata_hash(
-    entries: Iterable[tuple[str, int]], vmg_data: bytes, vts_data: bytes
-) -> str:
-    """Compute mkvsmith's stable DVD ISO metadata hash."""
-    digest = hashlib.sha256(b"mkvsmith-dvd-v1\0")
-    for internal_path, size in sorted(entries):
-        digest.update(internal_path.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(size.to_bytes(8, "little"))
-    digest.update(vmg_data[:0x10000])
-    digest.update(vts_data[:0x10000])
-    return f"dvd-{digest.hexdigest()[:32]}"
 
 
 def _extract_vmg_text_strings(ifo_data: bytes, base_off: int) -> list[str]:

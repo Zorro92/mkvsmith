@@ -57,7 +57,6 @@ from dvdifo import (
     _detect_episode_pgcs,
     _default_pgc_number,
     _compute_dvd_disc_id,
-    _compute_dvd_metadata_hash,
 )
 from models import (
     Config,
@@ -128,19 +127,10 @@ def _read_dvd_disc_metadata(base: Path) -> _DvdDiscMetadata:
             if vts_num not in vts_to_title_num:
                 vts_to_title_num[vts_num] = title_idx
 
-    vts_path = base / "VTS_01_0.IFO"
     try:
-        disc = replace(
-            disc,
-            dvd_disc_id=_compute_dvd_disc_id(base),
-            mkvsmith_metadata_hash=_compute_dvd_metadata_hash(
-                ((path.name, path.stat().st_size) for path in base.iterdir()),
-                vmg_path.read_bytes(),
-                vts_path.read_bytes(),
-            ),
-        )
+        disc = replace(disc, dvd_disc_id=_compute_dvd_disc_id(base))
     except (OSError, FileNotFoundError) as exc:
-        log_debug(f"DVD disc ID/hash unavailable: {exc}")
+        log_debug(f"DVD disc ID unavailable: {exc}")
     return _DvdDiscMetadata(disc, vts_to_title_num)
 
 

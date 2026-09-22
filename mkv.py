@@ -616,10 +616,6 @@ def _prepare_mux_tags(
         metadata.custom_properties["MATRIX256_FINGERPRINT"] = (
             disc_metadata.matrix256_fingerprint
         )
-    if disc_metadata and disc_metadata.mkvsmith_metadata_hash:
-        metadata.custom_properties["MKVSMITH_METADATA_HASH"] = (
-            disc_metadata.mkvsmith_metadata_hash
-        )
 
     source_name = title.source_file.name.lower()
     iso_paths = title.iso_internal_paths

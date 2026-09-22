@@ -12,8 +12,7 @@ import mkv
 import scan
 import tagger
 import pytest
-from bluray import _parse_bdmv_metadata_hash
-from dvdifo import _compute_dvd_disc_id, _compute_dvd_metadata_hash
+from dvdifo import _compute_dvd_disc_id
 from matrix256 import fingerprint, fingerprint_entries
 from models import DiscMetadata, Stream, StreamType, TagOptions, Title
 from models import Config, RuntimeState
@@ -35,22 +34,8 @@ def test_dvd_identifiers_use_real_ifo_fixtures(
     monkeypatch.setattr(
         "dvdifo._dvd_creation_filetime", lambda path: fingerprints[path]
     )
-    entries = ((path.name, path.stat().st_size) for path in video_ts.iterdir())
 
     assert _compute_dvd_disc_id(video_ts) == "b090283799370e5f"
-    assert (
-        _compute_dvd_metadata_hash(
-            entries, vmg_path.read_bytes(), vts_path.read_bytes()
-        )
-        == "dvd-d25ff0aada4a19d069ef7d978dfc25c9"
-    )
-
-
-def test_bdmv_metadata_hash_uses_real_xml_fixture(fixtures_dir: Path) -> None:
-    assert (
-        _parse_bdmv_metadata_hash([fixtures_dir / "bdmt_eng.xml"])
-        == "bdmv-02a76a582b132fbb54fe3dd5c31bbcd3"
-    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink permissions vary")
@@ -234,7 +219,6 @@ def test_display_titles_shows_available_identifiers(
         upc_ean="123456789012",
         dvd_disc_id="0123456789abcdef",
         matrix256_fingerprint="a" * 64,
-        mkvsmith_metadata_hash="dvd-abcdef",
     )
 
     cli.display_titles([title], metadata, cli.Config(show_all=True))
@@ -243,7 +227,7 @@ def test_display_titles_shows_available_identifiers(
     assert "UPC/EAN: 123456789012" in output
     assert "DVD Disc ID: 0123456789abcdef" in output
     assert f"Matrix256 fingerprint: {'a' * 64}" in output
-    assert "mkvsmith metadata hash: dvd-abcdef" in output
+    assert "mkvsmith metadata hash:" not in output
 
 
 def test_mux_tags_embed_disc_identifiers(monkeypatch, tmp_path: Path) -> None:
@@ -257,7 +241,6 @@ def test_mux_tags_embed_disc_identifiers(monkeypatch, tmp_path: Path) -> None:
         upc_ean="123456789012",
         dvd_disc_id="0123456789abcdef",
         matrix256_fingerprint="a" * 64,
-        mkvsmith_metadata_hash="dvd-abcdef",
     )
     prepared = tagger.MovieMetadata(title="Test Disc")
     monkeypatch.setattr(tagger, "_prepare_tagging", lambda *_args: (prepared, []))
@@ -270,4 +253,4 @@ def test_mux_tags_embed_disc_identifiers(monkeypatch, tmp_path: Path) -> None:
     assert tagged.custom_properties["BARCODE"] == "123456789012"
     assert tagged.custom_properties["DVD_DISC_ID"] == "0123456789abcdef"
     assert tagged.custom_properties["MATRIX256_FINGERPRINT"] == "a" * 64
-    assert tagged.custom_properties["MKVSMITH_METADATA_HASH"] == "dvd-abcdef"
+    assert "MKVSMITH_METADATA_HASH" not in tagged.custom_properties

@@ -40,8 +40,6 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-import hashlib
-from collections.abc import Iterable
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
@@ -959,47 +957,3 @@ def _parse_bdmv_catalog_number(bdmv_root: Path) -> str | None:
         except Exception:
             continue
     return None
-
-
-def _bdmv_hash_label(path: Path) -> str | None:
-    lowered = path.name.lower()
-    if lowered in ("index.bdmv", "movieobject.bdmv"):
-        return lowered
-    if path.suffix.lower() == ".clpi":
-        return f"CLIPINF/{path.name}"
-    if path.suffix.lower() == ".mpls":
-        return f"PLAYLIST/{path.name}"
-    if path.suffix.lower() == ".xml" and path.stem.lower().startswith("bdmt"):
-        return f"META/DL/{path.name}"
-    return None
-
-
-def _parse_bdmv_metadata_hash(files: Iterable[Path]) -> str | None:
-    """Compute mkvsmith's versioned Blu-ray metadata hash.
-
-    There is no universal public Blu-ray equivalent to IDvdInfo2::GetDiscID.
-    This internal identifier hashes structural metadata only (index.bdmv,
-    MovieObject.bdmv, and sorted CLPI/MPLS/bdmt files), never presentation
-    streams, so scanning remains cheap and the value is stable across remuxes
-    of the same source. Prefixing the version makes future format changes
-    explicit.
-    """
-    metadata_files: dict[str, Path] = {}
-    for path in files:
-        label = _bdmv_hash_label(path)
-        if label is not None:
-            metadata_files.setdefault(label, path)
-    if not metadata_files:
-        return None
-
-    digest = hashlib.sha256(b"mkvsmith-bdmv-v1\0")
-    for label, path in sorted(metadata_files.items()):
-        try:
-            data = path.read_bytes()
-        except OSError:
-            continue
-        digest.update(label.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(len(data).to_bytes(8, "little"))
-        digest.update(data)
-    return f"bdmv-{digest.hexdigest()[:32]}"

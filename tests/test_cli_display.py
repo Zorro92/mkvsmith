@@ -79,9 +79,9 @@ def test_display_titles_adds_playlist_information_without_renaming_title(
     cli.display_titles([title], config=cli.Config(show_all=True))
 
     output = capsys.readouterr().out
-    assert "Green Room [Playlist 00100]" in output
+    assert "Name" + " " * 29 + "Playlist  Streams" in output
+    assert "Green Room" + " " * 23 + "00100     V:0 A:0 S:0" in output
     assert "Blu-ray" not in output
-    assert "Green Room [Playlist 000.." not in output
     assert title.name == "Green Room - Blu-ray\u2122"
 
 
@@ -102,7 +102,27 @@ def test_display_titles_limits_name_to_terminal_width(monkeypatch, tmp_path, cap
         for line in capsys.readouterr().out.splitlines()
         if line.startswith(" 0  00:01:40")
     ]
-    assert title_lines == [" 0  00:01:40   [PL 00100]  V:0 A:0 S:0 ★"]
+    assert title_lines == [" 0  00:01:40  Gr..  00100  V:0 A:0 S:0 ★"]
+
+
+def test_display_titles_omits_playlist_column_without_playlists(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(cli, "get_terminal_width", lambda: 70)
+    title = Title(
+        index=0,
+        source_file=tmp_path / "movie.vob",
+        name="Green Room",
+        duration_seconds=100.0,
+    )
+
+    cli.display_titles([title], config=cli.Config(show_all=True))
+
+    output = capsys.readouterr().out
+    assert "Playlist" not in output
+    assert (
+        " 0  00:01:40  Green Room                                 V:0 A:0 S:0" in output
+    )
 
 
 def test_stream_lines_include_dimensions_channels_and_extensions() -> None:

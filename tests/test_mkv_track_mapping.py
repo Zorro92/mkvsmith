@@ -453,6 +453,21 @@ def test_output_file_for_title_sanitizes_name(tmp_path: Path) -> None:
     )
 
 
+def test_output_file_for_title_removes_marketing_and_redundant_suffixes(
+    tmp_path: Path,
+) -> None:
+    title = Title(
+        index=0,
+        source_file=tmp_path / "source.mkv",
+        name="Green Room - Blu-ray\u2122 - Title 1",
+        duration_seconds=100.0,
+    )
+
+    assert mkv._output_file_for_title(tmp_path, title) == (
+        tmp_path / "Green Room_t00.mkv"
+    )
+
+
 def test_prepare_inputs_preserves_folder_inputs(tmp_path: Path) -> None:
     runtime_state = models.RuntimeState()
     creator = mkv.MKVCreator(tmp_path, runtime_state=runtime_state)

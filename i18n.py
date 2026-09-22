@@ -78,7 +78,6 @@ _ES: dict[str, str] = {
     "Provider ID: {value}": "ID del proveedor: {value}",
     "DVD Disc ID: {value}": "ID del DVD: {value}",
     "Matrix256 fingerprint: {value}": "Huella Matrix256: {value}",
-    "mkvsmith metadata hash: {value}": "Hash de metadatos de mkvsmith: {value}",
     "Matrix256 fingerprint unavailable: 7z did not report every file size": (
         "Huella Matrix256 no disponible: 7z no informó todos los tamaños de archivo"
     ),

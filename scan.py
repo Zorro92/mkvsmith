@@ -40,7 +40,6 @@ from bluray import (
     _apply_stn_languages,
     _parse_bdmv_catalog_number,
     _parse_bdmv_disc_name,
-    _parse_bdmv_metadata_hash,
     _parse_mpls,
     _set_video_color_from_info,
 )
@@ -52,7 +51,6 @@ from dvdifo import (
     _read_u32,
     _find_alternate_edition_pgcs,
     _parse_vmg_ifo,
-    _compute_dvd_metadata_hash,
 )
 from dvdbuild import (
     _apply_dvd_ifo_languages,
@@ -779,31 +777,14 @@ def _is_primary_bdmv_path(internal_path: str) -> bool:
     )
 
 
-def _bdmv_metadata_files(bdmv: Path) -> list[Path]:
-    candidates = [
-        bdmv / "index.bdmv",
-        bdmv / "MovieObject.bdmv",
-    ]
-    for pattern in ("CLIPINF/*.clpi", "PLAYLIST/*.mpls", "META/DL/bdmt_*.xml"):
-        candidates.extend(bdmv.glob(pattern))
-    return [path for path in candidates if path.is_file()]
-
-
 def _read_bdmv_metadata(bdmv: Path) -> DiscMetadata:
     disc_name = _parse_bdmv_disc_name(bdmv)
     upc_ean = _parse_bdmv_catalog_number(bdmv)
-    metadata_hash = _parse_bdmv_metadata_hash(_bdmv_metadata_files(bdmv))
     if disc_name:
         log_info(tr("Disc name: {name}", name=disc_name))
     if upc_ean:
         log_debug(f"BD UPC/EAN/catalog number: {upc_ean}")
-    if metadata_hash:
-        log_debug(f"BD metadata hash: {metadata_hash}")
-    return DiscMetadata(
-        name=disc_name,
-        upc_ean=upc_ean,
-        mkvsmith_metadata_hash=metadata_hash,
-    )
+    return DiscMetadata(name=disc_name, upc_ean=upc_ean)
 
 
 def _playlist_clip_paths(
@@ -1269,17 +1250,9 @@ class Scanner:
             and _is_primary_bdmv_path(path)
             and Path(path).stem.startswith("bdmt")
         ]
-        bdmv_files = [
-            path
-            for path in paths
-            if path.lower().endswith(("index.bdmv", "movieobject.bdmv"))
-            and _is_primary_bdmv_path(path)
-        ]
-
         files_to_extract = list(mpls_files)
         files_to_extract.extend(clpi_internal.values())
         files_to_extract.extend(bdmt_files)
-        files_to_extract.extend(bdmv_files)
         extracted_paths = _extract_with_7z(
             self.source, files_to_extract, tmp_dir, self.cleanup.symlinks
         )
@@ -1342,7 +1315,6 @@ class Scanner:
             self.disc_metadata,
             name=disc_name,
             upc_ean=upc_ean,
-            mkvsmith_metadata_hash=_parse_bdmv_metadata_hash(extracted_paths),
         )
         self.disc_name = disc_name
 
@@ -1374,7 +1346,7 @@ class Scanner:
             self.source, ifo_files, tmp_dir, self.cleanup.symlinks
         )
         vmg_info = self._parse_iso_vmg(extracted)
-        self._read_iso_dvd_metadata(paths, sizes, vmg_info, extracted)
+        self._read_iso_dvd_metadata(vmg_info)
         self._scan_iso_dvd_vts(
             extracted,
             vts_first_vob,
@@ -1428,35 +1400,16 @@ class Scanner:
             self.disc_name = disc_name
         return vmg_info
 
-    def _read_iso_dvd_metadata(
-        self,
-        paths: list[str],
-        sizes: dict[str, int],
-        vmg_info: VmgInfo | None,
-        extracted: list[Path],
-    ) -> None:
+    def _read_iso_dvd_metadata(self, vmg_info: VmgInfo | None) -> None:
         if not vmg_info:
             return
 
-        def extracted_data(filename: str) -> bytes:
-            path = next(
-                (item for item in extracted if item.name.upper() == filename),
-                None,
-            )
-            return path.read_bytes() if path is not None else b""
-
-        metadata_hash = _compute_dvd_metadata_hash(
-            ((path, sizes.get(path, 0)) for path in paths),
-            extracted_data("VIDEO_TS.IFO"),
-            extracted_data("VTS_01_0.IFO"),
-        )
         provider_id = vmg_info.get("provider_id") or None
         self.disc_metadata = replace(
             self.disc_metadata,
             name=vmg_info.get("disc_name"),
             upc_ean=vmg_info.get("barcode"),
             provider_id=provider_id,
-            mkvsmith_metadata_hash=metadata_hash,
         )
         self.disc_name = self.disc_metadata.name
 

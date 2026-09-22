@@ -669,7 +669,6 @@ class DiscMetadata:
     provider_id: str | None = None
     dvd_disc_id: str | None = None
     matrix256_fingerprint: str | None = None
-    mkvsmith_metadata_hash: str | None = None
 
 
 # =============================================================================

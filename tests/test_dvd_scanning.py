@@ -83,7 +83,6 @@ def test_scan_dvd_source_builds_episodes_play_all_and_extra(
     assert titles[2].dvd_play_all is True
     assert metadata.upc_ean == "12345"
     assert metadata.dvd_disc_id is not None
-    assert metadata.mkvsmith_metadata_hash is not None
     assert titles[0].append_clips == [
         source / "VTS_01_2.VOB",
         source / "VTS_01_3.VOB",

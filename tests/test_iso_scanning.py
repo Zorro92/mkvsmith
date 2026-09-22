@@ -207,7 +207,6 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     assert title.estimated_size_bytes == 60
     assert title.disc_name == "Test Disc"
     assert scanner.disc_metadata.upc_ean == "12345"
-    assert scanner.disc_metadata.mkvsmith_metadata_hash is not None
 
 
 def test_first_iso_playlist_clpi_reads_first_clip_name(

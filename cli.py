@@ -180,13 +180,6 @@ def _disc_identifier_summary(metadata: DiscMetadata | None) -> str | None:
                 value=metadata.matrix256_fingerprint,
             )
         )
-    if metadata.mkvsmith_metadata_hash:
-        identifiers.append(
-            tr(
-                "mkvsmith metadata hash: {value}",
-                value=metadata.mkvsmith_metadata_hash,
-            )
-        )
     return "  ".join(identifiers) if identifiers else None
 
 

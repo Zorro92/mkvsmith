@@ -61,6 +61,8 @@ from dvdbuild import (
     _scan_dvd_source,
 )
 from i18n import tr
+from matrix256 import fingerprint as matrix256_fingerprint
+from matrix256 import fingerprint_entries as matrix256_fingerprint_entries
 from models import (
     Config,
     RuntimeState,
@@ -770,6 +772,13 @@ def _find_bdmv_directory(source: Path) -> Path:
     return source / "BDMV" if (source / "BDMV").is_dir() else source / "bdmv"
 
 
+def _is_primary_bdmv_path(internal_path: str) -> bool:
+    parts = Path(internal_path).parts
+    return (
+        len(parts) >= 2 and parts[0].lower() == "bdmv" and parts[1].lower() != "backup"
+    )
+
+
 def _bdmv_metadata_files(bdmv: Path) -> list[Path]:
     candidates = [
         bdmv / "index.bdmv",
@@ -790,7 +799,11 @@ def _read_bdmv_metadata(bdmv: Path) -> DiscMetadata:
         log_debug(f"BD UPC/EAN/catalog number: {upc_ean}")
     if metadata_hash:
         log_debug(f"BD metadata hash: {metadata_hash}")
-    return DiscMetadata(name=disc_name, upc_ean=upc_ean, metadata_hash=metadata_hash)
+    return DiscMetadata(
+        name=disc_name,
+        upc_ean=upc_ean,
+        mkvsmith_metadata_hash=metadata_hash,
+    )
 
 
 def _playlist_clip_paths(
@@ -1084,6 +1097,25 @@ class Scanner:
         elif source_type == SourceType.DEVICE:
             self.titles = _scan_device_source(self.source)
 
+        if source_type in (
+            SourceType.DVD,
+            SourceType.DVD_RAW,
+            SourceType.BLURAY,
+            SourceType.BLURAY_RAW,
+        ):
+            self._add_matrix256_fingerprint(self.source)
+
+    def _add_matrix256_fingerprint(self, root: Path) -> None:
+        try:
+            fingerprint = matrix256_fingerprint(root)
+        except OSError as exc:
+            log_warn(tr("Matrix256 fingerprint unavailable: {err}", err=exc))
+            return
+        self.disc_metadata = replace(
+            self.disc_metadata, matrix256_fingerprint=fingerprint
+        )
+        log_debug(f"Matrix256 fingerprint: {fingerprint}")
+
     def scan(self) -> list[Title]:
         from disc_reader import SourceType, detect_source_type
 
@@ -1150,25 +1182,47 @@ class Scanner:
             self._scan_iso_mount()
 
     def _scan_iso_7z(self) -> None:
-        from disc_reader import _list_iso_files_7z
+        from disc_reader import _is_iso_media_path, _list_iso_files_7z
 
         log_info(tr("Scanning ISO with 7z..."))
         paths, sizes = _list_iso_files_7z(self.source, self.cleanup.symlinks)
-        if not paths:
+        media_paths = [path for path in paths if _is_iso_media_path(path)]
+        if not media_paths:
             log_error(
                 tr("7z could not find any .mpls, .m2ts, or .vob files inside the ISO.")
             )
             return
-        mpls_files = [p for p in paths if p.lower().endswith(".mpls")]
+        if all(path in sizes for path in paths):
+            self.disc_metadata = replace(
+                self.disc_metadata,
+                matrix256_fingerprint=matrix256_fingerprint_entries(
+                    (path, sizes[path]) for path in paths
+                ),
+            )
+        else:
+            log_warn(
+                tr(
+                    "Matrix256 fingerprint unavailable: 7z did not report every file size"
+                )
+            )
+        mpls_files = [
+            p
+            for p in media_paths
+            if p.lower().endswith(".mpls") and _is_primary_bdmv_path(p)
+        ]
         m2ts_files = [
-            p for p in paths if "stream" in p.lower() and p.lower().endswith(".m2ts")
+            p
+            for p in media_paths
+            if "stream" in p.lower()
+            and p.lower().endswith(".m2ts")
+            and _is_primary_bdmv_path(p)
         ]
         if mpls_files:
-            self._scan_iso_bluray(paths, sizes, mpls_files, m2ts_files)
+            self._scan_iso_bluray(media_paths, sizes, mpls_files, m2ts_files)
         if not mpls_files and m2ts_files:
             self._scan_iso_raw_m2ts(m2ts_files, sizes)
         elif not mpls_files and not m2ts_files:
-            self._scan_iso_dvd(paths, sizes)
+            self._scan_iso_dvd(media_paths, sizes)
 
         if mpls_files:
             self.titles = _dedup_duplicate_playlists(self.titles)
@@ -1203,19 +1257,23 @@ class Scanner:
         self.cleanup.register_temp_dir(tmp_dir)
         m2ts_by_clip = {Path(path).stem: path for path in m2ts_files}
         clpi_internal = {
-            Path(path).stem: path for path in paths if path.lower().endswith(".clpi")
+            Path(path).stem: path
+            for path in paths
+            if path.lower().endswith(".clpi") and _is_primary_bdmv_path(path)
         }
         bdmt_files = [
             path
             for path in paths
             if path.lower().endswith(".xml")
             and "meta" in path.lower()
+            and _is_primary_bdmv_path(path)
             and Path(path).stem.startswith("bdmt")
         ]
         bdmv_files = [
             path
             for path in paths
             if path.lower().endswith(("index.bdmv", "movieobject.bdmv"))
+            and _is_primary_bdmv_path(path)
         ]
 
         files_to_extract = list(mpls_files)
@@ -1280,10 +1338,11 @@ class Scanner:
                 log_debug(f"Failed to parse bdmt.xml: {exc}")
             if disc_name is not None and upc_ean is not None:
                 break
-        self.disc_metadata = DiscMetadata(
+        self.disc_metadata = replace(
+            self.disc_metadata,
             name=disc_name,
             upc_ean=upc_ean,
-            metadata_hash=_parse_bdmv_metadata_hash(extracted_paths),
+            mkvsmith_metadata_hash=_parse_bdmv_metadata_hash(extracted_paths),
         )
         self.disc_name = disc_name
 
@@ -1392,11 +1451,12 @@ class Scanner:
             extracted_data("VTS_01_0.IFO"),
         )
         provider_id = vmg_info.get("provider_id") or None
-        self.disc_metadata = DiscMetadata(
+        self.disc_metadata = replace(
+            self.disc_metadata,
             name=vmg_info.get("disc_name"),
             upc_ean=vmg_info.get("barcode"),
             provider_id=provider_id,
-            metadata_hash=metadata_hash,
+            mkvsmith_metadata_hash=metadata_hash,
         )
         self.disc_name = self.disc_metadata.name
 
@@ -1615,11 +1675,13 @@ class Scanner:
             self.titles.extend(blu_titles)
             self.disc_metadata = metadata
             self.disc_name = metadata.name
+            self._add_matrix256_fingerprint(mnt)
         elif (mnt / "VIDEO_TS").is_dir():
             dvd_titles, metadata = _scan_dvd_source(mnt, self.config)
             self.titles.extend(dvd_titles)
             self.disc_metadata = metadata
             self.disc_name = metadata.name
+            self._add_matrix256_fingerprint(mnt)
         else:
             log_error(
                 tr(

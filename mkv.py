@@ -612,8 +612,14 @@ def _prepare_mux_tags(
         metadata.custom_properties["BARCODE"] = disc_metadata.upc_ean
     if disc_metadata and disc_metadata.dvd_disc_id:
         metadata.custom_properties["DVD_DISC_ID"] = disc_metadata.dvd_disc_id
-    if disc_metadata and disc_metadata.metadata_hash:
-        metadata.custom_properties["DISC_METADATA_HASH"] = disc_metadata.metadata_hash
+    if disc_metadata and disc_metadata.matrix256_fingerprint:
+        metadata.custom_properties["MATRIX256_FINGERPRINT"] = (
+            disc_metadata.matrix256_fingerprint
+        )
+    if disc_metadata and disc_metadata.mkvsmith_metadata_hash:
+        metadata.custom_properties["MKVSMITH_METADATA_HASH"] = (
+            disc_metadata.mkvsmith_metadata_hash
+        )
 
     source_name = title.source_file.name.lower()
     iso_paths = title.iso_internal_paths

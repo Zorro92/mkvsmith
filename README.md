@@ -17,6 +17,9 @@ default, but it is an independent, GPL-licensed reimplementation.
   and plain video files** to Matroska (`.mkv`).
 - **Keeps audio, subtitles, and chapters**, including DVD subpicture streams
   that simpler scanners miss.
+- **Shows stable disc identifiers**, including the filesystem-level
+  [matrix256v1](https://github.com/shitwolfymakes/matrix256) fingerprint and
+  DVD/Blu-ray metadata identifiers.
 - **Optional TMDB tagging** — metadata and cover art embedded directly in the
   mux.
 

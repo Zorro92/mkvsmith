@@ -224,19 +224,25 @@ def test_direct_mount_skipped_on_non_linux_platforms(
     assert not mountpoint.exists()
 
 
-def test_parse_7z_listing_filters_media_paths_and_sizes() -> None:
+def test_parse_7z_listing_returns_all_regular_files() -> None:
     stdout = "\n".join(
         [
-            "Path = /BDMV/STREAM/001.M2TS",
+            "Path = /archive.iso",
+            "Type = Udf",
+            "Path = BDMV",
+            "Folder = +",
+            "Path = BDMV/STREAM/001.M2TS",
+            "Folder = -",
             "Size = 123",
+            "Path = BDMV/BACKUP/BDJO/00000.bdjo",
+            "Folder = -",
+            "Size = 999",
             "Path = BDMV/PLAYLIST/00800.mpls",
+            "Folder = -",
             "Size = not-a-number",
             "Path = VIDEO_TS/VTS_01_0.IFO",
+            "Folder = -",
             "Size = 456",
-            "Path = BDMV/JUNK/ignored.m2ts",
-            "Size = 999",
-            "Path = BDMV/STREAM/ignored.txt",
-            "Size = 999",
         ]
     )
 
@@ -244,28 +250,30 @@ def test_parse_7z_listing_filters_media_paths_and_sizes() -> None:
 
     assert paths == [
         "BDMV/STREAM/001.M2TS",
+        "BDMV/BACKUP/BDJO/00000.bdjo",
         "BDMV/PLAYLIST/00800.mpls",
         "VIDEO_TS/VTS_01_0.IFO",
     ]
     assert sizes == {
         "BDMV/STREAM/001.M2TS": 123,
+        "BDMV/BACKUP/BDJO/00000.bdjo": 999,
         "VIDEO_TS/VTS_01_0.IFO": 456,
     }
 
 
-def test_is_iso_media_path_matches_disc_directories_and_extensions() -> None:
-    accepted = [
+def test_is_iso_media_path_matches_compatible_scanning_subset() -> None:
+    accepted = (
         "BDMV/STREAM/movie.m2ts",
         "BDMV/PLAYLIST/movie.mpls",
         "BDMV/CLIPINF/movie.clpi",
         "VIDEO_TS/VTS_01_0.IFO",
-        "BDMV/META/bdmt_en.xml",
-    ]
-    rejected = [
+        "BDMV/META/DL/bdmt_en.xml",
+    )
+    rejected = (
         "BDMV/index.bdmv",
-        "VIDEO_TS/VTS_01_0.VOB.bak",
+        "BDMV/BACKUP/BDJO/movie.bdjo",
         "outside/movie.m2ts",
-    ]
+    )
 
     assert all(disc_reader._is_iso_media_path(path) for path in accepted)
     assert not any(disc_reader._is_iso_media_path(path) for path in rejected)

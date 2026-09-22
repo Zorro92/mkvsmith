@@ -43,7 +43,12 @@ def test_scan_iso_7z_dispatches_bluray_by_playlist(monkeypatch, tmp_path: Path) 
         calls.append((paths, sizes, playlists, streams))
 
     monkeypatch.setattr(scanner, "_scan_iso_bluray", scan_bluray)
-    paths = ["BDMV/PLAYLIST/00800.mpls", "BDMV/STREAM/00800.m2ts"]
+    paths = [
+        "BDMV/BACKUP/PLAYLIST/00800.mpls",
+        "BDMV/BACKUP/STREAM/00800.m2ts",
+        "BDMV/PLAYLIST/00800.mpls",
+        "BDMV/STREAM/00800.m2ts",
+    ]
     sizes = {path: 1024 for path in paths}
     monkeypatch.setattr(
         disc_reader,
@@ -53,9 +58,34 @@ def test_scan_iso_7z_dispatches_bluray_by_playlist(monkeypatch, tmp_path: Path) 
 
     scanner._scan_iso_7z()
 
+    assert scanner.disc_metadata.matrix256_fingerprint == (
+        "ae1488c3a6e58c1b5854dd51b8625028d49433b14dd4f8304766aeaa438c0fdc"
+    )
     assert calls == [
-        (paths, sizes, ["BDMV/PLAYLIST/00800.mpls"], ["BDMV/STREAM/00800.m2ts"])
+        (
+            ["BDMV/PLAYLIST/00800.mpls", "BDMV/STREAM/00800.m2ts"],
+            sizes,
+            ["BDMV/PLAYLIST/00800.mpls"],
+            ["BDMV/STREAM/00800.m2ts"],
+        )
     ]
+
+
+def test_scan_iso_7z_omits_matrix256_when_size_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    scanner = Scanner(tmp_path / "movie.iso")
+    paths = ["BDMV/PLAYLIST/00800.mpls"]
+    monkeypatch.setattr(scanner, "_scan_iso_bluray", lambda *_args: None)
+    monkeypatch.setattr(
+        disc_reader,
+        "_list_iso_files_7z",
+        lambda _source, symlinks=None: (paths, {}),
+    )
+
+    scanner._scan_iso_7z()
+
+    assert scanner.disc_metadata.matrix256_fingerprint is None
 
 
 @pytest.mark.skipif(
@@ -177,7 +207,7 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     assert title.estimated_size_bytes == 60
     assert title.disc_name == "Test Disc"
     assert scanner.disc_metadata.upc_ean == "12345"
-    assert scanner.disc_metadata.metadata_hash is not None
+    assert scanner.disc_metadata.mkvsmith_metadata_hash is not None
 
 
 def test_first_iso_playlist_clpi_reads_first_clip_name(

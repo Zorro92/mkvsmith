@@ -1638,7 +1638,7 @@ def _get_notable_titles(
 
 def _main_feature_score(
     title: Title, config: Config | None = None
-) -> tuple[int, int, float]:
+) -> tuple[int, int, int, float]:
     """Rank titles for "main feature" detection.
 
     DVDs put the real film in the title set with the richest audio/subtitle
@@ -1654,6 +1654,9 @@ def _main_feature_score(
     PGC), so a pure duration tiebreak would wrongly promote the alternate
     edition to "main feature" over the disc's actual default title.
 
+    Chapter count is the next tie-breaker. Main features normally carry a real
+    chapter table, while similarly rich extras may expose only one chapter.
+
     Final tiebreak: duration.
 
     Titles shorter than ``config.min_duration`` (default 60s) are excluded
@@ -1661,10 +1664,10 @@ def _main_feature_score(
     or warning cards with unusually rich stream tables.
     """
     if title.duration_seconds < (config or RUNTIME_STATE.config).min_duration:
-        return (-1, 0, 0.0)
+        return (-1, 0, 0, 0.0)
     richness = len(title.audio_streams) + len(title.subtitle_streams)
     is_default_edition = 0 if title.dvd_pgc_number is not None else 1
-    return (richness, is_default_edition, title.duration_seconds)
+    return (richness, is_default_edition, len(title.chapters), title.duration_seconds)
 
 
 def pick_main_feature(titles: list[Title], config: Config | None = None) -> int:

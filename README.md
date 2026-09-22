@@ -135,6 +135,14 @@ mkvsmith> q          # quit
   does not do), and it is unverified whether the disc's enhancement-layer
   entry can show up as a stray extra video track.
 
+## Future improvements
+
+- **TheDiscDB integration** — query the [TheDiscDB](https://thediscdb.com/)
+  API to identify discs and titles, and to resolve playlist obfuscation
+  ("screen pass" discs that hide the real main feature among dozens of
+  near-identical decoy playlists) by matching local disc metadata against
+  the community database.
+
 ## Disc fixtures
 
 The parser regression tests (`tests/test_parser_fixtures.py`) parse real

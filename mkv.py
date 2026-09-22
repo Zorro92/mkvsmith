@@ -775,9 +775,19 @@ class _PreparedMuxTracks:
 
 
 def _output_file_for_title(output_dir: Path, title: Title) -> Path:
+    filename_name = title.name
+    title_suffix = f" - Title {title.index + 1}"
+    if filename_name.endswith(title_suffix):
+        filename_name = filename_name[: -len(title_suffix)]
+    filename_name = re.sub(
+        r"\s+-\s+Blu-ray(?:\s*[™℠])?\s*$",
+        "",
+        filename_name,
+        flags=re.IGNORECASE,
+    )
     # Strip Windows-reserved path characters and unusual Unicode symbols from
     # the filename only; container title metadata keeps the original formatting.
-    safe_name = re.sub(r'[<>:"/\\|?*]', "_", title.name)
+    safe_name = re.sub(r'[<>:"/\\|?*]', "_", filename_name or title.name)
     safe_name = re.sub(r"[^\w\s\-.]", "", safe_name)
     safe_name = re.sub(r"\s+", " ", safe_name).strip()
     return output_dir / f"{safe_name}_t{title.index:02d}.mkv"

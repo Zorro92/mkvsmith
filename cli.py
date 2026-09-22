@@ -105,6 +105,7 @@ def display_titles(
     w = get_terminal_width()
     visible, hidden = _get_notable_titles(titles, config)
     main_idx = pick_main_feature(titles, config)
+    index_width = max([1, *(len(str(title.index)) for title in visible)])
     summary_width = max(
         [len("Streams"), *(len(title.streams_summary) for title in visible)]
     )
@@ -114,13 +115,16 @@ def display_titles(
     playlist_width = max([len(hdr_playlist), *(len(value) for value in playlists)])
     full_playlist_header = tr("Playlist")
     full_playlist_width = max(playlist_width, len(full_playlist_header))
-    if show_playlist and w - summary_width - 18 - full_playlist_width - 2 >= 5:
+    if (
+        show_playlist
+        and w - summary_width - index_width - full_playlist_width - 18 >= 5
+    ):
         hdr_playlist = full_playlist_header
         playlist_width = full_playlist_width
     if show_playlist:
-        nw = max(w - summary_width - playlist_width - 20, 1)
+        nw = max(w - summary_width - index_width - playlist_width - 18, 1)
     else:
-        nw = max(w - summary_width - 18, 8)
+        nw = max(w - summary_width - index_width - 16, 8)
     rule_w = w
     print("\n" + "═" * rule_w)
     print(tr("  SCANNED TITLES") + (f" - {disc_name}" if disc_name else ""))
@@ -130,7 +134,7 @@ def display_titles(
     hdr_streams = tr("Streams")
     playlist_header = f"{hdr_playlist:<{playlist_width}}  " if show_playlist else ""
     print(
-        f"{'#':>2}  {hdr_dur:<8}  {hdr_name:<{nw}}  "
+        f"{'#':>{index_width}}  {hdr_dur:<8}  {hdr_name:<{nw}}  "
         f"{playlist_header}{hdr_streams}\n" + "─" * rule_w
     )
     for t in visible:
@@ -139,7 +143,7 @@ def display_titles(
         playlist_value = f"{playlist:<{playlist_width}}  " if show_playlist else ""
         marker = " \u2605" if t.index == main_idx else ""
         print(
-            f"{t.index:>2}  {t.duration_display:<8}  {n:<{nw}}  "
+            f"{t.index:>{index_width}}  {t.duration_display:<8}  {n:<{nw}}  "
             f"{playlist_value}{t.streams_summary}{marker}"
         )
     total_msg = tr("Total: {n} title(s)", n=len(visible))

@@ -18,6 +18,9 @@ más sensato, pero es una reimplementación independiente con licencia GPL.
   `.m2ts`/`.vob` sueltos y archivos de vídeo normales** a Matroska (`.mkv`).
 - **Conserva el audio, los subtítulos y los capítulos**, incluidos los flujos
   de subimagen de DVD que otros escáneres más simples pasan por alto.
+- **Muestra identificadores estables del disco**, incluida la huella
+  [matrix256v1](https://github.com/shitwolfymakes/matrix256) del sistema de
+  archivos y los identificadores de metadatos DVD/Blu-ray.
 - **Etiquetado TMDB opcional** — metadatos y carátulas incrustados directamente
   en el mux.
 

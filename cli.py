@@ -64,7 +64,7 @@ from settings import SETTINGS_PATH, load_settings, save_settings
 from scan import Scanner, _get_notable_titles, pick_main_feature
 from mkv import MKVCreator
 
-__version__ = "0.2.0"  # keep in sync with pyproject.toml [project].version
+__version__ = "0.3.0"  # keep in sync with pyproject.toml [project].version
 
 
 # =============================================================================
@@ -173,8 +173,20 @@ def _disc_identifier_summary(metadata: DiscMetadata | None) -> str | None:
         identifiers.append(tr("Provider ID: {value}", value=metadata.provider_id))
     if metadata.dvd_disc_id:
         identifiers.append(tr("DVD Disc ID: {value}", value=metadata.dvd_disc_id))
-    if metadata.metadata_hash:
-        identifiers.append(tr("Metadata hash: {value}", value=metadata.metadata_hash))
+    if metadata.matrix256_fingerprint:
+        identifiers.append(
+            tr(
+                "Matrix256 fingerprint: {value}",
+                value=metadata.matrix256_fingerprint,
+            )
+        )
+    if metadata.mkvsmith_metadata_hash:
+        identifiers.append(
+            tr(
+                "mkvsmith metadata hash: {value}",
+                value=metadata.mkvsmith_metadata_hash,
+            )
+        )
     return "  ".join(identifiers) if identifiers else None
 
 

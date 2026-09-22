@@ -465,22 +465,24 @@ def _parse_7z_listing(stdout: str) -> tuple[list[str], dict[str, int]]:
     paths: list[str] = []
     sizes: dict[str, int] = {}
     current_path: str | None = None
-    current_path_is_media = False
+    current_path_is_file = False
 
-    # 7z -slt prints one block per entry; "Path =" precedes "Size =".
+    # 7z -slt prints one block per entry; Path precedes Folder and Size.
     for line in stdout.splitlines():
         if line.startswith("Path = "):
             internal_path = line[7:].strip()
             if internal_path.startswith("/"):
                 internal_path = internal_path[1:]
             current_path = internal_path
-            current_path_is_media = _is_iso_media_path(internal_path)
-            if current_path_is_media:
-                paths.append(internal_path)
+            current_path_is_file = False
+        elif line.startswith("Folder = "):
+            current_path_is_file = line[9:].strip() == "-"
+            if current_path_is_file and current_path is not None:
+                paths.append(current_path)
         elif (
             line.startswith("Size = ")
             and current_path is not None
-            and current_path_is_media
+            and current_path_is_file
         ):
             try:
                 sizes[current_path] = int(line[7:].strip())
@@ -493,11 +495,12 @@ def _parse_7z_listing(stdout: str) -> tuple[list[str], dict[str, int]]:
 def _list_iso_files_7z(
     iso_path: Path, symlinks: list[Path] | None = None
 ) -> tuple[list[str], dict[str, int]]:
-    """List the Blu-ray / DVD paths inside an ISO using ``7z l -slt``.
+    """List the regular files inside an ISO using ``7z l -slt``.
 
-    Returns a ``(paths, sizes)`` pair. *paths* are internal ISO media paths and
-    *sizes* maps each path to its uncompressed byte size for RAM-budget
-    estimates. Returns ``([], {})`` on failure.
+    Returns a ``(paths, sizes)`` pair. *paths* are all internal ISO file paths
+    and *sizes* maps each path to its uncompressed byte size. The complete
+    listing supports matrix256 fingerprinting; callers select media paths.
+    Returns ``([], {})`` on failure.
     """
     target_path, _ = _get_safe_7z_path(iso_path, symlinks)
     try:

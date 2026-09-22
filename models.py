@@ -668,7 +668,8 @@ class DiscMetadata:
     upc_ean: str | None = None
     provider_id: str | None = None
     dvd_disc_id: str | None = None
-    metadata_hash: str | None = None
+    matrix256_fingerprint: str | None = None
+    mkvsmith_metadata_hash: str | None = None
 
 
 # =============================================================================

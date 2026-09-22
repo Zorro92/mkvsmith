@@ -133,7 +133,7 @@ def _read_dvd_disc_metadata(base: Path) -> _DvdDiscMetadata:
         disc = replace(
             disc,
             dvd_disc_id=_compute_dvd_disc_id(base),
-            metadata_hash=_compute_dvd_metadata_hash(
+            mkvsmith_metadata_hash=_compute_dvd_metadata_hash(
                 ((path.name, path.stat().st_size) for path in base.iterdir()),
                 vmg_path.read_bytes(),
                 vts_path.read_bytes(),

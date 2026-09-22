@@ -77,7 +77,11 @@ _ES: dict[str, str] = {
     "UPC/EAN: {value}": "UPC/EAN: {value}",
     "Provider ID: {value}": "ID del proveedor: {value}",
     "DVD Disc ID: {value}": "ID del DVD: {value}",
-    "Metadata hash: {value}": "Hash de metadatos: {value}",
+    "Matrix256 fingerprint: {value}": "Huella Matrix256: {value}",
+    "mkvsmith metadata hash: {value}": "Hash de metadatos de mkvsmith: {value}",
+    "Matrix256 fingerprint unavailable: 7z did not report every file size": (
+        "Huella Matrix256 no disponible: 7z no informó todos los tamaños de archivo"
+    ),
     "Total: {n} title(s)": "Total: {n} título(s)",
     "({n} episode(s) detected)": "({n} episodio(s) detectado(s))",
     "({n} low-quality titles hidden; use --show-all to view)": "({n} títulos de baja calidad ocultos; usa --show-all para verlos)",

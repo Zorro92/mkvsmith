@@ -87,7 +87,7 @@ def test_scan_bluray_source_orders_filters_and_skips_incomplete(
 
     assert metadata.name == "Test Disc"
     assert metadata.upc_ean == "12345"
-    assert metadata.metadata_hash is not None
+    assert metadata.mkvsmith_metadata_hash is not None
     assert parsed == ["00800", "00801", "00802"]
     assert built == ["00800"]
     assert [title.name for title in titles] == ["Playlist 00800"]

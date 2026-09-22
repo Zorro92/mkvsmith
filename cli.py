@@ -26,6 +26,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 import tempfile
@@ -77,10 +78,39 @@ def get_terminal_width() -> int:
         return 80
 
 
-def _title_list_name(title: Title) -> str:
-    if title.playlist_name:
-        return f"{title.name} [Playlist {title.playlist_name}]"
-    return title.name
+def _truncate_display_text(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    if width <= 2:
+        return text[:width]
+    return text[: width - 2].rstrip() + ".."
+
+
+def _title_list_name(title: Title, width: int) -> str:
+    base_name = re.sub(
+        r"\s+-\s+Blu-ray(?:\s*3D)?(?:\s*[™℠])?\s*$",
+        "",
+        title.name,
+        flags=re.IGNORECASE,
+    )
+    base_name = base_name or title.name
+    if not title.playlist_name:
+        return _truncate_display_text(base_name, width)
+
+    playlist = title.playlist_name
+    suffixes = (
+        f" [Playlist {playlist}]",
+        f" [PL {playlist}]",
+        f" [{playlist}]",
+    )
+    suffix = next(
+        (suffix for suffix in suffixes if len(suffix) <= width),
+        _truncate_display_text(suffixes[-1], width),
+    )
+    base_width = width - len(suffix)
+    if base_width <= 0:
+        return suffix
+    return _truncate_display_text(base_name, base_width) + suffix
 
 
 def display_titles(
@@ -91,8 +121,11 @@ def display_titles(
     w = get_terminal_width()
     visible, hidden = _get_notable_titles(titles, config)
     main_idx = pick_main_feature(titles, config)
-    nw = max(w - 28, 10)
-    rule_w = min(w, nw + 28)
+    summary_width = max(
+        [len("Streams"), *(len(title.streams_summary) for title in visible)]
+    )
+    nw = max(w - summary_width - 18, 8)
+    rule_w = w
     print("\n" + "═" * rule_w)
     print(tr("  SCANNED TITLES") + (f" - {disc_name}" if disc_name else ""))
     print("═" * rule_w)
@@ -101,8 +134,7 @@ def display_titles(
     hdr_streams = tr("Streams")
     print(f"{'#':>2}  {hdr_dur:<8}  {hdr_name:<{nw}}  {hdr_streams}\n" + "─" * rule_w)
     for t in visible:
-        list_name = _title_list_name(t)
-        n = list_name[: nw - 2] + ".." if len(list_name) > nw else list_name
+        n = _title_list_name(t, nw)
         marker = " \u2605" if t.index == main_idx else ""
         print(
             f"{t.index:>2}  {t.duration_display:<8}  {n:<{nw}}  {t.streams_summary}{marker}"

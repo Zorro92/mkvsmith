@@ -480,7 +480,6 @@ _VMG_PROVIDER_ID_LEN = 32
 # Sector pointers in VMGI_MAT (4-byte sector numbers, relative to IFO start)
 _VMG_PTR_TT_SRPT = 0xC4  # Title Search Pointer Table
 _VMG_PTR_TXTDT_MG = 0xD4  # Text Data Management Area (disc name)
-# Each TT_SRPT entry: 2 B title_type + 2 B VTS_TTN + 8 B reserved (12 B total)
 # Each TT_SRPT entry (12 bytes): title_type(1) + nr_of_angles(1) +
 # nr_of_chapters(2) + parental_mask(2) + VTS number(1) + VTS_TTN(1) +
 # VTS start sector(4). See dvd.sourceforge.net/dvdinfo/ifo_vmg.html (the
@@ -1334,6 +1333,11 @@ def _pgc_cell_position_signature(
     return tuple(sig)
 
 
+# Minimum fraction of the default PGC's playback time that must come from
+# cells a candidate PGC also plays for it to be classified as an alternate
+# *edition* (a re-cut of the same footage) rather than an unrelated program
+# sharing the VTS. Verified against MakeMKV on Treasure Planet (2002, R1
+# DVD9): the commentary variant PGC covers 100% of the default PGC's
 # runtime, while bonus features packed into shared extras VTSs cover at
 # most 2% (a single shared title-card cell).
 _EDITION_SHARED_RUNTIME_MIN = 0.5
@@ -1499,24 +1503,36 @@ _EPISODE_DURATION_TOL = 0.15
 _EnumeratedPgc = tuple[int, int, float, int]
 
 
-def _largest_duration_cluster(pgcs: list[_EnumeratedPgc]) -> list[_EnumeratedPgc]:
-    """Return the largest mutually duration-compatible PGC cluster."""
-    best_cluster: list[_EnumeratedPgc] = []
+def _candidate_episode_clusters(
+    pgcs: list[_EnumeratedPgc],
+) -> list[list[_EnumeratedPgc]]:
+    """Distinct duration-neighbourhood clusters, best candidate first.
+
+    Ordered by size (descending), then by centre duration (ascending):
+    between equal-size clusters the shorter one is preferred, so a group of
+    episode-length PGCs beats a group of long extras. The order is only a
+    preference — callers run their guards over the candidates in turn,
+    because the longer cluster can be the real one: Superman (1988) ties
+    seven ~19-minute episodes against seven ~5-minute "Family Album"
+    shorts, and the episodes win once the shorts cluster is rejected for
+    being dwarfed by the episodes themselves.
+    """
+    candidates: list[tuple[float, list[_EnumeratedPgc]]] = []
+    seen: set[frozenset[int]] = set()
     for pgc in pgcs:
-        duration = pgc[2]
         neighbours = [
             candidate
             for candidate in pgcs
-            if abs(candidate[2] - duration) / max(candidate[2], duration, 1.0)
+            if abs(candidate[2] - pgc[2]) / max(candidate[2], pgc[2], 1.0)
             <= _EPISODE_DURATION_TOL
         ]
-        if len(neighbours) > len(best_cluster) or (
-            len(neighbours) == len(best_cluster)
-            and best_cluster
-            and duration < best_cluster[0][2]
-        ):
-            best_cluster = neighbours
-    return best_cluster
+        key = frozenset(candidate[0] for candidate in neighbours)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append((pgc[2], neighbours))
+    candidates.sort(key=lambda entry: (-len(entry[1]), entry[0]))
+    return [cluster for _centre, cluster in candidates]
 
 
 def _has_distinct_pgc_cell_signatures(
@@ -1530,6 +1546,34 @@ def _has_distinct_pgc_cell_signatures(
         if signature is not None
     ]
     return len(set(signatures)) == len(signatures)
+
+
+def _cluster_shares_footage(ifo_data: bytes, cluster: list[_EnumeratedPgc]) -> bool:
+    """Whether any two PGCs in a duration cluster re-cut the same footage.
+
+    Episodes play distinct footage. A pair whose members share at least
+    ``_EDITION_SHARED_RUNTIME_MIN`` of each other's playback time is a
+    re-cut (a movie plus a seamless-branching variant whose *superset* cell
+    table defeats the distinct-signature check — Treasure Planet's
+    commentary variant shares 99.8% of the default movie PGC's runtime).
+    Unparseable cell tables share nothing, conservatively keeping the
+    cluster intact.
+    """
+    durations = {
+        pgc[1]: _pgc_cell_durations(ifo_data, pgc[1], pgc[3]) for pgc in cluster
+    }
+    for i, first in enumerate(cluster):
+        for second in cluster[i + 1 :]:
+            first_durations = durations[first[1]]
+            second_durations = durations[second[1]]
+            if (
+                _shared_runtime_fraction(first_durations, second_durations)
+                >= _EDITION_SHARED_RUNTIME_MIN
+                or _shared_runtime_fraction(second_durations, first_durations)
+                >= _EDITION_SHARED_RUNTIME_MIN
+            ):
+                return True
+    return False
 
 
 def _find_play_all_pgc(
@@ -1547,6 +1591,208 @@ def _find_play_all_pgc(
     return None
 
 
+# A PGC this many times longer than the episode cluster's longest member
+# marks the cluster as bonus content rather than the VTS's episodes. True
+# episode/anthology VTSs hold nothing (besides the play-all chain) that
+# dwarfs the cluster; movie VTSs carry the film or a long featurette
+# beside scattered same-length extras. Measured: Treasure Planet's VTS 9
+# (six 62-81s shorts beside a 869s featurette, 11x) and Cats Don't Dance
+# (three ~3min cartoons beside the 74min film) are bonus clusters; Tex
+# Avery's cartoon VTS (371-553s members, 553s max non-cluster) and the
+# Peanuts specials VTS are clean.
+_EPISODE_DWARF_RATIO = 3.0
+
+
+def _cluster_is_dwarfed(
+    ifo_data: bytes,
+    all_pgcs: list[_EnumeratedPgc],
+    cluster: list[_EnumeratedPgc],
+    play_all_pgc: int | None,
+) -> bool:
+    """Whether a substantial PGC outside the cluster dwarfs its longest member.
+
+    Compilation chains are exempt: a play-all PGC runs several times any
+    single episode, but it plays the episodes' own cells (its runtime is
+    their sum), not unrelated footage. The exact 5 % play-all duration
+    match misses these when the cluster drops stragglers outside the
+    duration window — Tex Avery's 7114s compilation beside 15 cartoons
+    summing to 6743s (a 371s cartoon fell out of the cluster) — so dwarf
+    suspects are checked against the cluster's combined cell runtime
+    instead. A movie beside short extras (Cats Don't Dance's 74-minute
+    film beside three ~3-minute cartoons) shares no footage and dwarfs.
+    """
+    cluster_max = max(pgc[2] for pgc in cluster)
+    cluster_numbers = {pgc[0] for pgc in cluster}
+    cluster_cells: dict[tuple[int, int], float] = {}
+    for number, pgc_abs, _duration, cells in all_pgcs:
+        if number in cluster_numbers:
+            for key, seconds in _pgc_cell_durations(ifo_data, pgc_abs, cells).items():
+                cluster_cells[key] = cluster_cells.get(key, 0.0) + seconds
+    for number, pgc_abs, duration, cells in all_pgcs:
+        if number in cluster_numbers or number == play_all_pgc:
+            continue
+        if duration >= cluster_max * _EPISODE_DWARF_RATIO:
+            suspect = _pgc_cell_durations(ifo_data, pgc_abs, cells)
+            if _shared_runtime_fraction(suspect, cluster_cells) >= 0.5:
+                continue  # compilation chain over the episodes' own cells
+            return True
+    return False
+
+
+def _compilation_shares_cells(
+    ifo_data: bytes,
+    all_pgcs: list[_EnumeratedPgc],
+    members: list[_EnumeratedPgc],
+    compilation_pgc: int,
+) -> bool:
+    """Whether *compilation_pgc* plays the members' own cells (>= 50 % of
+    its runtime), i.e. it is a chain over them rather than unrelated
+    footage that happens to match their duration sum."""
+    member_cells: dict[tuple[int, int], float] = {}
+    member_numbers = {pgc[0] for pgc in members}
+    for number, pgc_abs, _duration, cells in all_pgcs:
+        if number in member_numbers:
+            for key, seconds in _pgc_cell_durations(ifo_data, pgc_abs, cells).items():
+                member_cells[key] = member_cells.get(key, 0.0) + seconds
+    for number, pgc_abs, _duration, cells in all_pgcs:
+        if number == compilation_pgc:
+            return (
+                _shared_runtime_fraction(
+                    _pgc_cell_durations(ifo_data, pgc_abs, cells), member_cells
+                )
+                >= 0.5
+            )
+    return False
+
+
+def _merge_compilation_siblings(
+    ifo_data: bytes,
+    all_pgcs: list[_EnumeratedPgc],
+    cluster: list[_EnumeratedPgc],
+    candidates: list[list[_EnumeratedPgc]],
+    min_duration: float,
+    play_all: int | None,
+) -> tuple[list[_EnumeratedPgc], int | None]:
+    """Merge sibling duration clusters covered by the same compilation chain.
+
+    A disc can split each episode into two separately-authored parts that
+    land in different duration clusters: Superman (1988) holds seven
+    ~19-minute episodes and seven ~5-minute "Family Album" shorts, and its
+    10018s play-all sums to both clusters together (0.01 %). When a
+    substantial PGC's runtime matches the union of the selected cluster
+    and another candidate cluster — and it plays their cells — the sibling
+    members are parts of the same episode set. Tex Avery merges its
+    371s cartoon back into the 15-member cluster the same way (7114s
+    play-all covers all 16).
+
+    Returns the (possibly grown) member list and the compilation PGC.
+    """
+    members = list(cluster)
+    merged_play_all = play_all
+    seen: set[frozenset[int]] = {frozenset(pgc[0] for pgc in cluster)}
+    changed = True
+    while changed:
+        changed = False
+        for other in candidates:
+            other_key = frozenset(pgc[0] for pgc in other)
+            if other_key in seen:
+                continue
+            member_numbers = {pgc[0] for pgc in members}
+            new_members = [pgc for pgc in other if pgc[0] not in member_numbers]
+            if not new_members:
+                seen.add(other_key)
+                continue
+            union = members + new_members
+            compilation = _find_play_all_pgc(all_pgcs, union, min_duration)
+            if compilation is None:
+                continue
+            if not _compilation_shares_cells(ifo_data, all_pgcs, union, compilation):
+                continue
+            # Every new member's own footage must be inside the compilation
+            # (>= 50 % of its runtime). The duration-sum match alone lets
+            # stragglers ride along: Superman's play-all covers the episodes
+            # and shorts at 10019s, so episodes+shorts+its 77s intro clip
+            # also matches within 5 % — but the intro's cells are not in the
+            # play-all.
+            compilation_cells: dict[tuple[int, int], float] | None = None
+            covered = True
+            for number, pgc_abs, _duration, cells in all_pgcs:
+                if number != compilation:
+                    continue
+                compilation_cells = _pgc_cell_durations(ifo_data, pgc_abs, cells)
+                break
+            if compilation_cells is None:
+                continue
+            for number, pgc_abs, _duration, cells in all_pgcs:
+                if number not in {pgc[0] for pgc in new_members}:
+                    continue
+                member_cells = _pgc_cell_durations(ifo_data, pgc_abs, cells)
+                if _shared_runtime_fraction(member_cells, compilation_cells) < 0.5:
+                    covered = False
+                    break
+            if not covered:
+                continue
+            # The grown set must stay a clean episode family: no member
+            # re-cuts another, and nothing unrelated dwarfs it.
+            if _cluster_shares_footage(ifo_data, union):
+                continue
+            if _cluster_is_dwarfed(ifo_data, all_pgcs, union, compilation):
+                continue
+            members = union
+            merged_play_all = compilation
+            seen.add(other_key)
+            changed = True
+    return members, merged_play_all
+
+
+def _episode_part_labels(
+    members: list[_EnumeratedPgc],
+) -> dict[int, tuple[int, str]] | None:
+    """Map PGC numbers to ``(episode_number, part)`` for split episodes.
+
+    When the episode set forms exactly two disjoint, equal-size duration
+    families that strictly alternate in PGC order (Superman 1988: longs at
+    PGCs 7, 9, 11... and shorts at 8, 10, 12...), consecutive pairs are one
+    DVD episode in two parts: ``(7, 8)`` -> Episode 1a/1b, ``(9, 10)`` ->
+    Episode 2a/2b. Returns None when the set is a single duration family
+    or does not alternate (callers number it sequentially).
+    """
+    clusters = _candidate_episode_clusters(members)
+    if len(clusters) < 2:
+        return None
+    first, second = clusters[0], clusters[1]
+    first_numbers = {pgc[0] for pgc in first}
+    second_numbers = {pgc[0] for pgc in second}
+    if (
+        first_numbers & second_numbers
+        or len(first_numbers) != len(second_numbers)
+        or len(first_numbers) < 2
+    ):
+        return None
+    ordered = sorted(pgc[0] for pgc in members)
+    if (first_numbers | second_numbers) != set(ordered):
+        return None  # a third duration family; pairing is ambiguous
+    # The family of the first PGC in disc order is part "a".
+    if ordered[0] in second_numbers:
+        first_numbers, second_numbers = second_numbers, first_numbers
+    part_of = {number: ("a" if number in first_numbers else "b") for number in ordered}
+    if any(
+        part_of[ordered[i]] == part_of[ordered[i + 1]] for i in range(len(ordered) - 1)
+    ):
+        return None  # not interleaved; pairing is ambiguous
+    labels: dict[int, tuple[int, str]] = {}
+    for index, (a_pgc, b_pgc) in enumerate(
+        zip(
+            [n for n in ordered if part_of[n] == "a"],
+            [n for n in ordered if part_of[n] == "b"],
+        ),
+        start=1,
+    ):
+        labels[a_pgc] = (index, "a")
+        labels[b_pgc] = (index, "b")
+    return labels
+
+
 def _detect_episode_pgcs(
     ifo_data: bytes,
     min_duration: float = 60.0,
@@ -1559,7 +1805,7 @@ def _detect_episode_pgcs(
     - ``play_all_pgc_number``: 1-indexed PGC number of the "play all" chain
       (a PGC whose duration ≈ the sum of all episodes), or ``None``.
 
-    Two signals are required:
+    Four signals are required:
 
     1. **Duration clustering** — at least two substantial PGCs whose playback
        durations fall within ``_EPISODE_DURATION_TOL`` (15 %) of each other.
@@ -1573,8 +1819,28 @@ def _detect_episode_pgcs(
        in which physical cells they point at). Without this check a
        multi-angle disc (e.g. Beauty and the Beast SE) would be misdetected as
        a "series".
+    3. **Distinct footage** — no two cluster members may re-cut each other's
+       runtime (``_cluster_shares_footage``). A variant whose cell table is a
+       *superset* of the movie's defeats signal 2 (the signatures differ), yet
+       it is still the same movie: Treasure Planet's commentary PGC shares
+       99.8 % of the default PGC's playback time and must stay an edition,
+       not become "Episode 2".
+    4. **The cluster is the VTS's content** — no substantial PGC outside the
+       cluster and the play-all chain runs ``_EPISODE_DWARF_RATIO`` times the
+       cluster's longest member (``_cluster_is_dwarfed``). Movie discs pack
+       same-length bonus features into shared VTSs (Treasure Planet's VTS 9:
+       six ~70s shorts beside an 869s featurette; Cats Don't Dance: three
+       cartoons beside the 74-minute film), which duration-cluster exactly
+       like episodes; a series/anthology VTS holds nothing that dwarfs its
+       episodes.
 
-    The "play all" PGC — common on TV-series discs — is then identified by
+    Sibling duration clusters covered by the same compilation chain are
+    then merged in as parts of the same episode set
+    (``_merge_compilation_siblings``): Superman (1988) splits each episode
+    into a ~19-minute part and a ~5-minute short in separate clusters, and
+    the 10018s play-all sums to both together.
+
+    The "play all" PGC — common on TV-series discs — is identified by
     matching its duration against the sum of episode durations (within 5 %).
     """
     all_pgcs = _effective_pgc_durations(ifo_data, _enumerate_vts_pgcs(ifo_data))
@@ -1588,16 +1854,29 @@ def _detect_episode_pgcs(
     if len(substantial) < 2:
         return [], None
 
-    best_cluster = _largest_duration_cluster(substantial)
-    if len(best_cluster) < 2:
-        return [], None
-
-    if not _has_distinct_pgc_cell_signatures(ifo_data, best_cluster):
-        return [], None
-
-    episode_nums = sorted(p[0] for p in best_cluster)
-    play_all = _find_play_all_pgc(all_pgcs, best_cluster, min_duration)
-    return episode_nums, play_all
+    candidates = _candidate_episode_clusters(substantial)
+    # Candidates are ordered best-guess-first (largest, then shorter
+    # centre); the first cluster to clear every guard is the episode set.
+    # Falling through matters when the preferred cluster is the wrong one:
+    # Superman (1988) ties seven ~19-minute episodes against seven ~5-minute
+    # shorts, and the preferred (shorter) shorts cluster is dwarfed by the
+    # episodes themselves — the episodes cluster then takes over.
+    for cluster in candidates:
+        if len(cluster) < 2:
+            break  # candidates are size-descending; nothing bigger remains
+        if not _has_distinct_pgc_cell_signatures(ifo_data, cluster):
+            continue
+        if _cluster_shares_footage(ifo_data, cluster):
+            continue
+        play_all = _find_play_all_pgc(all_pgcs, cluster, min_duration)
+        if _cluster_is_dwarfed(ifo_data, all_pgcs, cluster, play_all):
+            continue
+        merged, merged_play_all = _merge_compilation_siblings(
+            ifo_data, all_pgcs, cluster, candidates, min_duration, play_all
+        )
+        episode_nums = sorted(p[0] for p in merged)
+        return episode_nums, merged_play_all
+    return [], None
 
 
 # =============================================================================

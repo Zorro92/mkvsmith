@@ -732,3 +732,162 @@ def test_undeclared_subpicture_phase_survives_malformed_ifo(monkeypatch: Any) ->
     )
 
     assert len(title.streams) == 1
+
+
+def test_label_cross_vts_episodes_labels_one_per_vts_series(
+    tmp_path: Path,
+) -> None:
+    """One-episode-per-VTS authoring (Tales from the Cryptkeeper S1:
+    seven VTSs of ~21-minute episodes) is labelled by the disc-level pass."""
+    titles: list[Title] = []
+    for title_id, duration in (
+        (1, 16.0),
+        (2, 25.6),
+        (3, 1254.0),
+        (4, 1253.4),
+        (5, 1254.2),
+        (6, 1252.3),
+        (7, 1253.1),
+        (8, 1252.2),
+        (9, 1257.1),
+        (10, 0.4),
+    ):
+        title = Title(len(titles), tmp_path / "v.vob", f"Title {title_id}", duration)
+        title.dvd_title_id = title_id
+        titles.append(title)
+
+    dvdbuild._label_cross_vts_episodes(titles, config=Config(min_duration=60))
+
+    assert {t.dvd_title_id: t.dvd_episode_number for t in titles} == {
+        1: None,
+        2: None,
+        3: 1,
+        4: 2,
+        5: 3,
+        6: 4,
+        7: 5,
+        8: 6,
+        9: 7,
+        10: None,
+    }
+
+
+def test_label_cross_vts_episodes_requires_three_titles(tmp_path: Path) -> None:
+    """Two similar-duration titles are the classic widescreen/fullscreen
+    pair of one movie, not a series."""
+    titles: list[Title] = []
+    for title_id, duration in ((1, 5700.0), (2, 5710.0)):
+        title = Title(len(titles), tmp_path / "v.vob", f"Title {title_id}", duration)
+        title.dvd_title_id = title_id
+        titles.append(title)
+
+    dvdbuild._label_cross_vts_episodes(titles, config=Config(min_duration=60))
+
+    assert all(title.dvd_episode_number is None for title in titles)
+
+
+def test_label_cross_vts_episodes_skips_labelled_playall_and_editions(
+    tmp_path: Path,
+) -> None:
+    """Within-VTS episodes, play-all chains, and alternate editions never
+    join a cross-VTS cluster."""
+    titles: list[Title] = []
+    specs = [
+        (1, 1460.0, {"dvd_episode_number": 1}),
+        (2, 1461.0, {"dvd_episode_number": 2}),
+        (3, 8800.0, {"dvd_play_all": True}),
+        (4, 2000.0, {"dvd_edition_label": "Edition 2"}),
+        (5, 1254.0, {}),
+        (6, 1253.0, {}),
+        (7, 1252.0, {}),
+    ]
+    for title_id, duration, flags in specs:
+        title = Title(len(titles), tmp_path / "v.vob", f"Title {title_id}", duration)
+        title.dvd_title_id = title_id
+        for field, value in flags.items():
+            setattr(title, field, value)
+        titles.append(title)
+
+    dvdbuild._label_cross_vts_episodes(titles, config=Config(min_duration=60))
+
+    assert {t.dvd_title_id: t.dvd_episode_number for t in titles} == {
+        1: 1,  # within-VTS labels untouched
+        2: 2,
+        3: None,
+        4: None,
+        5: 1,
+        6: 2,
+        7: 3,
+    }
+
+
+def test_label_cross_vts_episodes_suppressed_when_dwarfed(tmp_path: Path) -> None:
+    """A cluster of short titles beside much longer content is extras, not
+    episodes (Peanuts: three ~100s intro clips in their own VTSs beside
+    24-minute specials)."""
+    titles: list[Title] = []
+    for title_id, duration in (
+        (1, 8800.0),
+        (2, 105.3),
+        (3, 100.5),
+        (4, 86.2),
+    ):
+        title = Title(len(titles), tmp_path / "v.vob", f"Title {title_id}", duration)
+        title.dvd_title_id = title_id
+        titles.append(title)
+
+    dvdbuild._label_cross_vts_episodes(titles, config=Config(min_duration=60))
+
+    assert all(title.dvd_episode_number is None for title in titles)
+
+
+def test_demote_dwarfed_episode_groups_strips_movie_disc_labels(
+    tmp_path: Path,
+) -> None:
+    """Treasure Planet's VTS 11: seven ~2-minute featurettes + compilation
+    look like an anthology within the VTS, but the disc's 95-minute movie
+    dwarfs them — bonus content, not episodes."""
+    titles: list[Title] = []
+    for index, duration, episode in (
+        (0, 5718.0, None),  # the movie
+        (1, 730.0, None),  # the featurettes' compilation (play-all)
+        (2, 141.0, 7),
+        (3, 139.0, 6),
+        (4, 103.0, 2),
+        (5, 96.0, 1),
+    ):
+        title = Title(index, tmp_path / "v.vob", f"Title {index}", duration)
+        title.dvd_title_id = index
+        title.dvd_episode_number = episode
+        if index == 1:
+            title.dvd_play_all = True
+        titles.append(title)
+
+    dvdbuild._demote_dwarfed_episode_groups(titles, config=Config(min_duration=60))
+
+    assert all(title.dvd_episode_number is None for title in titles)
+
+
+def test_demote_dwarfed_episode_groups_keeps_series_discs(tmp_path: Path) -> None:
+    """Series discs pass: their longest non-play-all titles are episodes or
+    shorter extras (Superman: a 13-minute bonus beside 19-minute episodes)."""
+    titles: list[Title] = []
+    for index, duration, episode, part in (
+        (0, 1146.0, 1, "a"),
+        (1, 286.0, 1, "b"),
+        (2, 811.0, None, None),  # bonus featurette, shorter than episodes
+        (3, 10018.0, None, None),  # play-all
+    ):
+        title = Title(index, tmp_path / "v.vob", f"Title {index}", duration)
+        title.dvd_title_id = index
+        title.dvd_episode_number = episode
+        title.dvd_episode_part = part
+        if index == 3:
+            title.dvd_play_all = True
+        titles.append(title)
+
+    dvdbuild._demote_dwarfed_episode_groups(titles, config=Config(min_duration=60))
+
+    assert [title.dvd_episode_number for title in titles] == [1, 1, None, None]
+    assert titles[0].dvd_episode_part == "a"
+    assert titles[1].dvd_episode_part == "b"

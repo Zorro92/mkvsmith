@@ -70,7 +70,8 @@ uv run ./main.py /path/to/disc -t 1
 # rip all titles
 uv run ./main.py /path/to/disc -a
 
-# rip all detected TV episodes
+# rip all detected TV episodes (within-VTS PGC clusters and
+# one-episode-per-VTS authoring both supported)
 uv run ./main.py /path/to/disc -e
 
 # write output to a specific directory (second positional argument)

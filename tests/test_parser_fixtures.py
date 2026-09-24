@@ -25,10 +25,12 @@ from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from dvdifo import (
     _EditionCell,
     _detect_episode_pgcs,
+    _effective_pgc_durations,
     _shared_runtime_fraction,
     _pgc_cell_durations,
     _find_alternate_edition_pgcs,
     _enumerate_vts_pgcs,
+    _episode_part_labels,
     _find_main_pgc,
     _get_active_pgc_streams,
     _parse_pgc_stream_languages,
@@ -267,7 +269,11 @@ def test_find_main_pgc_and_enumerate_vts_pgcs(fixtures_dir: Path) -> None:
         (38, 20072, 1104.4337666666668, 14),
     ]
 
-    assert _detect_episode_pgcs(data) == ([32, 35, 36], None)
+    # The three ~3-minute cartoons (PGCs 32/35/36) duration-cluster, but the
+    # VTS also holds the 74-minute film (PGC 1) and an 18-minute featurette
+    # (PGC 38) that dwarf them: bonus content on a movie disc, not episodes
+    # (see _cluster_is_dwarfed).
+    assert _detect_episode_pgcs(data) == ([], None)
 
 
 @pytest.mark.skipif(
@@ -456,10 +462,11 @@ def test_alternate_pgc_recutting_default_is_an_edition(fixtures_dir: Path) -> No
     # PGC and falls below the substantial-PGC threshold.
     assert _find_alternate_edition_pgcs(data) == [(2, True)]
 
-    # Pre shared-footage guard the default/variant pair clusters as an
-    # episode pair; the guard that suppresses it arrives with the episode
-    # overhaul.
-    assert _detect_episode_pgcs(data) == ([1, 2], None)
+    # The movie + commentary variant pass the duration-cluster and
+    # distinct-cell-table checks but share ~100% of their runtime: they are
+    # a re-cut pair, not episodes (before the shared-footage guard this
+    # surfaced live as "Episode 1"/"Episode 2" titles on the same disc).
+    assert _detect_episode_pgcs(data) == ([], None)
 
 
 @pytest.mark.skipif(
@@ -493,3 +500,147 @@ def test_build_dvd_streams_lists_pg_unavailable_streams(fixtures_dir: Path) -> N
         (0x21, "fr", True),
         (0x22, "es", True),
     ]
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "treasure_vts_09_0.ifo").is_file(),
+    reason="Treasure Planet extras VTS fixture not present",
+)
+def test_detect_episode_pgcs_on_unrelated_bonus_shorts(fixtures_dir: Path) -> None:
+    """Bonus shorts that duration-cluster are suppressed by the dwarfing
+    check, not labelled episodes.
+
+    The VTS 9 shorts (PGCs 5/7/10/13/19/21, 62-81s) share only a 1-2s
+    title-card cell, so the shared-footage guard cannot separate them from
+    genuine episodes by VTS content alone. VMG title-table corroboration
+    was evaluated and falsified as a discriminator (every bonus PGC here
+    is itself a VMG title), and a duration floor was falsified by Tex
+    Avery (6-9 minute cartoons are legitimately an anthology's episodes).
+    The discriminator that holds: the VTS contains an 869s featurette
+    dwarfing the cluster's 81s maximum (11x) — bonus content on a movie
+    disc, not a series VTS. This test pins the suppression.
+    """
+    data = (fixtures_dir / "treasure_vts_09_0.ifo").read_bytes()
+
+    assert _detect_episode_pgcs(data) == ([], None)
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "treasure_vts_16_0.ifo").is_file(),
+    reason="Treasure Planet menu montage VTS fixture not present",
+)
+def test_still_cell_montage_pgc_not_exposed(fixtures_dir: Path) -> None:
+    """Exposure gates measure the built title's post-trim runtime.
+
+    PGC 2 declares 112s in its PGC header (38 x 3s still-cell thumbnails);
+    the trailing-menu trim (programs under 10s are menu filler) collapses
+    it to a 3s title, so it must not be exposed as a substantial PGC
+    despite the honest header duration. All four PGCs here are menu mont
+    chains and none survive the 60s gate.
+    """
+    data = (fixtures_dir / "treasure_vts_16_0.ifo").read_bytes()
+
+    assert [
+        (num, runtime, cells)
+        for num, _pgc_abs, runtime, cells in _effective_pgc_durations(
+            data, _enumerate_vts_pgcs(data)
+        )
+    ] == [
+        (1, 0.5005, 13),
+        (2, 3.0, 38),
+        (3, 0.5005, 11),
+        (4, 0.5005, 24),
+    ]
+    assert _find_alternate_edition_pgcs(data) == []
+    assert _detect_episode_pgcs(data) == ([], None)
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "treasure_vts_09_0.ifo").is_file(),
+    reason="Treasure Planet extras VTS fixture not present",
+)
+def test_bonus_feature_pgcs_are_not_editions(fixtures_dir: Path) -> None:
+    """A shared extras VTS (one PGC per bonus feature) is not an edition set.
+
+    The default PGC is a 53s title card; the 20 substantial PGCs each play
+    one bonus feature and share at most a 1-second card cell with it.
+    """
+    data = (fixtures_dir / "treasure_vts_09_0.ifo").read_bytes()
+
+    assert _find_main_pgc(data) == (4280, 53.0, 3)
+    assert _find_alternate_edition_pgcs(data) == [
+        (num, False)
+        for num in (
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+        )
+    ]
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "superman_vts_03_0.ifo").is_file(),
+    reason="Superman (1988) episode VTS fixture not present",
+)
+def test_tied_shorts_cluster_yields_to_episodes(fixtures_dir: Path) -> None:
+    """Superman (1988): seven ~19-minute episodes tie against seven ~5-minute
+    "Family Album" shorts, and the 10018s play-all sums to both together.
+
+    Detection must pick the episodes cluster (the preferred shorter cluster
+    is dwarfed by the episodes), merge the shorts back in via the play-all
+    (split episodes), identify the play-all chain itself, and pair the
+    alternating PGCs as Episode 1a/1b ... 7a/7b.
+    """
+    data = (fixtures_dir / "superman_vts_03_0.ifo").read_bytes()
+
+    episodes, play_all = _detect_episode_pgcs(data)
+
+    assert episodes == [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    assert play_all == 1
+
+    all_pgcs = _effective_pgc_durations(data, _enumerate_vts_pgcs(data))
+    by_number = {pgc[0]: pgc for pgc in all_pgcs}
+    parts = _episode_part_labels([by_number[num] for num in episodes])
+    assert parts is not None
+    assert parts[7] == (1, "a")  # "Destroy the Defendroids" (episode 1)
+    assert parts[8] == (1, "b")
+    assert parts[10] == (2, "b")  # "The Supermarket" (episode 2b)
+    assert parts[20] == (7, "b")
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "superman_vts_03_0.ifo").is_file(),
+    reason="Superman (1988) episode VTS fixture not present",
+)
+def test_episode_part_labels_reject_non_alternating_sets() -> None:
+    """A single duration family or non-interleaved sets get no a/b pairing."""
+    # All one family: sequential numbering (Tex Avery's 16 cartoons).
+    one_family = [(num, num * 10, 400.0 + num, 4) for num in range(1, 17)]
+    assert _episode_part_labels(one_family) is None
+
+    # Two families of equal size but grouped, not alternating: pairing is
+    # ambiguous.
+    grouped = [
+        (1, 10, 1146.0, 4),
+        (2, 20, 1140.0, 4),
+        (3, 30, 286.0, 3),
+        (4, 40, 285.0, 3),
+    ]
+    assert _episode_part_labels(grouped) is None

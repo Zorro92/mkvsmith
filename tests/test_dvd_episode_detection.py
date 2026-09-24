@@ -8,11 +8,11 @@ from dvdifo import (
     _EnumeratedPgc,
     _find_play_all_pgc,
     _has_distinct_pgc_cell_signatures,
-    _largest_duration_cluster,
+    _candidate_episode_clusters,
 )
 
 
-def test_largest_duration_cluster_prefers_episode_cluster_and_shorter_tie() -> None:
+def test_candidate_clusters_prefer_largest_then_shorter_tie() -> None:
     pgcs: list[_EnumeratedPgc] = [
         (1, 10, 1000.0, 10),
         (2, 20, 1010.0, 10),
@@ -21,9 +21,35 @@ def test_largest_duration_cluster_prefers_episode_cluster_and_shorter_tie() -> N
         (5, 50, 1410.0, 10),
     ]
 
-    cluster = _largest_duration_cluster(pgcs)
+    clusters = _candidate_episode_clusters(pgcs)
 
-    assert [pgc[0] for pgc in cluster] == [1, 2, 3]
+    # Largest first; between equal-size clusters, the shorter centre wins
+    # (episode-length PGCs over long extras).
+    assert [[pgc[0] for pgc in cluster] for cluster in clusters[:2]] == [
+        [1, 2, 3],
+        [4, 5],
+    ]
+
+
+def test_candidate_clusters_keep_longer_rival_available() -> None:
+    """Superman (1988): seven ~19-minute episodes tie against seven ~5-minute
+    shorts. The shorter cluster is preferred first, but the episodes cluster
+    stays available for the guard chain to select."""
+    pgcs: list[_EnumeratedPgc] = [
+        (7, 70, 1146.0, 4),
+        (9, 90, 1140.0, 4),
+        (11, 110, 1143.0, 4),
+        (8, 80, 286.0, 3),
+        (10, 100, 285.0, 3),
+        (12, 120, 287.0, 3),
+    ]
+
+    clusters = _candidate_episode_clusters(pgcs)
+
+    assert [[pgc[0] for pgc in cluster] for cluster in clusters[:2]] == [
+        [8, 10, 12],  # shorter centre preferred first
+        [7, 9, 11],  # episodes remain the next candidate
+    ]
 
 
 def test_find_play_all_pgc_matches_episode_duration_sum() -> None:
@@ -56,3 +82,31 @@ def test_cell_signature_check_rejects_duplicate_verified_tables(
     )
 
     assert _has_distinct_pgc_cell_signatures(b"ifo", pgcs) is False
+
+
+def test_cluster_is_dwarfed_by_long_feature() -> None:
+    """The dwarfing guards, pinned to the two real discs that motivated
+    them (see the fixture-based tests in test_parser_fixtures.py):
+    a movie beside short extras dwarfs their cluster, while a play-all
+    compilation — which also runs several times any single episode — is
+    exempt because it plays the episodes' own cells."""
+    from dvdifo import _cluster_is_dwarfed
+
+    # Synthetic shape only: the cell-level compilation exemption needs real
+    # IFO cell tables, covered by the Treasure Planet (dwarfed by an 869s
+    # featurette) and Tex Avery (7114s compilation exempt) fixture tests.
+    cluster: list[_EnumeratedPgc] = [
+        (1, 10, 1200.0, 10),
+        (2, 20, 1210.0, 10),
+        (3, 30, 1190.0, 10),
+    ]
+    dwarfed = cluster + [(4, 40, 4200.0, 20)]
+
+    assert _cluster_is_dwarfed(b"", dwarfed, cluster, None) is True
+    # The play-all chain (matched by duration sum) is excluded outright.
+    assert _cluster_is_dwarfed(b"", dwarfed, cluster, 4) is False
+    # A chain below the 3x threshold never qualifies as a dwarf suspect.
+    assert (
+        _cluster_is_dwarfed(b"", cluster + [(4, 40, 2400.0, 20)], cluster, None)
+        is False
+    )

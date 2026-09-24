@@ -616,6 +616,11 @@ class Title:
     # ``_detect_episode_pgcs``. When set, ``_apply_disc_name`` labels the
     # title "<disc> - Episode N" instead of the generic title suffix.
     dvd_episode_number: int | None = None
+    # Part suffix for episodes authored as two separately-ripped segments
+    # (Superman 1988: each DVD episode = a ~19-minute part "a" plus a
+    # ~5-minute short "b", in alternating PGCs). Together with
+    # ``dvd_episode_number`` the title is labelled "Episode Na"/"Episode Nb".
+    dvd_episode_part: str | None = None
     # True when this title is the "play all" chain on a TV-series disc (a
     # PGC whose duration ≈ the sum of all episodes). Demoted in the sort
     # order so episodes and extras appear before it.

@@ -59,6 +59,10 @@ from dvdifo import (
     _default_pgc_number,
     _compute_dvd_disc_id,
     _compute_libdvdread_disc_id,
+    _effective_pgc_durations,
+    _episode_part_labels,
+    _EPISODE_DURATION_TOL,
+    _EPISODE_DWARF_RATIO,
 )
 from models import (
     Config,
@@ -272,6 +276,22 @@ class _DvdPgcPlan:
     # as ``(pgc_number, is_edition)`` — editions re-cut the default title's
     # footage, plain PGCs are unrelated programs (e.g. bonus features).
     editions: list[tuple[int, bool]]
+    # Episode groups whose episodes are authored in two alternating parts
+    # (Superman 1988: long PGC + short PGC per episode): PGC number to
+    # ``(episode_number, part)``. None when episodes are single programs.
+    episode_parts: dict[int, tuple[int, str]] | None = None
+
+
+def _episode_part_map(
+    ifo_bytes: bytes, episode_pgcs: list[int], min_duration: float
+) -> dict[int, tuple[int, str]] | None:
+    """Derive a/b part labels for split-episode PGCs (see dvdifo)."""
+    all_pgcs = _effective_pgc_durations(
+        ifo_bytes, dvdifo._enumerate_vts_pgcs(ifo_bytes)
+    )
+    by_number = {pgc[0]: pgc for pgc in all_pgcs}
+    members = [by_number[num] for num in episode_pgcs if num in by_number]
+    return _episode_part_labels(members) if len(members) == len(episode_pgcs) else None
 
 
 def _plan_dvd_pgc_titles(ifo_bytes: bytes, config: Config | None = None) -> _DvdPgcPlan:
@@ -291,6 +311,7 @@ def _plan_dvd_pgc_titles(ifo_bytes: bytes, config: Config | None = None) -> _Dvd
     default_pgc_num = _default_pgc_number(ifo_bytes)
     if len(episode_pgcs) >= 2:
         episode_set = set(episode_pgcs)
+        episode_parts = _episode_part_map(ifo_bytes, episode_pgcs, minimum_duration)
         extras = [
             num
             for num, _pgc_abs, duration, _cells in dvdifo._effective_pgc_durations(
@@ -301,7 +322,9 @@ def _plan_dvd_pgc_titles(ifo_bytes: bytes, config: Config | None = None) -> _Dvd
             and num != default_pgc_num
             and duration >= minimum_duration
         ]
-        return _DvdPgcPlan(episode_pgcs, play_all_pgc, default_pgc_num, extras, [])
+        return _DvdPgcPlan(
+            episode_pgcs, play_all_pgc, default_pgc_num, extras, [], episode_parts
+        )
 
     editions = _find_alternate_edition_pgcs(ifo_bytes, minimum_duration)
     return _DvdPgcPlan([], None, default_pgc_num, [], editions)
@@ -314,8 +337,136 @@ def _classify_default_episode_title(default_title: Title, plan: _DvdPgcPlan) -> 
         default_title.dvd_episode_number = (
             plan.episode_pgcs.index(plan.default_pgc_num) + 1
         )
+        if plan.episode_parts is not None:
+            part = plan.episode_parts.get(plan.default_pgc_num)
+            if part is not None:
+                default_title.dvd_episode_number, default_title.dvd_episode_part = part
     elif plan.play_all_pgc is not None and plan.default_pgc_num == plan.play_all_pgc:
         default_title.dvd_play_all = True
+
+
+def _demote_dwarfed_episode_groups(
+    titles: list[Title], config: Config | None = None
+) -> None:
+    """Strip within-VTS episode labels when the disc's content dwarfs them.
+
+    Episode groups are detected per VTS, where a movie in another VTS
+    cannot protect the heuristic: Treasure Planet's VTS 11 holds seven
+    ~2-minute featurettes plus their 730s compilation — structurally an
+    anthology, exactly like Tex Avery's cartoon VTS — but the disc is a
+    95-minute movie and the featurettes are bonus content. The disc-level
+    rule is the one the groups themselves use: nothing on the disc (outside
+    play-all chains) may run ``_EPISODE_DWARF_RATIO`` times the episodes'
+    longest member. Series discs pass this (Sonic, Superman, Peanuts,
+    Tex Avery: their longest non-play-all titles are episodes or extras
+    shorter than the episodes).
+    """
+    episode_titles = [
+        title
+        for title in titles
+        if title.dvd_episode_number is not None and not title.dvd_play_all
+    ]
+    if not episode_titles:
+        return
+    group_max = max(title.duration_seconds for title in episode_titles)
+    for title in titles:
+        if (
+            title.dvd_episode_number is not None
+            or title.dvd_play_all
+            or title.duration_seconds < group_max * _EPISODE_DWARF_RATIO
+        ):
+            continue
+        for episode in episode_titles:
+            episode.dvd_episode_number = None
+            episode.dvd_episode_part = None
+        log_info(
+            tr(
+                "Dropping {n} episode label(s): dwarfed by a "
+                "{dur} title — bonus content on a movie disc",
+                n=len(episode_titles),
+                dur=title.duration_display,
+            )
+        )
+        return
+
+
+def _label_cross_vts_episodes(
+    titles: list[Title], config: Config | None = None
+) -> None:
+    """Label one-episode-per-VTS series titles as episodes.
+
+    Some TV-series authoring puts each episode in its own video title set —
+    Tales from the Cryptkeeper S1 holds seven VTSs of ~21-minute episodes —
+    which the within-VTS PGC clustering can never see: each VTS has a single
+    substantial PGC. This pass clusters the disc's substantial DVD titles by
+    duration (the same tolerance the PGC detection uses) and labels the
+    cluster's titles ``Episode 1..N`` in DVD title order.
+
+    At least three distinct titles are required: two similar-duration titles
+    are the classic widescreen/fullscreen pair of one movie, while a series
+    is three or more. Titles already episode-labelled by the within-VTS
+    detection, play-all chains, and alternate editions never join a cluster.
+    """
+    minimum_duration = (config or RUNTIME_STATE.config).min_duration
+    candidates: dict[int, Title] = {}
+    for title in titles:
+        if (
+            title.dvd_title_id is None
+            or title.dvd_episode_number is not None
+            or title.dvd_play_all
+            or title.dvd_edition_label is not None
+            or title.duration_seconds < minimum_duration
+        ):
+            continue
+        # One title per DVD title number: the default title represents its
+        # VTS (editions of the same movie are excluded above).
+        candidates.setdefault(title.dvd_title_id, title)
+    if len(candidates) < 3:
+        return
+
+    cluster_values = list(candidates.values())
+    best_group: list[Title] = []
+    for title in cluster_values:
+        duration = title.duration_seconds
+        neighbours = [
+            candidate
+            for candidate in cluster_values
+            if abs(candidate.duration_seconds - duration)
+            / max(candidate.duration_seconds, duration, 1.0)
+            <= _EPISODE_DURATION_TOL
+        ]
+        if len(neighbours) > len(best_group):
+            best_group = neighbours
+    if len(best_group) < 3:
+        return
+
+    # Episodes are the disc's content: no substantial title may dwarf the
+    # cluster (the same principle as the within-VTS check). Peanuts' Emmy
+    # disc carries three ~100s intro clips in their own VTSs beside
+    # 24-minute specials — a cluster, but extras, not episodes.
+    group_max = max(title.duration_seconds for title in best_group)
+    group_ids = {title.dvd_title_id for title in best_group}
+    for title in titles:
+        if (
+            title.dvd_title_id in group_ids
+            or title.dvd_play_all
+            or title.duration_seconds < minimum_duration
+        ):
+            continue
+        if title.duration_seconds >= group_max * _EPISODE_DWARF_RATIO:
+            return
+
+    for episode_index, title in enumerate(
+        sorted(best_group, key=lambda t: t.dvd_title_id or 0), start=1
+    ):
+        title.dvd_episode_number = episode_index
+    log_info(
+        tr(
+            "Detected {n} episode(s) across {m} title(s)",
+            n=len(best_group),
+            m=len(cluster_values),
+        )
+    )
 
 
 def _log_dvd_episode_group(
@@ -348,21 +499,30 @@ def _append_dvd_episode_titles(
     """
     _classify_default_episode_title(default_title, plan)
     for episode_index, pgc_num in enumerate(plan.episode_pgcs, start=1):
+        # Split-episode discs (Superman 1988) pair two PGCs per episode:
+        # the part map renumbers them "1a"/"1b", "2a"/"2b", ... in disc
+        # order; single-program episodes number sequentially.
+        part = plan.episode_parts.get(pgc_num) if plan.episode_parts else None
+        if part is not None:
+            part_number, part_letter = part
+            label = f"Episode {part_number}{part_letter}"
+        else:
+            part_number, part_letter = episode_index, None
+            label = f"Episode {episode_index}"
         if pgc_num == plan.default_pgc_num:
             log_debug(
-                f"  Episode {episode_index}: PGC {pgc_num} "
+                f"  {label}: PGC {pgc_num} "
                 f"({default_title.duration_seconds:.0f}s) [default title]"
             )
             continue
 
-        title = build_title(pgc_num, f"{title_name} - Episode {episode_index}")
+        title = build_title(pgc_num, f"{title_name} - {label}")
         if title is None:
             continue
-        title.dvd_episode_number = episode_index
+        title.dvd_episode_number = part_number
+        title.dvd_episode_part = part_letter
         titles.append(title)
-        log_debug(
-            f"  Episode {episode_index}: PGC {pgc_num} ({title.duration_seconds:.0f}s)"
-        )
+        log_debug(f"  {label}: PGC {pgc_num} ({title.duration_seconds:.0f}s)")
 
     if plan.play_all_pgc is not None and plan.play_all_pgc != plan.default_pgc_num:
         title = build_title(plan.play_all_pgc, f"{title_name} - Play All")

@@ -26,7 +26,9 @@ def _fake_filesystem(
     real_is_dir = Path.is_dir
 
     def fake_is_dir(self: Path) -> bool:
-        if str(self) == "/var/tmp":
+        # Compare with normalised separators: str(Path("/var/tmp")) is
+        # "\\var\\tmp" on Windows, where /var/tmp never exists for real.
+        if str(self).replace("\\", "/") == "/var/tmp":
             return "/var/tmp" in present
         return real_is_dir(self)
 

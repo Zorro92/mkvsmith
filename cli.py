@@ -55,6 +55,7 @@ from models import (
     log_error,
     log_debug,
     _HAS_MKVMERGE,
+    MKVSMITH_VERSION,
 )
 from i18n import (
     tr,
@@ -69,7 +70,7 @@ from scan import Scanner, _get_notable_titles, pick_main_feature
 from mkv import MKVCreator
 from discdb import DiscDbError
 
-__version__ = "0.3.0"  # keep in sync with pyproject.toml [project].version
+__version__ = MKVSMITH_VERSION
 
 
 # =============================================================================

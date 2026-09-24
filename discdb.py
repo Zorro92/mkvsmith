@@ -22,7 +22,14 @@ from typing import Any, TypedDict, cast
 from collections.abc import Iterable
 
 from i18n import tr
-from models import DiscDbOptions, DiscMetadata, Stream, StreamType, Title
+from models import (
+    DiscDbOptions,
+    DiscMetadata,
+    MKVSMITH_VERSION,
+    Stream,
+    StreamType,
+    Title,
+)
 
 
 DISCDB_LOOKUP_QUERY = """
@@ -253,7 +260,7 @@ class DiscDbClient:
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "mkvsmith/0.3.0",
+            "User-Agent": f"mkvsmith/{MKVSMITH_VERSION}",
         }
         if cookie:
             headers["Cookie"] = cookie
@@ -859,7 +866,7 @@ def build_contribution_bundle(
         raise DiscDbError("No DVD/Blu-ray files were available for TheDiscDB hashing")
     manifest: dict[str, Any] = {
         "schema_version": 1,
-        "generator": "mkvsmith/0.3.0",
+        "generator": f"mkvsmith/{MKVSMITH_VERSION}",
         "source": {
             "name": source.name,
             "format": _contribution_format(titles, is_bluray),
@@ -1013,7 +1020,7 @@ class DiscDbContributionClient:
             headers={
                 "Content-Type": "text/plain; charset=utf-8",
                 "Cookie": self.options.cookie or "",
-                "User-Agent": "mkvsmith/0.3.0",
+                "User-Agent": f"mkvsmith/{MKVSMITH_VERSION}",
             },
             method="POST",
         )

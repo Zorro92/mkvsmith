@@ -26,10 +26,13 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import shutil
 import sys
 import tempfile
+import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import final
@@ -38,6 +41,7 @@ import dvdifo
 from models import (
     Config,
     DiscMetadata,
+    DiscDbOptions,
     RuntimeState,
     TagOptions,
     RUNTIME_STATE,
@@ -63,6 +67,7 @@ from i18n import (
 from settings import SETTINGS_PATH, load_settings, save_settings
 from scan import Scanner, _get_notable_titles, pick_main_feature
 from mkv import MKVCreator
+from discdb import DiscDbError
 
 __version__ = "0.3.0"  # keep in sync with pyproject.toml [project].version
 
@@ -98,6 +103,12 @@ def _title_list_name(title: Title, width: int) -> str:
     return _truncate_display_text(base_name, width)
 
 
+def _is_episode_title(title: Title) -> bool:
+    return (
+        title.dvd_episode_number is not None or title.discdb_episode_number is not None
+    )
+
+
 def display_titles(
     titles: list[Title],
     disc_metadata: DiscMetadata | None = None,
@@ -130,9 +141,8 @@ def display_titles(
     disc_name = disc_metadata.name if disc_metadata else None
     print("\n" + "═" * rule_w)
     print(tr("  SCANNED TITLES") + (f" - {disc_name}" if disc_name else ""))
-    identifier_summary = _disc_identifier_summary(disc_metadata)
-    if identifier_summary:
-        print(f"  {identifier_summary}")
+    for identifier_line in _disc_identifier_lines(disc_metadata):
+        print(identifier_line)
     print("═" * rule_w)
     hdr_dur = tr("Dur")
     hdr_name = tr("Name")
@@ -152,7 +162,7 @@ def display_titles(
             f"{playlist_value}{t.streams_summary}{marker}"
         )
     total_msg = tr("Total: {n} title(s)", n=len(visible))
-    ep_count = sum(1 for t in titles if t.dvd_episode_number is not None)
+    ep_count = sum(1 for t in titles if _is_episode_title(t))
     if ep_count:
         total_msg += "  " + tr("({n} episode(s) detected)", n=ep_count)
     if hidden:
@@ -163,24 +173,20 @@ def display_titles(
     print("═" * rule_w + f"\n{total_msg}\n")
 
 
-def _disc_identifier_summary(metadata: DiscMetadata | None) -> str | None:
+def _disc_identifier_lines(metadata: DiscMetadata | None) -> list[str]:
     if metadata is None:
-        return None
+        return []
     identifiers: list[str] = []
-    if metadata.upc_ean:
-        identifiers.append(tr("UPC/EAN: {value}", value=metadata.upc_ean))
-    if metadata.provider_id:
-        identifiers.append(tr("Provider ID: {value}", value=metadata.provider_id))
-    if metadata.dvd_disc_id:
-        identifiers.append(tr("DVD Disc ID: {value}", value=metadata.dvd_disc_id))
     if metadata.matrix256_fingerprint:
         identifiers.append(
             tr(
-                "Matrix256 fingerprint: {value}",
+                "Fingerprint: {value}",
                 value=metadata.matrix256_fingerprint,
             )
         )
-    return "  ".join(identifiers) if identifiers else None
+    if metadata.disc_hash:
+        identifiers.append(tr("Disc Hash: {value}", value=metadata.disc_hash))
+    return [f"  {identifier}" for identifier in identifiers]
 
 
 def _stream_flags(stream: Stream) -> str:
@@ -441,9 +447,7 @@ class _InteractiveRipper:
         print(tr("\nDone: {ok} ok, {fail} failed", ok=ok, fail=failed))
 
     def _handle_episodes(self) -> None:
-        episode_titles = [
-            title for title in self.titles if title.dvd_episode_number is not None
-        ]
+        episode_titles = [title for title in self.titles if _is_episode_title(title)]
         if not episode_titles:
             log_warn(tr("No episodes detected on this disc"))
             return
@@ -493,9 +497,7 @@ class _InteractiveRipper:
             print(tr("me N N ...=multi-edition rip (no args = auto-detect)"))
 
     def run(self) -> None:
-        has_episodes = any(
-            title.dvd_episode_number is not None for title in self.titles
-        )
+        has_episodes = any(_is_episode_title(title) for title in self.titles)
         while True:
             self._print_prompt(has_episodes)
             try:
@@ -667,6 +669,65 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=tr("override the release year used for the TMDB search"),
     )
+    p.add_argument(
+        "--discdb",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=tr("query TheDiscDB and automatically apply a unique disc match"),
+    )
+    p.add_argument(
+        "--discdb-url",
+        default=None,
+        help=tr("TheDiscDB base URL (or set THEDISCDB_BASE_URL)"),
+    )
+    p.add_argument(
+        "--discdb-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=tr("TheDiscDB network timeout in seconds"),
+    )
+    p.add_argument(
+        "--discdb-contribute",
+        nargs="?",
+        const="browser",
+        choices=["browser", "manual", "direct"],
+        default=None,
+        metavar="MODE",
+        help=tr(
+            "write a TheDiscDB contribution bundle "
+            "(browser, manual, or authenticated direct)"
+        ),
+    )
+    p.add_argument(
+        "--discdb-bundle-dir",
+        type=Path,
+        default=None,
+        help=tr("output directory for TheDiscDB contribution files"),
+    )
+    p.add_argument(
+        "--discdb-open",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=tr("open TheDiscDB in a browser after preparing a contribution"),
+    )
+    p.add_argument(
+        "--discdb-contribution-id",
+        default=None,
+        metavar="ID",
+        help=tr("existing TheDiscDB contribution ID for browser/direct handoff"),
+    )
+    p.add_argument(
+        "--discdb-disc-name",
+        default=None,
+        metavar="NAME",
+        help=tr("disc name for a direct TheDiscDB contribution (default: Disc 1)"),
+    )
+    p.add_argument(
+        "--discdb-cookie",
+        default=None,
+        help=tr("authenticated TheDiscDB browser cookie (or set THEDISCDB_COOKIE)"),
+    )
     p.add_argument("-v", "--version", action="version", version=__version__)
     p.add_argument(
         "--ui-lang",
@@ -674,6 +735,62 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="UI language code (e.g. en, es); overrides the settings file",
     )
     return p
+
+
+def _resolve_discdb_options(a: argparse.Namespace) -> DiscDbOptions:
+    defaults = DiscDbOptions()
+    stored = load_settings().get("discdb")
+    settings = stored if isinstance(stored, dict) else {}
+
+    enabled = a.discdb
+    if enabled is None:
+        enabled = bool(settings.get("enabled", defaults.enabled))
+
+    base_url = (
+        a.discdb_url
+        or os.environ.get("THEDISCDB_BASE_URL")
+        or str(settings.get("base_url", defaults.base_url))
+    )
+    timeout = a.discdb_timeout
+    if timeout is None:
+        try:
+            timeout = float(settings.get("timeout_seconds", defaults.timeout_seconds))
+        except (TypeError, ValueError):
+            timeout = defaults.timeout_seconds
+    if timeout <= 0:
+        timeout = defaults.timeout_seconds
+
+    contribute_mode = a.discdb_contribute
+    contribute = contribute_mode is not None
+    if not contribute and bool(settings.get("contribute", False)):
+        contribute = True
+        contribute_mode = str(settings.get("contribute_mode", defaults.contribute_mode))
+
+    open_browser = a.discdb_open
+    if open_browser is None:
+        open_browser = bool(settings.get("open_browser", defaults.open_browser))
+
+    return DiscDbOptions(
+        enabled=enabled,
+        base_url=base_url,
+        timeout_seconds=timeout,
+        contribute=contribute,
+        contribute_mode=contribute_mode or defaults.contribute_mode,
+        bundle_dir=a.discdb_bundle_dir,
+        open_browser=open_browser,
+        contribution_id=(
+            a.discdb_contribution_id
+            if a.discdb_contribution_id is not None
+            else (
+                str(settings.get("contribution_id"))
+                if settings.get("contribution_id") is not None
+                else None
+            )
+        ),
+        disc_name=a.discdb_disc_name.strip() if a.discdb_disc_name else None,
+        cookie=(a.discdb_cookie or os.environ.get("THEDISCDB_COOKIE") or "").strip()
+        or None,
+    )
 
 
 def _apply_parsed_args(
@@ -699,6 +816,7 @@ def _apply_parsed_args(
     config.no_sudo = a.no_sudo
     config.show_all = a.show_all
     config.ui_lang = a.ui_lang
+    state.discdb_options = _resolve_discdb_options(a)
     state.logger.configure(config)
     tag_options.enabled = a.tag
     tag_options.no_tag = a.no_tag
@@ -1005,6 +1123,109 @@ def _configure_runtime(runtime_state: RuntimeState | None = None) -> None:
     init_ram_budget(config)
 
 
+def _apply_discdb_lookup(
+    titles: list[Title], disc_metadata: DiscMetadata | None, state: RuntimeState
+) -> None:
+    from discdb import DiscDbClient, DiscDbError, apply_discdb_match
+
+    if disc_metadata is None:
+        return
+    try:
+        result = DiscDbClient(state.discdb_options).lookup(disc_metadata)
+        applied = apply_discdb_match(titles, disc_metadata, result)
+    except DiscDbError as exc:
+        log_warn(tr("TheDiscDB lookup failed (using local metadata): {err}", err=exc))
+        return
+    except (KeyError, TypeError, ValueError) as exc:
+        log_warn(
+            tr(
+                "TheDiscDB returned unusable match data; local metadata retained: {err}",
+                err=exc,
+            )
+        )
+        return
+
+    if not result.items:
+        log_info(tr("No TheDiscDB match found"))
+        return
+    if result.ambiguous:
+        log_warn(tr("Multiple TheDiscDB disc layouts matched; local metadata retained"))
+        return
+
+    if applied is None:
+        if result.match is None:
+            log_warn(tr("TheDiscDB results were ambiguous; local metadata retained"))
+        else:
+            log_warn(
+                tr(
+                    "TheDiscDB disc matched, but no local title correlated uniquely; "
+                    "local metadata retained"
+                )
+            )
+        return
+
+    media_title = applied.media_item["title"]
+    release_title = applied.release.get("title") or media_title
+    log_info(
+        tr(
+            "TheDiscDB match: {media} ({release}); applied {count} title name(s)",
+            media=media_title,
+            release=release_title,
+            count=len(applied.title_indexes),
+        )
+    )
+
+
+def _prepare_discdb_contribution(
+    source: Path,
+    titles: list[Title],
+    disc_metadata: DiscMetadata | None,
+    state: RuntimeState,
+) -> None:
+    from discdb import (
+        build_contribution_bundle,
+        contribution_url,
+        open_contribution_url,
+        submit_contribution_bundle,
+    )
+
+    metadata = disc_metadata or DiscMetadata()
+    bundle_dir = build_contribution_bundle(
+        source, titles, metadata, state.discdb_options
+    )
+    log_info(
+        tr(
+            "TheDiscDB contribution bundle written to {path}",
+            path=bundle_dir,
+        )
+    )
+
+    mode = state.discdb_options.contribute_mode
+    if mode == "direct":
+        manifest = json.loads(
+            (bundle_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        logs = (bundle_dir / "makemkv_compat.txt").read_text(encoding="utf-8")
+        _disc_id, review_url = submit_contribution_bundle(
+            manifest, logs, state.discdb_options
+        )
+        log_info(tr("TheDiscDB contribution disc uploaded: {url}", url=review_url))
+        if state.discdb_options.open_browser:
+            webbrowser.open(review_url)
+        return
+
+    if mode == "browser":
+        if open_contribution_url(state.discdb_options):
+            log_info(tr("Opened TheDiscDB contribution flow in your browser"))
+        else:
+            log_warn(
+                tr(
+                    "Could not open a browser; continue at {url}",
+                    url=contribution_url(state.discdb_options),
+                )
+            )
+
+
 def _scan_source(
     source: Path, runtime_state: RuntimeState | None = None
 ) -> tuple[list[Title], DiscMetadata | None]:
@@ -1144,7 +1365,7 @@ def _rip_selected_editions(
 
 
 def _rip_episode_batch(titles: list[Title], state: RuntimeState) -> None:
-    episode_titles = [title for title in titles if title.dvd_episode_number is not None]
+    episode_titles = [title for title in titles if _is_episode_title(title)]
     if not episode_titles:
         log_warn(tr("No episodes detected on this disc"))
         sys.exit(0)
@@ -1197,6 +1418,23 @@ def main():
         sys.exit(1)
 
     titles, disc_metadata = _scan_source(source, runtime_state)
+    if runtime_state.discdb_options.enabled:
+        _apply_discdb_lookup(titles, disc_metadata, runtime_state)
+
+    if runtime_state.discdb_options.contribute:
+        try:
+            _prepare_discdb_contribution(source, titles, disc_metadata, runtime_state)
+        except (DiscDbError, OSError, ValueError, json.JSONDecodeError) as exc:
+            log_error(tr("TheDiscDB contribution failed: {err}", err=exc))
+            if not action.startswith("rip_"):
+                sys.exit(1)
+
+        # Contribution preparation is a terminal action unless the user also
+        # explicitly requested a rip. Interactive mode would otherwise look
+        # like it is waiting for the browser flow to finish.
+        if not action.startswith("rip_"):
+            sys.exit(0)
+
     _run_action(
         action,
         titles,

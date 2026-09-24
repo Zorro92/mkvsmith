@@ -20,6 +20,8 @@ default, but it is an independent, GPL-licensed reimplementation.
 - **Shows stable disc identifiers**, including the filesystem-level
   [matrix256v1](https://github.com/shitwolfymakes/matrix256) fingerprint and
   DVD/Blu-ray metadata identifiers.
+- **Optional [TheDiscDB](https://thediscdb.com/) lookup** — identify discs,
+  apply community title names, and resolve obfuscated main-feature playlists.
 - **Optional TMDB tagging** — metadata and cover art embedded directly in the
   mux.
 
@@ -108,8 +110,48 @@ mkvsmith> q          # quit
 | `--ram-limit FRAC` | Max fraction of RAM for RAM-backed temp dirs |
 | `--no-sudo` | Skip sudo loop-mounting |
 | `--tag` / `--no-tag` | TMDB tagging controls |
+| `--discdb` / `--no-discdb` | TheDiscDB lookup (opt-in) |
+| `--discdb-contribute[=MODE]` | Write/upload a contribution (`browser`, `manual`, or `direct`) |
+| `--discdb-disc-name NAME` | Disc name used by direct contribution mode |
 | `--ui-lang LANG` | UI language (e.g. `en`, `es`) |
 | `--debug` | Verbose debug logging |
+
+### TheDiscDB
+
+TheDiscDB lookup is opt-in. Enable it per run with `--discdb`, or persist it in
+`~/.mkvsmith_config.json` under `"discdb": {"enabled": true}`. Lookup sends
+only local disc identifiers — never playlist data or media file contents.
+
+```sh
+# identify a disc and apply a unique community title mapping
+uv run ./main.py movie.iso --discdb --info
+
+# prepare files for TheDiscDB's reviewed contribution flow
+uv run ./main.py movie.iso --discdb-contribute=browser
+uv run ./main.py movie.iso --discdb-contribute=manual --discdb-bundle-dir ~/discdb
+```
+
+Matching uses TheDiscDB's legacy Disc Hash, Matrix256 fingerprint, the Blu-ray
+AACS Disc ID, or the libdvdread DVD Disc ID. A UPC/EAN is only used as a weak
+hint and must be corroborated by playlist or title/duration data. A uniquely
+matched remote `MainMovie` outranks local heuristics, which resolves "screen
+pass" playlist obfuscation without guessing.
+Ambiguous matches never rename titles or override main-feature detection.
+The format-specific Disc IDs require readable `AACS`/`VIDEO_TS` structures
+(folder, ISO, or mounted image); the raw `/dev` fallback does not expose them.
+
+`--discdb-contribute` writes `manifest.json` plus a MakeMKV-compatible scan
+log generated from mkvsmith's own MPLS/CLPI/IFO parsing. In browser mode, open
+or create a contribution draft and upload `makemkv_compat.txt` where the site
+asks for a MakeMKV scan log. Direct mode attaches that data to an existing
+contribution draft using
+`--discdb-contribution-id` and an authenticated browser cookie supplied with
+`--discdb-cookie` or `THEDISCDB_COOKIE`; it stops before item labelling and
+review, which remain human-approved steps. Use `--discdb-disc-name` when
+attaching additional discs to the same draft. Treat the cookie like a password.
+Blu-ray segment maps come directly from playlist clip IDs; DVD cell-range maps
+are intentionally left blank for human identification because mkvsmith does
+not expose DVD cell IDs.
 
 ## Notes
 
@@ -137,14 +179,6 @@ mkvsmith> q          # quit
   DV would require bitstream-level processing, which a remuxer deliberately
   does not do), and it is unverified whether the disc's enhancement-layer
   entry can show up as a stray extra video track.
-
-## Future improvements
-
-- **TheDiscDB integration** — query the [TheDiscDB](https://thediscdb.com/)
-  API to identify discs and titles, and to resolve playlist obfuscation
-  ("screen pass" discs that hide the real main feature among dozens of
-  near-identical decoy playlists) by matching local disc metadata against
-  the community database.
 
 ## Disc fixtures
 

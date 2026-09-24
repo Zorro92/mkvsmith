@@ -27,6 +27,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import re
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,8 @@ from dvdifo import (
     _read_u32,
     _find_alternate_edition_pgcs,
     _parse_vmg_ifo,
+    _compute_libdvdread_disc_id,
+    _compute_libdvdread_disc_id_from_paths,
 )
 from dvdbuild import (
     _apply_dvd_ifo_languages,
@@ -787,6 +790,30 @@ def _read_bdmv_metadata(bdmv: Path) -> DiscMetadata:
     return DiscMetadata(name=disc_name, upc_ean=upc_ean)
 
 
+def _compute_aacs_disc_id(source: Path) -> str | None:
+    """Read the TheDiscDB/libaacs-style Blu-ray Disc ID from AACS metadata.
+
+    The identifier is uppercase hex SHA-1 over the raw bytes of
+    ``AACS/Unit_Key_RO.inf``. The duplicate directory is a legitimate alternate
+    location used by some discs. The file is a small control table (not media
+    data), and the read is capped at 16 MiB to match TheDiscDB's scanner.
+    """
+    candidates = (
+        source / "AACS" / "Unit_Key_RO.inf",
+        source / "AACS" / "DUPLICATE" / "Unit_Key_RO.inf",
+    )
+    unit_key = next((path for path in candidates if path.is_file()), None)
+    if unit_key is None:
+        return None
+    try:
+        with unit_key.open("rb") as file_handle:
+            data = file_handle.read(16 * 1024 * 1024)
+        return hashlib.sha1(data).hexdigest().upper()  # noqa: S324 - public disc ID
+    except OSError as exc:
+        log_debug(f"AACS Disc ID unavailable: {exc}")
+        return None
+
+
 def _playlist_clip_paths(
     play_items: list[dict[str, Any]], stream_dir: Path
 ) -> list[Path] | None:
@@ -1085,6 +1112,45 @@ class Scanner:
             SourceType.BLURAY_RAW,
         ):
             self._add_matrix256_fingerprint(self.source)
+            self._add_discdb_identifiers(source_type)
+            self._add_discdb_disc_hash(self.source)
+
+    def _add_discdb_identifiers(self, source_type, root: Path | None = None) -> None:
+        """Add format-specific identifiers used by TheDiscDB matching."""
+        from disc_reader import SourceType
+
+        source = root or self.source
+        if source_type == SourceType.DVD:
+            if self.disc_metadata.libdvdread_disc_id:
+                return
+            video_ts = source / "VIDEO_TS" if (source / "VIDEO_TS").is_dir() else source
+            try:
+                disc_id = _compute_libdvdread_disc_id(video_ts)
+            except (OSError, ValueError, FileNotFoundError) as exc:
+                log_debug(f"libdvdread DVD Disc ID unavailable: {exc}")
+                return
+            self.disc_metadata = replace(self.disc_metadata, libdvdread_disc_id=disc_id)
+            log_debug(f"libdvdread DVD Disc ID: {disc_id}")
+        elif source_type == SourceType.BLURAY:
+            disc_id = _compute_aacs_disc_id(source)
+            if disc_id is not None:
+                self.disc_metadata = replace(self.disc_metadata, aacs_disc_id=disc_id)
+                log_debug(f"AACS Disc ID: {disc_id}")
+
+    def _add_discdb_disc_hash(self, root: Path) -> None:
+        """Add TheDiscDB's legacy size-based Disc Hash for a filesystem source."""
+        from discdb import DiscDbError, calculate_disc_hash, collect_hash_files
+
+        try:
+            files = collect_hash_files(root)
+            if not files:
+                return
+            disc_hash = calculate_disc_hash(file["size"] for file in files)
+        except (DiscDbError, OSError) as exc:
+            log_debug(f"TheDiscDB Disc Hash unavailable: {exc}")
+            return
+        self.disc_metadata = replace(self.disc_metadata, disc_hash=disc_hash)
+        log_debug(f"TheDiscDB Disc Hash: {disc_hash}")
 
     def _add_matrix256_fingerprint(self, root: Path) -> None:
         try:
@@ -1186,6 +1252,8 @@ class Scanner:
                     "Matrix256 fingerprint unavailable: 7z did not report every file size"
                 )
             )
+        self._add_iso_aacs_disc_id(paths)
+        self._add_iso_discdb_disc_hash(paths, sizes)
         mpls_files = [
             p
             for p in media_paths
@@ -1318,6 +1386,55 @@ class Scanner:
         )
         self.disc_name = disc_name
 
+    def _add_iso_aacs_disc_id(self, paths: list[str]) -> None:
+        """Extract and hash Unit_Key_RO.inf without unpacking the whole ISO."""
+        from disc_reader import _extract_partial_7z
+
+        wanted = ("AACS/UNIT_KEY_RO.INF", "AACS/DUPLICATE/UNIT_KEY_RO.INF")
+        internal_path = next(
+            (
+                path
+                for candidate in wanted
+                for path in paths
+                if path.upper() == candidate
+            ),
+            None,
+        )
+        if internal_path is None:
+            return
+        extracted = _extract_partial_7z(
+            self.source,
+            internal_path,
+            size_mb=16,
+            temp_files=self.cleanup.temp_files,
+            symlinks=self.cleanup.symlinks,
+        )
+        if extracted is None:
+            return
+        try:
+            disc_id = hashlib.sha1(extracted.read_bytes()).hexdigest().upper()  # noqa: S324
+        except OSError as exc:
+            log_debug(f"AACS Disc ID unavailable: {exc}")
+            return
+        finally:
+            extracted.unlink(missing_ok=True)
+        self.disc_metadata = replace(self.disc_metadata, aacs_disc_id=disc_id)
+        log_debug(f"AACS Disc ID: {disc_id}")
+
+    def _add_iso_discdb_disc_hash(
+        self, paths: list[str], sizes: dict[str, int]
+    ) -> None:
+        """Add the legacy Disc Hash using the already-listed ISO members."""
+        from discdb import calculate_disc_hash_from_paths
+
+        disc_hash = calculate_disc_hash_from_paths(
+            (path, sizes.get(path, 0)) for path in paths
+        )
+        if disc_hash is None:
+            return
+        self.disc_metadata = replace(self.disc_metadata, disc_hash=disc_hash)
+        log_debug(f"TheDiscDB Disc Hash: {disc_hash}")
+
     def _scan_iso_dvd(self, paths: list[str], sizes: dict[str, int]) -> None:
         from disc_reader import _extract_with_7z
 
@@ -1347,6 +1464,7 @@ class Scanner:
         )
         vmg_info = self._parse_iso_vmg(extracted)
         self._read_iso_dvd_metadata(vmg_info)
+        self._add_iso_libdvdread_disc_id(extracted)
         self._scan_iso_dvd_vts(
             extracted,
             vts_first_vob,
@@ -1354,6 +1472,26 @@ class Scanner:
             self._vts_title_numbers(vmg_info),
             sizes,
         )
+
+    def _add_iso_libdvdread_disc_id(self, extracted: list[Path]) -> None:
+        vmg_path = next(
+            (path for path in extracted if path.name.upper() == "VIDEO_TS.IFO"),
+            None,
+        )
+        if vmg_path is None:
+            return
+        vts_paths = [
+            path
+            for path in sorted(extracted)
+            if re.fullmatch(r"VTS_\d{2}_0\.IFO", path.name, re.IGNORECASE)
+        ]
+        try:
+            disc_id = _compute_libdvdread_disc_id_from_paths(vmg_path, vts_paths)
+        except (OSError, ValueError, FileNotFoundError) as exc:
+            log_debug(f"libdvdread DVD Disc ID unavailable: {exc}")
+            return
+        self.disc_metadata = replace(self.disc_metadata, libdvdread_disc_id=disc_id)
+        log_debug(f"libdvdread DVD Disc ID: {disc_id}")
 
     @staticmethod
     def _dvd_iso_vob_maps(
@@ -1477,6 +1615,7 @@ class Scanner:
                     self._apply_iso_dvd_source(
                         title,
                         vts,
+                        logical_title,
                         first_vob_internal,
                         vts_all_vobs,
                         sizes,
@@ -1487,6 +1626,7 @@ class Scanner:
             self._apply_iso_dvd_source(
                 title,
                 vts,
+                logical_title,
                 first_vob_internal,
                 vts_all_vobs,
                 sizes,
@@ -1497,6 +1637,7 @@ class Scanner:
                 first_vob_extracted,
                 title_name,
                 vts,
+                logical_title,
                 first_vob_internal,
                 vts_all_vobs,
                 sizes,
@@ -1518,6 +1659,7 @@ class Scanner:
         self,
         title: Title,
         vts: int,
+        logical_title: int | None,
         first_vob_internal: str,
         vts_all_vobs: dict[int, list[str]],
         sizes: dict[str, int],
@@ -1528,6 +1670,7 @@ class Scanner:
             sizes.get(internal_path, 0) for internal_path in title.iso_internal_paths
         )
         title.disc_name = self.disc_name
+        title.dvd_title_id = logical_title
 
     def _scan_iso_dvd_alternate_editions(
         self,
@@ -1535,6 +1678,7 @@ class Scanner:
         first_vob_extracted: Path,
         title_name: str,
         vts: int,
+        logical_title: int | None,
         first_vob_internal: str,
         vts_all_vobs: dict[int, list[str]],
         sizes: dict[str, int],
@@ -1567,6 +1711,7 @@ class Scanner:
             self._apply_iso_dvd_source(
                 alternate,
                 vts,
+                logical_title,
                 first_vob_internal,
                 vts_all_vobs,
                 sizes,
@@ -1607,7 +1752,7 @@ class Scanner:
 
     def _scan_iso_mount(self) -> None:
         """Mount the ISO via ``sudo mount -o loop,ro`` and scan the result."""
-        from disc_reader import _try_direct_mount
+        from disc_reader import SourceType, _try_direct_mount
 
         if self.config.no_sudo:
             log_info(tr("Skipping direct mount (--no-sudo is set)"))
@@ -1629,12 +1774,16 @@ class Scanner:
             self.disc_metadata = metadata
             self.disc_name = metadata.name
             self._add_matrix256_fingerprint(mnt)
+            self._add_discdb_identifiers(SourceType.BLURAY, mnt)
+            self._add_discdb_disc_hash(mnt)
         elif (mnt / "VIDEO_TS").is_dir():
             dvd_titles, metadata = _scan_dvd_source(mnt, self.config)
             self.titles.extend(dvd_titles)
             self.disc_metadata = metadata
             self.disc_name = metadata.name
             self._add_matrix256_fingerprint(mnt)
+            self._add_discdb_identifiers(SourceType.DVD, mnt)
+            self._add_discdb_disc_hash(mnt)
         else:
             log_error(
                 tr(
@@ -1714,15 +1863,18 @@ def _get_notable_titles(
 
 def _main_feature_score(
     title: Title, config: Config | None = None
-) -> tuple[int, int, int, float]:
+) -> tuple[int, int, int, int, float]:
     """Rank titles for "main feature" detection.
 
     DVDs put the real film in the title set with the richest audio/subtitle
     selection; extras are often longer but have one audio track and no subs.
-    Primary key: number of audio + subtitle streams. This matches the
+    Primary key: a uniquely correlated TheDiscDB ``MainMovie`` playlist. With
+    no remote result, this is zero and the local heuristic below governs.
+
+    Secondary key: number of audio + subtitle streams. This matches the
     heuristic MakeMKV uses to flag the main title.
 
-    Secondary key: whether this is the disc's own designated default title
+    Tertiary key: whether this is the disc's own designated default title
     (``dvd_pgc_number is None``) rather than an explicitly-tagged alternate
     seamless-branching edition. This must outrank duration: a bonus/extended
     cut can have nearly identical audio/subtitle richness to the default
@@ -1740,10 +1892,17 @@ def _main_feature_score(
     or warning cards with unusually rich stream tables.
     """
     if title.duration_seconds < (config or RUNTIME_STATE.config).min_duration:
-        return (-1, 0, 0, 0.0)
+        return (-1, 0, 0, 0, 0.0)
     richness = len(title.audio_streams) + len(title.subtitle_streams)
     is_default_edition = 0 if title.dvd_pgc_number is not None else 1
-    return (richness, is_default_edition, len(title.chapters), title.duration_seconds)
+    remote_main = 1 if title.discdb_is_main_movie else 0
+    return (
+        remote_main,
+        richness,
+        is_default_edition,
+        len(title.chapters),
+        title.duration_seconds,
+    )
 
 
 def pick_main_feature(titles: list[Title], config: Config | None = None) -> int:

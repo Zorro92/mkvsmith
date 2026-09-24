@@ -17,6 +17,7 @@ import sys
 import tempfile
 from collections.abc import Sequence
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -490,6 +491,68 @@ def _parse_7z_listing(stdout: str) -> tuple[list[str], dict[str, int]]:
                 pass
 
     return paths, sizes
+
+
+@dataclass(frozen=True)
+class _IsoFileMetadata:
+    path: str
+    size: int
+    modified: str | None = None
+
+
+def _parse_7z_metadata_listing(
+    stdout: str,
+) -> list[_IsoFileMetadata]:
+    """Parse path, size, and 7z local Modified timestamps from ``l -slt``."""
+    entries: list[_IsoFileMetadata] = []
+    current_path: str | None = None
+    current_size = 0
+    current_modified: str | None = None
+    current_is_file = False
+
+    def finish_entry() -> None:
+        nonlocal current_path, current_size, current_modified, current_is_file
+        if current_is_file and current_path is not None:
+            entries.append(
+                _IsoFileMetadata(current_path, current_size, current_modified)
+            )
+        current_path = None
+        current_size = 0
+        current_modified = None
+        current_is_file = False
+
+    for line in stdout.splitlines():
+        if line.startswith("Path = "):
+            finish_entry()
+            path = line[7:].strip()
+            current_path = path[1:] if path.startswith("/") else path
+        elif line.startswith("Folder = "):
+            current_is_file = line[9:].strip() == "-"
+        elif line.startswith("Size = ") and current_path is not None:
+            try:
+                current_size = int(line[7:].strip())
+            except ValueError:
+                current_size = 0
+        elif line.startswith("Modified = ") and current_path is not None:
+            current_modified = line[11:].strip() or None
+    finish_entry()
+    return entries
+
+
+def _list_iso_file_metadata_7z(
+    iso_path: Path, symlinks: list[Path] | None = None
+) -> list[_IsoFileMetadata]:
+    """List ISO files with sizes and 7z-reported local modification timestamps."""
+    target_path, _ = _get_safe_7z_path(iso_path, symlinks)
+    try:
+        result = _run_7z_listing(target_path)
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        log_debug(f"7z metadata listing failed: {exc}")
+        return []
+    if result.returncode != 0:
+        log_debug(f"7z metadata listing failed: {result.stderr.strip()}")
+        return []
+    return _parse_7z_metadata_listing(result.stdout)
 
 
 def _list_iso_files_7z(

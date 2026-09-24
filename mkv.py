@@ -616,6 +616,8 @@ def _prepare_mux_tags(
         metadata.custom_properties["MATRIX256_FINGERPRINT"] = (
             disc_metadata.matrix256_fingerprint
         )
+    if disc_metadata and disc_metadata.disc_hash:
+        metadata.custom_properties["THEDISCDB_DISC_HASH"] = disc_metadata.disc_hash
 
     source_name = title.source_file.name.lower()
     iso_paths = title.iso_internal_paths

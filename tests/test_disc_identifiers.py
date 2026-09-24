@@ -5,6 +5,8 @@ from __future__ import annotations
 import shutil
 import sys
 import unicodedata
+import hashlib
+import struct
 from pathlib import Path
 
 import cli
@@ -12,7 +14,11 @@ import mkv
 import scan
 import tagger
 import pytest
-from dvdifo import _compute_dvd_disc_id
+from dvdifo import (
+    _compute_dvd_disc_id,
+    _compute_libdvdread_disc_id,
+    _compute_libdvdread_disc_id_from_paths,
+)
 from matrix256 import fingerprint, fingerprint_entries
 from models import DiscMetadata, Stream, StreamType, TagOptions, Title
 from models import Config, RuntimeState
@@ -43,6 +49,7 @@ def test_dvd_identifiers_use_real_ifo_fixtures(
     )
 
     assert _compute_dvd_disc_id(video_ts) == "b090283799370e5f"
+    assert _compute_libdvdread_disc_id(video_ts) == ("2DC691009D9A0011AC3C6A9A14C98889")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink permissions vary")
@@ -67,6 +74,19 @@ def test_matrix256_matches_conformance_fragments(tmp_path: Path) -> None:
     assert fingerprint(symlink_root) == (
         "1f99a83be1c9ac0d243b7937f15908a03ede98ffa24c18fcf6100fca66506df4"
     )
+
+
+def test_libdvdread_disc_id_skips_missing_vts_by_number(tmp_path: Path) -> None:
+    vmg = bytearray(64)
+    struct.pack_into(">H", vmg, 0x3E, 2)
+    vmg_path = tmp_path / "VIDEO_TS.IFO"
+    vts_2_path = tmp_path / "VTS_02_0.IFO"
+    vmg_path.write_bytes(vmg)
+    vts_2_path.write_bytes(b"VTS 2")
+
+    disc_id = _compute_libdvdread_disc_id_from_paths(vmg_path, [vts_2_path])
+
+    assert disc_id == hashlib.md5(bytes(vmg) + b"VTS 2").hexdigest().upper()
 
 
 def test_matrix256_normalizes_unicode_paths() -> None:
@@ -208,6 +228,30 @@ def test_scanner_adds_matrix256_fingerprint_for_folder_disc(
 
     assert titles == []
     assert scanner.disc_metadata.matrix256_fingerprint == fingerprint(source)
+    assert scanner.disc_metadata.disc_hash == (
+        hashlib.md5((5).to_bytes(8, "little")).hexdigest().upper()
+    )
+
+
+def test_scanner_adds_aacs_disc_id_for_folder_disc(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "disc"
+    aacs = source / "AACS"
+    aacs.mkdir(parents=True)
+    (source / "BDMV" / "STREAM").mkdir(parents=True)
+    (source / "BDMV" / "STREAM" / "movie.m2ts").write_bytes(b"video")
+    (aacs / "Unit_Key_RO.inf").write_bytes(b"unit key bytes")
+    scanner = scan.Scanner(source, Config(), RuntimeState())
+    monkeypatch.setattr(
+        scan, "_scan_bluray_source", lambda *_args: ([], DiscMetadata())
+    )
+
+    scanner.scan()
+
+    expected = __import__("hashlib").sha1(b"unit key bytes").hexdigest().upper()
+    assert scanner.disc_metadata.aacs_disc_id == expected
+    assert scanner.disc_metadata.disc_hash == (
+        hashlib.md5((5).to_bytes(8, "little")).hexdigest().upper()
+    )
 
 
 def test_display_titles_shows_available_identifiers(
@@ -225,15 +269,17 @@ def test_display_titles_shows_available_identifiers(
         name="Test Disc",
         upc_ean="123456789012",
         dvd_disc_id="0123456789abcdef",
+        disc_hash="C" * 32,
         matrix256_fingerprint="a" * 64,
     )
 
     cli.display_titles([title], metadata, cli.Config(show_all=True))
 
     output = capsys.readouterr().out
-    assert "UPC/EAN: 123456789012" in output
-    assert "DVD Disc ID: 0123456789abcdef" in output
-    assert f"Matrix256 fingerprint: {'a' * 64}" in output
+    assert f"  Disc Hash: {'C' * 32}\n" in output
+    assert f"  Fingerprint: {'a' * 64}\n" in output
+    assert "UPC/EAN:" not in output
+    assert "DVD Disc ID:" not in output
     assert "mkvsmith metadata hash:" not in output
 
 
@@ -247,6 +293,7 @@ def test_mux_tags_embed_disc_identifiers(monkeypatch, tmp_path: Path) -> None:
     metadata = DiscMetadata(
         upc_ean="123456789012",
         dvd_disc_id="0123456789abcdef",
+        disc_hash="C" * 32,
         matrix256_fingerprint="a" * 64,
     )
     prepared = tagger.MovieMetadata(title="Test Disc")
@@ -260,4 +307,5 @@ def test_mux_tags_embed_disc_identifiers(monkeypatch, tmp_path: Path) -> None:
     assert tagged.custom_properties["BARCODE"] == "123456789012"
     assert tagged.custom_properties["DVD_DISC_ID"] == "0123456789abcdef"
     assert tagged.custom_properties["MATRIX256_FINGERPRINT"] == "a" * 64
+    assert tagged.custom_properties["THEDISCDB_DISC_HASH"] == "C" * 32
     assert "MKVSMITH_METADATA_HASH" not in tagged.custom_properties

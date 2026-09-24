@@ -17,11 +17,14 @@ def preserved_cli_state():
     runtime_state = models.RUNTIME_STATE
     config_state = copy.deepcopy(runtime_state.config.__dict__)
     tag_state = copy.deepcopy(runtime_state.tag_options.__dict__)
+    discdb_state = copy.deepcopy(runtime_state.discdb_options.__dict__)
     yield
     runtime_state.config.__dict__.clear()
     runtime_state.config.__dict__.update(config_state)
     runtime_state.tag_options.__dict__.clear()
     runtime_state.tag_options.__dict__.update(tag_state)
+    runtime_state.discdb_options.__dict__.clear()
+    runtime_state.discdb_options.__dict__.update(discdb_state)
 
 
 @pytest.mark.usefixtures("preserved_cli_state")

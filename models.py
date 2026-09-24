@@ -614,6 +614,9 @@ class Title:
     # PGC whose duration ≈ the sum of all episodes). Demoted in the sort
     # order so episodes and extras appear before it.
     dvd_play_all: bool = False
+    # Logical DVD title number from VMG TT_SRPT. TheDiscDB and MakeMKV use
+    # this as a DVD title's source identifier (for example "01").
+    dvd_title_id: int | None = None
     # Per-clip play durations (seconds), aligned with the title's clip
     # sequence: [source_file] + append_clips (folder/device sources) or
     # iso_internal_paths (ISO sources). Populated during Blu-ray scanning
@@ -627,6 +630,12 @@ class Title:
     # MPLS playlist stem (e.g. "00800") this title was built from, for
     # edition labelling on seamless-branching discs. None for non-BD titles.
     playlist_name: str | None = None
+    # Matching metadata applied from TheDiscDB. These fields are deliberately
+    # absent when no unique remote title correlation exists.
+    discdb_item_type: str | None = None
+    discdb_season_number: int | None = None
+    discdb_episode_number: int | None = None
+    discdb_is_main_movie: bool = False
     # Multi-edition chapter specs (one per playlist cut). When non-empty the
     # muxer writes an ordered-chapters XML with one edition per spec plus
     # edition TITLE tags instead of the flat single-edition chapter table.
@@ -668,6 +677,15 @@ class DiscMetadata:
     upc_ean: str | None = None
     provider_id: str | None = None
     dvd_disc_id: str | None = None
+    # TheDiscDB's global DVD identifier: libdvdread DVDDiscID() (uppercase MD5
+    # over the VMG/VTS IFOs). This is distinct from dvd_disc_id, which retains
+    # the Windows IDvdInfo2/pydvdid CRC-64 identifier.
+    libdvdread_disc_id: str | None = None
+    # TheDiscDB's global Blu-ray/UHD identifier: SHA-1 over AACS Unit_Key_RO.inf.
+    aacs_disc_id: str | None = None
+    # TheDiscDB's legacy format-specific Disc Hash (MD5 over the selected
+    # video-file sizes in listing order).
+    disc_hash: str | None = None
     matrix256_fingerprint: str | None = None
 
 
@@ -733,6 +751,26 @@ class TagOptions:
     confirm: bool = True
     title_override: str | None = None
     year_override: int | None = None
+
+
+@dataclass
+class DiscDbOptions:
+    """Options for TheDiscDB lookup and community contributions.
+
+    Lookup/contribution failures must never invalidate an otherwise successful
+    local scan or rip.
+    """
+
+    enabled: bool = False
+    base_url: str = "https://thediscdb.com"
+    timeout_seconds: float = 10.0
+    contribute: bool = False
+    contribute_mode: str = "browser"
+    bundle_dir: Path | None = None
+    open_browser: bool = True
+    contribution_id: str | None = None
+    disc_name: str | None = None
+    cookie: str | None = None
 
 
 # =============================================================================
@@ -841,6 +879,7 @@ class RuntimeState:
 
     config: Config = field(default_factory=Config)
     tag_options: TagOptions = field(default_factory=TagOptions)
+    discdb_options: DiscDbOptions = field(default_factory=DiscDbOptions)
     disc_metadata: DiscMetadata = field(default_factory=DiscMetadata)
     logger: RuntimeLogger = field(default_factory=RuntimeLogger)
     cleanup: RuntimeCleanup = field(default_factory=RuntimeCleanup)

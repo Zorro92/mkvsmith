@@ -21,6 +21,9 @@ más sensato, pero es una reimplementación independiente con licencia GPL.
 - **Muestra identificadores estables del disco**, incluida la huella
   [matrix256v1](https://github.com/shitwolfymakes/matrix256) del sistema de
   archivos y los identificadores de metadatos DVD/Blu-ray.
+- **Consulta opcional de [TheDiscDB](https://thediscdb.com/)** — identifica
+  discos, aplica nombres comunitarios y resuelve playlists principales
+  ofuscadas.
 - **Etiquetado TMDB opcional** — metadatos y carátulas incrustados directamente
   en el mux.
 
@@ -110,8 +113,52 @@ mkvsmith> q          # salir
 | `--ram-limit FRAC` | Fracción máxima de RAM para directorios temporales en RAM |
 | `--no-sudo` | Omite el montaje en bucle con sudo |
 | `--tag` / `--no-tag` | Controles de etiquetado TMDB |
+| `--discdb` / `--no-discdb` | Consulta de TheDiscDB (participativa) |
+| `--discdb-contribute[=MODO]` | Prepara o sube una contribución (`browser`, `manual` o `direct`) |
+| `--discdb-disc-name NOMBRE` | Nombre de disco usado en el modo directo |
 | `--ui-lang LANG` | Idioma de la interfaz (p. ej. `en`, `es`) |
 | `--debug` | Registro de depuración detallado |
+
+### TheDiscDB
+
+La consulta a TheDiscDB está desactivada por defecto. Actívala con `--discdb` o
+persistela en `~/.mkvsmith_config.json` bajo
+`"discdb": {"enabled": true}`. La consulta envía solo identificadores del
+disco; nunca envía datos de playlists ni contenidos multimedia.
+
+```sh
+# identifica un disco y aplica una correspondencia única de títulos
+uv run ./main.py pelicula.iso --discdb --info
+
+# prepara archivos para el flujo de contribución revisado de TheDiscDB
+uv run ./main.py pelicula.iso --discdb-contribute=browser
+uv run ./main.py pelicula.iso --discdb-contribute=manual --discdb-bundle-dir ~/discdb
+```
+
+La correspondencia usa el Disc Hash heredado de TheDiscDB, la huella
+Matrix256, el Disc ID AACS de Blu-ray o el Disc ID libdvdread de DVD. El
+UPC/EAN es solo una pista débil y debe corroborarse con la playlist o con el
+título y la duración. Un `MainMovie` remoto único tiene
+prioridad sobre las heurísticas locales, lo que resuelve la ofuscación
+«screen pass» sin adivinar. Las coincidencias ambiguas nunca renombran títulos
+ni cambian la detección de la película principal.
+Los Disc ID específicos del formato requieren estructuras `AACS`/`VIDEO_TS`
+legibles (carpeta, ISO o imagen montada); el respaldo directo de `/dev` no los
+expone.
+
+`--discdb-contribute` escribe `manifest.json` y un registro de escaneo
+compatible con MakeMKV generado desde el propio análisis de MPLS/CLPI/IFO de
+mkvsmith. En el modo browser, abre o crea un borrador de contribución y sube
+`makemkv_compat.txt` donde el sitio pida un registro de escaneo de MakeMKV.
+El modo directo adjunta esos datos a un borrador existente con
+`--discdb-contribution-id` y una cookie autenticada de navegador proporcionada
+con `--discdb-cookie` o `THEDISCDB_COOKIE`; se detiene antes del etiquetado y
+la revisión, que siguen siendo pasos aprobados por personas. Trata la cookie
+como una contraseña. Usa `--discdb-disc-name` al añadir discos adicionales al
+mismo borrador.
+Los mapas de segmentos de Blu-ray provienen directamente de los IDs de clip de
+la playlist; los mapas de rangos de celdas DVD se dejan en blanco para
+identificación humana porque mkvsmith no expone IDs de celdas DVD.
 
 ## Notas
 
@@ -142,15 +189,6 @@ mkvsmith> q          # salir
   procesamiento a nivel de bitstream, algo que un remuxer deliberadamente no
   hace), y no está verificado si la entrada de la capa de mejora del disco
   puede aparecer como una pista de vídeo extra espuria.
-
-## Mejoras futuras
-
-- **Integración con TheDiscDB** — consultar la API de
-  [TheDiscDB](https://thediscdb.com/) para identificar discos y títulos, y
-  para resolver la ofuscación de playlists (discos con "screen pass" que
-  ocultan la película real entre docenas de playlists señuelo casi
-  idénticas) comparando los metadatos locales del disco con la base de
-  datos comunitaria.
 
 ## Fixtures de disco
 

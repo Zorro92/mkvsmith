@@ -171,7 +171,7 @@ def test_format_srt_timestamp() -> None:
     assert _format_srt_timestamp(3600 * 90000) == "01:00:00,000"
 
 
-def test_write_cc608_srt_builds_cues_with_offset() -> None:
+def test_write_cc608_srt_builds_cues_with_offset(tmp_path: Path) -> None:
     events = [
         CcCaptionEvent(pts=90000, rows=("HELLO",)),
         CcCaptionEvent(pts=180000, rows=()),
@@ -179,7 +179,7 @@ def test_write_cc608_srt_builds_cues_with_offset() -> None:
     ]
 
     text = write_cc608_srt(
-        events, Path("/tmp/opencode/test_cc.srt"), pts_offset=45000
+        events, tmp_path / "test_cc.srt", pts_offset=45000
     ).read_text()
 
     assert "1\n00:00:00,500 --> 00:00:01,500\nHELLO\n" in text
@@ -232,7 +232,7 @@ def test_extract_captions_rebases_cell_clock_resets(monkeypatch) -> None:
     not (Path(__file__).parent / "fixtures" / "treasure_vts_01_cc.vob").is_file(),
     reason="Treasure Planet closed-caption VOB fixture not present",
 )
-def test_extract_captions_from_vob_fixture(fixtures_dir: Path) -> None:
+def test_extract_captions_from_vob_fixture(fixtures_dir: Path, tmp_path: Path) -> None:
     """Regression: the film's first caption decodes with correct timing."""
     fixture = fixtures_dir / "treasure_vts_01_cc.vob"
 
@@ -246,7 +246,7 @@ def test_extract_captions_from_vob_fixture(fixtures_dir: Path) -> None:
     assert len(events[3].styled) == 1
     assert events[3].styled[0].plain() == "[MUSIC PLAYING]"
 
-    srt = write_cc608_srt(events, Path("/tmp/opencode/fixture_cc.srt"))
+    srt = write_cc608_srt(events, tmp_path / "fixture_cc.srt")
     text = srt.read_text()
     assert "1\n00:00:03,278 --> 00:00:05,146\n[MUSIC PLAYING]\n" in text
 
@@ -289,7 +289,7 @@ def test_decoder_styled_lines_carry_position_and_italics() -> None:
     assert events[0].rows == ("TE", "MUSI")
 
 
-def test_write_cc608_ass_maps_grid_onto_video() -> None:
+def test_write_cc608_ass_maps_grid_onto_video(tmp_path: Path) -> None:
     events = [
         CcCaptionEvent(
             pts=90000,
@@ -308,7 +308,7 @@ def test_write_cc608_ass_maps_grid_onto_video() -> None:
     ]
 
     text = write_cc608_ass(
-        events, Path("/tmp/opencode/test_cc.ass"), pts_offset=45000
+        events, tmp_path / "test_cc.ass", pts_offset=45000
     ).read_text()
 
     assert "PlayResX: 720" in text

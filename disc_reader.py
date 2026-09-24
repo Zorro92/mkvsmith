@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -140,17 +141,57 @@ def detect_source_type(source: Path) -> SourceType:
 
 
 # =============================================================================
-# RAM-backed temp-dir budgeting
+# Temp-dir selection and RAM-backed budgeting
 # -----------------------------------------------------------------------------
-# The default system temp dir is often a tmpfs mount (RAM-backed) on Linux.
-# Ripping a large title extracts its multi-GB raw streams there, which consumes
-# real RAM — exhausting tmpfs can trigger the OOM killer or freeze the machine
-# (a full tmpfs is a full memory, not just a full "disk").
+# Temp files default to the conventional disk-backed ``/var/tmp`` (which by
+# definition survives reboots, so it is never tmpfs) instead of the system
+# temp dir, which on Linux is often a RAM-backed tmpfs (``/tmp``). Ripping a
+# large title extracts its multi-GB raw streams into temp, which on tmpfs
+# consumes real RAM — exhausting tmpfs can trigger the OOM killer or freeze
+# the machine (a full tmpfs is a full memory, not just a full "disk").
 #
-# To stay safe we cap RAM-backed extraction at ``ram_limit`` of installed RAM
-# (default 80%); any title expected to exceed that transparently spills to a
+# When the effective temp dir *is* RAM-backed (explicit ``--temp-dir``/``TMPDIR``
+# pointing at tmpfs, or no usable ``/var/tmp``), we cap extraction at
+# ``ram_limit`` of the constraining capacity — total RAM vs. the tmpfs size,
+# whichever is smaller (a tmpfs is frequently capped at a fraction of RAM, so
+# RAM alone is not a safe basis) — and any title expected to exceed that, or
+# to exceed currently-free RAM / tmpfs space, transparently spills to a
 # disk-backed temp dir instead. Disk-backed temp dirs are left uncapped.
 # =============================================================================
+
+
+def _is_usable_dir(path: Path) -> bool:
+    """True when *path* exists and is writable (never raises)."""
+    try:
+        return path.is_dir() and os.access(path, os.W_OK)
+    except OSError:
+        return False
+
+
+def default_temp_dir() -> Path:
+    """Default base dir for temp files.
+
+    Prefers an explicitly exported ``TMPDIR``, then the conventional
+    disk-backed ``/var/tmp``, falling back to the system temp dir. ``/var/tmp``
+    is skipped when it is missing, unwritable, or itself RAM-backed, so the
+    default never silently lands on tmpfs.
+    """
+    env = os.environ.get("TMPDIR")
+    if env and _is_usable_dir(Path(env)):
+        return Path(env)
+    var_tmp = Path("/var/tmp")
+    if _is_usable_dir(var_tmp) and not _is_ram_backed_dir(var_tmp):
+        return var_tmp
+    return Path(tempfile.gettempdir())
+
+
+def _fs_sizes(path: Path) -> tuple[int, int] | None:
+    """``(total, free)`` bytes of the filesystem holding *path*, or ``None``."""
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return usage.total, usage.free
 
 
 def _total_ram_bytes() -> int | None:
@@ -265,15 +306,16 @@ def _is_ram_backed_dir(path: Path) -> bool:
 def init_ram_budget(config: Config | None = None) -> None:
     """Compute the RAM-backed temp-dir budget on the supplied config.
 
-    Sets ``ram_budget_bytes`` to ``ram_limit`` * total RAM when the
-    *effective* temp dir (``--temp-dir`` if given, else the system temp) is
+    Sets ``ram_budget_bytes`` to ``ram_limit`` * the constraining capacity
+    (total RAM vs. the tmpfs size, whichever is smaller) when the *effective*
+    temp dir (``--temp-dir`` if given, else the default temp dir) is
     RAM-backed, otherwise leaves it ``None`` (no limit enforced).
     """
     effective_config = config or RUNTIME_STATE.config
     effective_config.ram_budget_bytes = None
     if effective_config.ram_limit <= 0:
         return
-    effective = effective_config.temp_dir or Path(tempfile.gettempdir())
+    effective = effective_config.temp_dir or default_temp_dir()
     if not _is_ram_backed_dir(effective):
         log_debug(f"Temp dir '{effective}' is disk-backed; no RAM budget enforced.")
         return
@@ -288,16 +330,26 @@ def init_ram_budget(config: Config | None = None) -> None:
             )
         )
         return
-    budget = int(total * effective_config.ram_limit)
+    sizes = _fs_sizes(effective)
+    if sizes is not None and sizes[0] < total:
+        # The tmpfs is capped below total RAM (commonly at a fraction of it),
+        # so its size — not RAM — is the binding constraint.
+        basis = sizes[0]
+        basis_kind = "tmpfs"
+    else:
+        basis = total
+        basis_kind = "RAM"
+    budget = int(basis * effective_config.ram_limit)
     effective_config.ram_budget_bytes = budget
     log_info(
         tr(
             "Temp dir '{dir}' is RAM-backed; limiting extracts to {gb:.1f} GB "
-            "({pct:.0%} of {total_gb:.1f} GB RAM). Oversized titles spill to disk.",
+            "({pct:.0%} of {total_gb:.1f} GB {kind}). Oversized titles spill to disk.",
             dir=effective,
             gb=budget / 1e9,
             pct=effective_config.ram_limit,
-            total_gb=total / 1e9,
+            total_gb=basis / 1e9,
+            kind=basis_kind,
         )
     )
 
@@ -307,9 +359,9 @@ def _should_spill_to_disk(
 ) -> str | None:
     """Why an extraction of *estimated_bytes* must avoid the RAM temp dir.
 
-    Returns a reason string (``"budget"`` or ``"available"``) when the
-    extraction should spill to disk, or ``None`` when it's safe to use the
-    RAM-backed temp dir.
+    Returns a reason string (``"budget"``, ``"available"``, or ``"space"``)
+    when the extraction should spill to disk, or ``None`` when it's safe to
+    use the RAM-backed temp dir.
     """
     effective_config = config or RUNTIME_STATE.config
     budget = effective_config.ram_budget_bytes
@@ -322,6 +374,13 @@ def _should_spill_to_disk(
     avail = _available_ram_bytes()
     if avail and estimated_bytes > int(avail * 0.9):
         return "available"
+    # Third guard: the tmpfs is shared (e.g. other users of /tmp), so even an
+    # extraction under budget must spill when the filesystem itself is nearly
+    # full right now.
+    effective = effective_config.temp_dir or default_temp_dir()
+    sizes = _fs_sizes(effective)
+    if sizes is not None and estimated_bytes > int(sizes[1] * 0.9):
+        return "space"
     return None
 
 
@@ -347,7 +406,7 @@ def _disk_temp_base(config: Config | None = None) -> Path:
                 return c
         except OSError:
             continue
-    return Path(tempfile.gettempdir())
+    return default_temp_dir()
 
 
 def temp_base_for_title(
@@ -372,6 +431,20 @@ def temp_base_for_title(
                 "using disk-backed temp '{dir}' for this title.",
                 est=estimated_bytes / 1e9,
                 budget=budget / 1e9,
+                dir=base,
+            )
+        )
+    elif reason == "space":
+        effective = effective_config.temp_dir or default_temp_dir()
+        free = _fs_sizes(effective)
+        log_warn(
+            tr(
+                "Title estimated at {est:.1f} GB fits the RAM budget of {budget:.1f} GB "
+                "but the temp filesystem is low on space ({avail:.1f} GB free); "
+                "using disk-backed temp '{dir}' for this title.",
+                est=estimated_bytes / 1e9,
+                budget=budget / 1e9,
+                avail=(free[1] if free is not None else 0) / 1e9,
                 dir=base,
             )
         )
@@ -402,22 +475,61 @@ def _get_safe_7z_path(
     """Return a safe 7z-compatible path for *iso_path*, creating a symlink
     if the filename contains characters that confuse 7z (e.g. spaces, parens).
 
+    The link lives in a private per-process temp dir, never next to the ISO
+    itself: a stray symlink in a media folder confuses folder watchers (media
+    servers, sync tools) and can look broken from containers or over network
+    filesystems.
+
     Returns ``(safe_path, symlink_or_None)``.  The second element is the
     symlink path when one was created, so callers can schedule cleanup.
     """
     safe_name = re.sub(r"[^\w\.\-]", "_", iso_path.name)
     if safe_name == iso_path.name:
         return iso_path, None
-    safe_path = iso_path.parent / safe_name
+    base = _safe_link_dir()
+    if base is None:
+        return iso_path, None
     try:
-        safe_path.symlink_to(iso_path.resolve())
-        if symlinks is None:
-            RUNTIME_STATE.cleanup.register_symlink(safe_path)
-        else:
-            symlinks.append(safe_path)
-        return safe_path, safe_path
+        target = iso_path.resolve()
     except OSError:
         return iso_path, None
+    stem, suffix = Path(safe_name).stem, Path(safe_name).suffix
+    for attempt in range(100):
+        candidate = base / (safe_name if attempt == 0 else f"{stem}_{attempt}{suffix}")
+        try:
+            if candidate.is_symlink() and candidate.resolve() == target:
+                _register_safe_link(candidate, symlinks)
+                return candidate, candidate
+            candidate.symlink_to(target)
+            _register_safe_link(candidate, symlinks)
+            return candidate, candidate
+        except FileExistsError:
+            continue
+        except OSError:
+            return iso_path, None
+    return iso_path, None
+
+
+def _register_safe_link(link: Path, symlinks: list[Path] | None) -> None:
+    if symlinks is None:
+        RUNTIME_STATE.cleanup.register_symlink(link)
+    else:
+        symlinks.append(link)
+
+
+_SAFE_LINK_DIR: Path | None = None
+
+
+def _safe_link_dir() -> Path | None:
+    """Private per-process temp dir for 7z-safe symlinks (never raises)."""
+    global _SAFE_LINK_DIR
+    if _SAFE_LINK_DIR is None:
+        try:
+            _SAFE_LINK_DIR = Path(tempfile.mkdtemp(prefix="mkv_safepath_"))
+            RUNTIME_STATE.cleanup.register_temp_dir(_SAFE_LINK_DIR)
+        except OSError:
+            return None
+    return _SAFE_LINK_DIR
 
 
 # =============================================================================

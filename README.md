@@ -109,8 +109,9 @@ mkvsmith> q          # quit
 | `--cc-format srt\|ass` | CC track format: portable text or positioned ASS |
 | `--min-duration N` | Ignore titles shorter than N seconds |
 | `--show-all` | Show low-quality titles (menus/trailers) |
-| `--temp-dir DIR` | Temp dir (use a disk path for large ISOs) |
-| `--ram-limit FRAC` | Max fraction of RAM for RAM-backed temp dirs |
+| `--temp-dir DIR` | Temp dir (default: /var/tmp; override for tmpfs/RAM or another disk path) |
+| `--ram-limit FRAC` | Max fraction of tmpfs capacity for RAM-backed temp dirs |
+| `--force` | Overwrite existing output files without asking |
 | `--no-sudo` | Skip sudo loop-mounting |
 | `--tag` / `--no-tag` | TMDB tagging controls |
 | `--discdb` / `--no-discdb` | TheDiscDB lookup (opt-in) |
@@ -122,7 +123,8 @@ mkvsmith> q          # quit
 ### TheDiscDB
 
 TheDiscDB lookup is opt-in. Enable it per run with `--discdb`, or persist it in
-`~/.mkvsmith_config.json` under `"discdb": {"enabled": true}`. Lookup sends
+`$XDG_CONFIG_HOME/mkvsmith/config.json` (default `~/.config/...`) under
+`"discdb": {"enabled": true}`. Lookup sends
 only local disc identifiers — never playlist data or media file contents.
 
 ```sh
@@ -165,9 +167,13 @@ not expose DVD cell IDs.
   Windows and macOS support is otherwise untested.
 - Encrypted commercial discs need `libdvdcss` (DVD) / `libaacs` (Blu-ray) at
   the OS level.
-- The default temp dir is often a RAM-backed tmpfs on Linux. `mkvsmith`
-  detects this and transparently spills oversized extractions to disk
-  (`--ram-limit` controls the threshold).
+- Temp files default to `/var/tmp` (disk-backed) when usable, falling back to
+  the system temp dir. If the effective temp dir is RAM-backed (tmpfs —
+  e.g. an explicit `--temp-dir /tmp`), `mkvsmith` detects this and
+  transparently spills oversized extractions to disk. The budget is
+  `--ram-limit` of the smaller of total RAM and the tmpfs size (a tmpfs is
+  frequently capped at a fraction of RAM), with extra guards for
+  currently-available RAM and tmpfs free space, since `/tmp` is shared.
 - Direct ISO loop-mounting uses `sudo`; pass `--no-sudo` to disable it.
 - **Multi-edition MKV output is experimental.** It is disabled by default and
   gated behind `--debug` (which exposes `--multi-edition` and the interactive

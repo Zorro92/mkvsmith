@@ -725,13 +725,18 @@ class Config:
     # horizontal speaker positioning and italics).
     cc608_format: str = "srt"
     ui_lang: str | None = None  # --ui-lang override; None = use settings/env
-    # Fraction of installed RAM that extraction may consume on a RAM-backed
-    # (tmpfs) temp dir before spilling to disk. 0 disables the check.
+    # Fraction of RAM-backed (tmpfs) temp capacity (total RAM vs. tmpfs size,
+    # whichever is smaller) that extraction may consume before spilling to
+    # disk. 0 disables the check.
     ram_limit: float = 0.8
     # Computed at startup (disc_reader.init_ram_budget): the byte budget for a
-    # RAM-backed temp dir (= ram_limit * total RAM), or None when the temp dir
-    # is disk-backed / RAM could not be detected (no limit enforced).
+    # RAM-backed temp dir (= ram_limit * min(total RAM, tmpfs size)), or None
+    # when the temp dir is disk-backed / RAM could not be detected (no limit
+    # enforced).
     ram_budget_bytes: int | None = None
+    # Overwrite existing output files without asking (--force). By default
+    # create_mkv confirms before overwriting an existing .mkv.
+    force_overwrite: bool = False
 
 
 # Default TMDB metadata fetched when --tag is used (matches tagger.py defaults).

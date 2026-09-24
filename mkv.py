@@ -792,6 +792,22 @@ class _PreparedMuxTracks:
     cc608_srt: Path | None
 
 
+def _confirm_overwrite(out_file: Path) -> bool:
+    """Ask before overwriting an existing output file (default No)."""
+    try:
+        answer = (
+            input(
+                tr("'{name}' already exists. Overwrite? [y/N]:", name=out_file.name)
+                + " "
+            )
+            .strip()
+            .lower()
+        )
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in ("y", "yes")
+
+
 def _output_file_for_title(output_dir: Path, title: Title) -> Path:
     filename_name = title.name
     title_suffix = f" - Title {title.index + 1}"
@@ -883,9 +899,8 @@ def _write_vobu_trim(
     temp_files: list[Path],
 ) -> tuple[list[Path], list[int]]:
     total_vobu = sum(end - start for start, end in ranges)
-    log_info(
-        f"Trimming DVD main edition ({len(ranges)} VOBU run(s), "
-        f"{total_vobu / 1e9:.1f} GB)..."
+    log_debug(
+        f"Trimming DVD title ({len(ranges)} VOBU run(s), {total_vobu / 1e9:.1f} GB)..."
     )
     parts: list[Path] = []
     for start, end in ranges:
@@ -932,7 +947,7 @@ def _prepare_dvd_inputs(
             part_sizes if vobu_parts else None,
         )
 
-    log_info(f"Trimming DVD to main feature ({(end - start) / 1e9:.1f} GB)...")
+    log_debug(f"Trimming DVD title ({(end - start) / 1e9:.1f} GB)...")
     _extract_concat_range(inputs, start, end, output)
     return _DvdTrimResult([output], None, None)
 
@@ -997,8 +1012,16 @@ def _build_mkvmerge_command(
     cc608_srt: Path | None,
     cleanup: list[Path],
     temp_files: list[Path],
+    verbose: bool = False,
 ) -> list[str]:
-    cmd = ["mkvmerge", "-o", str(out_file)]
+    cmd: list[str] = (
+        ["mkvmerge"]
+        + (["-v"] if verbose else [])
+        + [
+            "-o",
+            str(out_file),
+        ]
+    )
     container_title = (
         metadata.title
         if metadata and metadata.title
@@ -1268,27 +1291,28 @@ def _start_mkvmerge_watchdog(
 
 
 def _parse_mkvmerge_progress(data: str) -> int | None:
-    match = re.search(r"Progress:\s*(\d+)%", data)
-    if match is None:
+    matches = re.findall(r"Progress:\s*(\d+)%", data)
+    if not matches:
         return None
-    return min(100, int(match.group(1)))
+    return min(100, int(matches[-1]))
 
 
 def _read_mkvmerge_output(stdout: IO[str], on_progress: Callable[[int], None]) -> str:
+    # mkvmerge frames progress as \r-terminated updates ("Progress: N%\r",
+    # flushed promptly). readline() returns each update as soon as it
+    # arrives; the previous read(n) blocked until n chars accumulated, which
+    # collapsed a whole mux into 1-2 jumps.
     chunks: list[str] = []
-    carry = ""
     last_percentage = -1
     while True:
-        chunk = stdout.read(512)
-        if not chunk:
+        line = stdout.readline()
+        if not line:
             break
-        chunks.append(chunk)
-        data = carry + chunk
-        percentage = _parse_mkvmerge_progress(data)
+        chunks.append(line)
+        percentage = _parse_mkvmerge_progress(line)
         if percentage is not None and percentage != last_percentage:
             last_percentage = percentage
             on_progress(percentage)
-        carry = data[-64:]
     return "".join(chunks)
 
 
@@ -1441,14 +1465,28 @@ class MKVCreator:
                 streams=streams,
             )
         if returncode == 1:
-            log_warn("mkvmerge completed with warnings; check the output for details")
-            if self.logger.debug_enabled:
-                for line in output_text.split("\n"):
-                    stripped = line.strip()
-                    if (
-                        "Warning" in stripped or "warning" in stripped
-                    ) and "%" not in stripped:
-                        log_debug(f"  mkvmerge: {stripped}")
+            warnings = [
+                stripped
+                for line in output_text.split("\n")
+                if (stripped := line.strip())
+                and ("Warning" in stripped or "warning" in stripped)
+                and "%" not in stripped
+            ]
+            if not warnings:
+                log_warn(
+                    "mkvmerge completed with warnings, but no warning lines "
+                    "were captured; re-run with --debug for its full output"
+                )
+            else:
+                log_warn("mkvmerge completed with warnings:")
+                shown = warnings if self.logger.debug_enabled else warnings[:10]
+                for line in shown:
+                    log_warn(f"  mkvmerge: {line}")
+                if len(shown) < len(warnings):
+                    log_warn(
+                        f"  ... and {len(warnings) - len(shown)} more "
+                        "(re-run with --debug for all)"
+                    )
         elif returncode != 0:
             raise RipError(
                 message=f"mkvmerge failed ({returncode})",
@@ -1465,6 +1503,21 @@ class MKVCreator:
                 title=title,
                 streams=streams,
             )
+
+    def _ensure_overwrite_allowed(self, out_file: Path) -> None:
+        """Raise RipError when *out_file* exists and overwriting is declined.
+
+        Existing outputs are never silently clobbered: unless ``--force`` is
+        set, the user must confirm (a declined or interrupted prompt skips the
+        title, which batch flows report via the usual RipError channel).
+        """
+        if not out_file.exists():
+            return
+        if self.config.force_overwrite:
+            log_info(f"Overwriting existing output: {out_file.name}")
+            return
+        if not _confirm_overwrite(out_file):
+            raise RipError(message=f"Output exists, not overwriting: {out_file.name}")
 
     def _finish_created_output(
         self,
@@ -1525,6 +1578,7 @@ class MKVCreator:
             raise RipError(message="No streams selected", title=title, streams=streams)
 
         out_file = _output_file_for_title(self.out, title)
+        self._ensure_overwrite_allowed(out_file)
         input_plan = self._prepare_inputs(title, streams)
         prepared_tracks = self._prepare_tracks(title, streams, input_plan)
         tag_md, tag_art = _prepare_mux_tags(
@@ -1546,6 +1600,7 @@ class MKVCreator:
                 prepared_tracks.cc608_srt,
                 input_plan.cleanup,
                 self.cleanup.temp_files,
+                verbose=self.config.debug,
             )
             return self._execute_mux(title, streams, command, out_file, tag_md, tag_art)
         finally:

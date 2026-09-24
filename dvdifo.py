@@ -481,8 +481,13 @@ _VMG_PROVIDER_ID_LEN = 32
 _VMG_PTR_TT_SRPT = 0xC4  # Title Search Pointer Table
 _VMG_PTR_TXTDT_MG = 0xD4  # Text Data Management Area (disc name)
 # Each TT_SRPT entry: 2 B title_type + 2 B VTS_TTN + 8 B reserved (12 B total)
+# Each TT_SRPT entry (12 bytes): title_type(1) + nr_of_angles(1) +
+# nr_of_chapters(2) + parental_mask(2) + VTS number(1) + VTS_TTN(1) +
+# VTS start sector(4). See dvd.sourceforge.net/dvdinfo/ifo_vmg.html (the
+# maintained copy of mpucoder.com's DVD spec pages) and libdvdread's
+# ifo_types.h ``title_info_t``.
 _VMG_TT_SRPT_ENTRY_LEN = 12
-_VMG_TT_SRPT_ENTRY = struct.Struct(">HH8x")  # title_type(2) + vts_ttn(2) + reserved(8)
+_VMG_TT_SRPT_ENTRY = struct.Struct(">6xBB4x")  # VTS number + VTS_TTN bytes
 
 # Character coding values for VMG text data entries.
 _VMG_CHAR_ISO_8859_1 = 0x00
@@ -670,24 +675,31 @@ def _parse_vmg_provider_id(ifo_data: bytes) -> str:
 
 
 def _parse_vmg_title_map(ifo_data: bytes) -> dict[int, tuple[int, int]]:
+    """Map 1-indexed VMG titles to ``(vts_number, vts_ttn)`` pairs.
+
+    TT_SRPT entries begin after the table's 8-byte header (title count,
+    reserved, end address). Each 12-byte entry carries the VTS number and
+    the title number within that VTS as single bytes at entry offsets 6
+    and 7. Titles with VTS number 0 (first-play / VMG-menu titles) point
+    at no title set and are skipped.
+    """
     tt_srpt_sector = _read_u32(ifo_data, _VMG_PTR_TT_SRPT)
     title_map: dict[int, tuple[int, int]] = {}
     if not tt_srpt_sector:
         return title_map
 
     tt_base = tt_srpt_sector * 2048
-    if tt_base + 4 > len(ifo_data):
+    if tt_base + 8 > len(ifo_data):
         return title_map
 
     title_count = _read_u16(ifo_data, tt_base)
     for index in range(title_count):
-        entry_offset = tt_base + 4 + index * _VMG_TT_SRPT_ENTRY_LEN
+        entry_offset = tt_base + 8 + index * _VMG_TT_SRPT_ENTRY_LEN
         if entry_offset + _VMG_TT_SRPT_ENTRY_LEN > len(ifo_data):
             break
-        _title_type, vts_ttn = _VMG_TT_SRPT_ENTRY.unpack_from(ifo_data, entry_offset)
-        vts_number = vts_ttn >> 8
+        vts_number, vts_ttn = _VMG_TT_SRPT_ENTRY.unpack_from(ifo_data, entry_offset)
         if vts_number > 0:
-            title_map[index + 1] = (vts_number, vts_ttn & 0xFF)
+            title_map[index + 1] = (vts_number, vts_ttn)
     return title_map
 
 
@@ -1140,11 +1152,18 @@ def _vts_title_unit_base(ifo_data: bytes, srpt_base: int) -> int | None:
 
 
 def _vts_ttn1_pgc_number(ifo_data: bytes, ttu_base: int) -> int | None:
-    ptt_offset = ttu_base + 2
-    if ptt_offset + 4 > len(ifo_data):
+    """PGCN from the first (PGCN, PGN) pair of a title's VTS_PTT list.
+
+    VTS_PTT lists are bare part-of-title entries — 2-byte program chain
+    number followed by 2-byte program number, no count field (see
+    dvd.sourceforge.net/dvdinfo/ifo_vts.html, the maintained copy of
+    mpucoder.com's DVD spec pages). The first entry's PGN is chapter 1;
+    the PGCN at offset 0 is the PGC the title plays.
+    """
+    if ttu_base + 4 > len(ifo_data):
         return None
 
-    pgc_number = _read_u16(ifo_data, ptt_offset)
+    pgc_number = _read_u16(ifo_data, ttu_base)
     if pgc_number < 1:
         return None
     return pgc_number

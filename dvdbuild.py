@@ -57,6 +57,7 @@ from dvdifo import (
     _detect_episode_pgcs,
     _default_pgc_number,
     _compute_dvd_disc_id,
+    _compute_libdvdread_disc_id,
 )
 from models import (
     Config,
@@ -86,6 +87,7 @@ class _DvdVtsLayout:
     first_vob: Path
     vob_parts: list[Path]
     title_name: str
+    logical_title: int | None
 
 
 def _read_dvd_disc_metadata(base: Path) -> _DvdDiscMetadata:
@@ -131,6 +133,10 @@ def _read_dvd_disc_metadata(base: Path) -> _DvdDiscMetadata:
         disc = replace(disc, dvd_disc_id=_compute_dvd_disc_id(base))
     except (OSError, FileNotFoundError) as exc:
         log_debug(f"DVD disc ID unavailable: {exc}")
+    try:
+        disc = replace(disc, libdvdread_disc_id=_compute_libdvdread_disc_id(base))
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        log_debug(f"libdvdread DVD Disc ID unavailable: {exc}")
     return _DvdDiscMetadata(disc, vts_to_title_num)
 
 
@@ -160,7 +166,16 @@ def _dvd_vts_layouts(
         if logical_title:
             title_name = f"Title {logical_title} (VTS {vts})"
             log_debug(f"TT_SRPT: VTS {vts} -> DVD Title {logical_title}")
-        layouts.append(_DvdVtsLayout(vts, ifo_path, first_vob, vob_parts, title_name))
+        layouts.append(
+            _DvdVtsLayout(
+                vts,
+                ifo_path,
+                first_vob,
+                vob_parts,
+                title_name,
+                logical_title,
+            )
+        )
     return layouts
 
 
@@ -193,6 +208,7 @@ def _append_default_dvd_title(
         _apply_dvd_ifo_languages(title, layout.ifo_path)
 
     _apply_dvd_disc_metadata(title, metadata)
+    title.dvd_title_id = layout.logical_title
     titles.append(title)
     return title
 
@@ -228,6 +244,7 @@ def _build_dvd_pgc_title(
     if title is None:
         return None
     _apply_dvd_disc_metadata(title, metadata)
+    title.dvd_title_id = layout.logical_title
     return title
 
 

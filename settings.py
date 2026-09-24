@@ -4,6 +4,7 @@ Persisted user settings for mkvsmith.
 A single JSON file (~/.mkvsmith_config.json) holds cross-run preferences:
     - "language": UI language code (e.g. "es"), see i18n.py
     - "api_key":  TMDB API key (used by tagger.py)
+    - "discdb":   Optional TheDiscDB settings used by discdb.py/cli.py
 
 Previously the TMDB key lived in ~/.mkv_tagger_config.json; on first access we
 migrate that file's contents into the new settings path so existing users keep

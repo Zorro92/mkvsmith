@@ -47,7 +47,7 @@ from __future__ import annotations
 
 # Everything except this entry point has been extracted into per-concern
 # modules: models, i18n, settings, dvdifo, vobsub, disc_reader, probe,
-# bluray, dvdbuild, scan, mkv, and cli (which owns the real main()).
+# bluray, dvdbuild, scan, mkv, discdb, and cli (which owns the real main()).
 from cli import main
 
 if __name__ == "__main__":

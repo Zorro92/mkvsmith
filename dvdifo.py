@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 import struct
+import hashlib
 from dataclasses import dataclass
 from fractions import Fraction
 from collections.abc import Iterable
@@ -804,6 +805,57 @@ def _compute_dvd_disc_id(video_ts: Path) -> str:
     chunks = [_dvd_fingerprint_bytes(fingerprint) for fingerprint in fingerprints]
     chunks.extend((_first_64k(vmg_path), _first_64k(vts_path)))
     return format(_dvd_crc64(chunks), "016x")
+
+
+def _compute_libdvdread_disc_id_from_paths(
+    video_ts_ifo: Path, vts_ifos: list[Path]
+) -> str:
+    """Compute libdvdread ``DVDDiscID()`` from IFO paths.
+
+    TheDiscDB uses this as its global DVD Disc ID: uppercase hex MD5 over
+    ``VIDEO_TS.IFO`` followed by ``VTS_01_0.IFO``, ``VTS_02_0.IFO``, and so
+    on. The title-set count is the big-endian VMGI_MAT ``vmg_nr_of_title_sets``
+    field at byte offset 0x3E; libdvdread caps the concatenation at ten files
+    (the VMG IFO plus nine VTS IFOs) and skips missing title sets.
+    """
+    try:
+        vmg_data = video_ts_ifo.read_bytes()
+    except OSError as exc:
+        raise FileNotFoundError(f"Cannot read {video_ts_ifo}: {exc}") from exc
+    if len(vmg_data) < 0x40:
+        raise ValueError("VIDEO_TS.IFO is too small for VMGI_MAT title-set count")
+
+    title_set_count = _read_u16(vmg_data, 0x3E)
+    title_sets = min(title_set_count + 1, 10)
+    digest = hashlib.md5()  # noqa: S324 - identifier, not security use
+    digest.update(vmg_data)
+    vts_by_number: dict[int, bytes] = {}
+    for vts_path in vts_ifos:
+        match = re.fullmatch(r"VTS_(\d{2})_0\.IFO", vts_path.name, re.IGNORECASE)
+        if match:
+            try:
+                vts_by_number[int(match.group(1))] = vts_path.read_bytes()
+            except OSError as exc:
+                raise FileNotFoundError(f"Cannot read {vts_path}: {exc}") from exc
+    for title_set in range(1, title_sets):
+        digest.update(vts_by_number.get(title_set, b""))
+    return digest.hexdigest().upper()
+
+
+def _compute_libdvdread_disc_id(video_ts: Path) -> str:
+    """Compute the libdvdread/TheDiscDB DVD Disc ID for a VIDEO_TS folder."""
+    vmg = video_ts / "VIDEO_TS.IFO"
+    if not vmg.is_file():
+        raise FileNotFoundError("VIDEO_TS.IFO is required for DVD Disc ID")
+    vts_ifos = sorted(
+        (
+            path
+            for path in video_ts.glob("VTS_*_0.IFO")
+            if re.fullmatch(r"VTS_\d{2}_0\.IFO", path.name, re.IGNORECASE)
+        ),
+        key=lambda path: path.name.upper(),
+    )
+    return _compute_libdvdread_disc_id_from_paths(vmg, vts_ifos)
 
 
 def _extract_vmg_text_strings(ifo_data: bytes, base_off: int) -> list[str]:

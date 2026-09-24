@@ -257,8 +257,10 @@ def _vts_ttn1_pointer_buffer() -> bytes:
     data[0xCC:0xD0] = struct.pack(">I", 2)  # VTS_PGCIT sector
     data[0x800:0x802] = struct.pack(">H", 1)  # one SRPT title
     data[0x808:0x80C] = struct.pack(">I", 0x10)
-    data[0x810:0x812] = struct.pack(">H", 1)  # one PTT
-    data[0x812:0x814] = struct.pack(">H", 2)  # PGC number 2
+    # Title 1's VTS_PTT list: bare (PGCN, PGN) pairs, no count field
+    # (dvd.sourceforge.net/dvdinfo/ifo_vts.html). PGC 2, chapter 1.
+    data[0x810:0x812] = struct.pack(">H", 2)  # PGCN 2
+    data[0x812:0x814] = struct.pack(">H", 1)  # PGN 1
     data[0x1010:0x1018] = struct.pack(">I", 0) + struct.pack(">I", 0x20)
     return bytes(data)
 
@@ -287,12 +289,35 @@ def test_vts_ttn1_pointer_stages_reject_invalid_entries() -> None:
     assert _vts_title_unit_base(bytes(zero_ptts), 0x800) is None
 
     zero_pgcn = bytearray(_vts_ttn1_pointer_buffer())
-    zero_pgcn[0x812:0x814] = b"\x00\x00"
+    zero_pgcn[0x810:0x812] = b"\x00\x00"
     assert _vts_ttn1_pgc_number(bytes(zero_pgcn), 0x810) is None
 
     zero_pgcit = bytearray(_vts_ttn1_pointer_buffer())
     zero_pgcit[0xCC:0xD0] = b"\x00" * 4
     assert _vts_pgc_absolute_offset(bytes(zero_pgcit), 2) is None
+
+
+def test_parse_vmg_title_map_layout() -> None:
+    """TT_SRPT entries start after the 8-byte table header, and each entry
+    carries the VTS number and VTS title number as single bytes at entry
+    offsets 6 and 7 (dvd.sourceforge.net/dvdinfo/ifo_vmg.html). Entries
+    with VTS number 0 are first-play / VMG-menu titles and are skipped.
+    """
+    data = bytearray(0x900)
+    data[0xC4:0xC8] = struct.pack(">I", 1)  # TT_SRPT sector
+    data[0x800:0x802] = struct.pack(">H", 3)  # three titles
+    data[0x804:0x808] = struct.pack(">I", 8 + 3 * 12)  # end address
+    entries = [
+        (0, 1),  # VMG-menu title -> no title set, skipped
+        (2, 5),  # title 2: VTS 2, VTS title 5
+        (1, 1),  # title 3: VTS 1, VTS title 1
+    ]
+    for index, (vts_number, vts_ttn) in enumerate(entries):
+        entry = 0x808 + index * 12
+        data[entry + 6] = vts_number
+        data[entry + 7] = vts_ttn
+
+    assert dvdifo._parse_vmg_title_map(bytes(data)) == {2: (2, 5), 3: (1, 1)}
 
 
 def test_pgc_program_tables_and_ranges() -> None:

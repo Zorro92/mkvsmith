@@ -135,10 +135,13 @@ def test_parse_bdmv_disc_name(fixtures_dir: Path, tmp_path: Path) -> None:
 def test_parse_vmg_ifo(fixtures_dir: Path) -> None:
     vmg = _parse_vmg_ifo(fixtures_dir / "dvd_video_ts.ifo")
 
-    assert vmg == {
-        "provider_id": "WARNER HOME VIDEO",
-        "title_map": {1: (1, 207)},
-    }
+    # All 38 VMG titles live in VTS 1, title k pointing at VTS title k
+    # (which resolves to PGC k — see test_vts_ttn_pointer_resolution).
+    # The previously pinned {1: (1, 207)} was TT_SRPT misread start-sector
+    # bytes: entries begin after the 8-byte table header, and VTS number /
+    # VTS_TTN are single bytes at entry offsets 6 and 7.
+    assert vmg["provider_id"] == "WARNER HOME VIDEO"
+    assert vmg["title_map"] == {k: (1, k) for k in range(1, 39)}
 
 
 # --- DVD VTS -----------------------------------------------------------------

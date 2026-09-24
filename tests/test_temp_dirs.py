@@ -35,7 +35,9 @@ def _fake_filesystem(
     monkeypatch.setattr(Path, "is_dir", fake_is_dir)
     monkeypatch.setattr(os, "access", lambda _p, _m: True)
     monkeypatch.setattr(
-        disc_reader, "_is_ram_backed_dir", lambda p: str(p) in ram_backed
+        disc_reader,
+        "_is_ram_backed_dir",
+        lambda p: str(p).replace("\\", "/") in ram_backed,
     )
 
 

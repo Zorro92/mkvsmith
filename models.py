@@ -717,6 +717,13 @@ class Config:
     debug: bool = False
     no_sudo: bool = False
     show_all: bool = False
+    # Extract EIA-608 closed captions as a text subtitle track (SRT or ASS
+    # sidecar, see cc608_format) — opt-in via --cc-srt, since the captions
+    # usually duplicate the VobSub tracks.
+    extract_cc608: bool = False
+    # CC sidecar format: "srt" (portable plain text) or "ass" (preserves
+    # horizontal speaker positioning and italics).
+    cc608_format: str = "srt"
     ui_lang: str | None = None  # --ui-lang override; None = use settings/env
     # Fraction of installed RAM that extraction may consume on a RAM-backed
     # (tmpfs) temp dir before spilling to disk. 0 disables the check.

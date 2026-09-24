@@ -74,6 +74,11 @@ from models import (
     log_debug,
     log_info,
 )
+from cc608 import (
+    CC608_CODEC_ASS,
+    CC608_CODEC_SRT,
+    _has_cc608_data,
+)
 from probe import _probe_with_mkvmerge, _parse_mkvmerge_streams
 from vobsub import _scan_vob_subpictures
 from i18n import tr
@@ -969,6 +974,54 @@ def _append_undeclared_dvd_subpictures(
         )
 
 
+def _append_dvd_closed_captions(
+    title: Title, vob_parts: list[Path], config: Config | None = None
+) -> None:
+    """Declare a text closed-caption track when the disc carries Line 21 CC.
+
+    The VTS IFO's video attributes flag Line 21 field 1/2 support, but some
+    discs declare the flag without carrying caption user data, so the first
+    VOB part is scanned for DVD-CC GOP user data before the track is
+    listed. The track is realised at mux time as an extracted text sidecar
+    (mkv.py ``_extract_dvd_cc608_sidecar``): SRT (plain text) or ASS
+    (preserves the CC grid's speaker positioning and italics), selected by
+    ``Config.cc608_format``. Opt-in via ``Config.extract_cc608``
+    (``--cc-srt``) — the captions usually duplicate the VobSub tracks.
+    """
+    effective_config = config or RUNTIME_STATE.config
+    if not effective_config.extract_cc608:
+        return
+    attrs = title.dvd_video_attrs
+    if attrs is None or not (attrs.cc_field_1 or attrs.cc_field_2):
+        return
+    if not vob_parts:
+        return
+    if not _has_cc608_data(vob_parts[0]):
+        log_debug("IFO declares Line 21 captions; no CC user data found in VOB")
+        return
+    language = next(
+        (stream.language for stream in title.audio_streams if stream.language != "und"),
+        "und",
+    )
+    codec = (
+        CC608_CODEC_ASS if effective_config.cc608_format == "ass" else CC608_CODEC_SRT
+    )
+    stream = Stream(
+        index=len(title.streams),
+        stream_type=StreamType.SUBTITLE,
+        codec=codec,
+        language=language,
+        is_hearing_impaired=True,
+        type_index=len(title.subtitle_streams),
+    )
+    stream.title = "Closed Captions"
+    title.streams.append(stream)
+    log_debug(
+        "Detected EIA-608 closed captions in video user data; "
+        f"adding CC track ({effective_config.cc608_format})"
+    )
+
+
 def _build_title_from_ifo(
     titles: list[Title],
     first_vob: Path,
@@ -1020,6 +1073,7 @@ def _build_title_from_ifo(
         return _create_title(titles, first_vob, name, config=config)
 
     _append_undeclared_dvd_subpictures(title, ifo_data, vob_parts, duration, config)
+    _append_dvd_closed_captions(title, vob_parts, config)
     log_debug(f"Built from IFO: {ifo_path.name}, {len(chapters)} chapters, {duration}s")
     log_debug(
         f"  {len(title.video_streams)}v {len(title.audio_streams)}a"

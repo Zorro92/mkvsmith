@@ -576,6 +576,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--all-audio", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--no-subs", action="store_true")
     p.add_argument("--no-forced", action="store_true")
+    p.add_argument(
+        "--cc-srt",
+        "--cc",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=tr(
+            "extract EIA-608 closed captions as a text subtitle track "
+            "(default: off; --no-cc-srt disables)"
+        ),
+    )
+    p.add_argument(
+        "--cc-format",
+        choices=["srt", "ass"],
+        default="srt",
+        help=tr(
+            "closed-caption sidecar format: srt (portable plain text) or "
+            "ass (preserves speaker positioning and italics)"
+        ),
+    )
     p.add_argument("--min-duration", type=float, default=60.0)
     p.add_argument(
         "--show-all",
@@ -816,6 +835,8 @@ def _apply_parsed_args(
     config.ram_limit = a.ram_limit
     config.no_sudo = a.no_sudo
     config.show_all = a.show_all
+    config.extract_cc608 = a.cc_srt
+    config.cc608_format = a.cc_format
     config.ui_lang = a.ui_lang
     state.discdb_options = _resolve_discdb_options(a)
     state.logger.configure(config)

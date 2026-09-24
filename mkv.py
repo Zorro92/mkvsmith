@@ -49,6 +49,13 @@ from vobsub import (
     _dvd_main_content_range,
     _extract_concat_range,
     _extract_dvd_vobsubs,
+    _vobsub_pts_offset,
+)
+from cc608 import (
+    CC608_CODECS,
+    extract_cc608_captions,
+    write_cc608_ass,
+    write_cc608_srt,
 )
 from models import (
     Config,
@@ -782,6 +789,7 @@ class _PreparedMuxTracks:
     subtitle_fallback: Path | None
     fallback_tracks: list[dict[str, Any]]
     unmatched_ifo_subs: list[Stream]
+    cc608_srt: Path | None
 
 
 def _output_file_for_title(output_dir: Path, title: Title) -> Path:
@@ -986,6 +994,7 @@ def _build_mkvmerge_command(
     subtitle_fallback: Path | None,
     fallback_tracks: list[dict[str, Any]],
     unmatched_ifo_subs: list[Stream],
+    cc608_srt: Path | None,
     cleanup: list[Path],
     temp_files: list[Path],
 ) -> list[str]:
@@ -1023,6 +1032,20 @@ def _build_mkvmerge_command(
         )
         cleanup.append(subtitle_fallback)
         cmd.append(str(subtitle_fallback))
+
+    if cc608_srt is not None:
+        cc_stream = next(
+            stream for stream in title.subtitle_streams if stream.codec in CC608_CODECS
+        )
+        # Options apply to the next file argument; the sidecar's single
+        # text track is track 0 within its own file.
+        cc_options: list[str] = []
+        _append_track_state_options(cc_options, 0, cc_stream)
+        track_name = cc_stream.title or "Closed Captions"
+        cc_options += ["--track-name", f"0:{track_name}"]
+        cmd += cc_options
+        cleanup.append(cc608_srt)
+        cmd.append(str(cc608_srt))
     return cmd
 
 
@@ -1086,7 +1109,9 @@ def _extract_dvd_subtitle_fallback(
     unmatched_subs = [
         entry["stream"]
         for entry in mapped
-        if entry["input_id"] < 0 and entry["stream"].stream_type == StreamType.SUBTITLE
+        if entry["input_id"] < 0
+        and entry["stream"].stream_type == StreamType.SUBTITLE
+        and entry["stream"].codec not in CC608_CODECS
     ]
     if not unmatched_subs:
         return None, [], unmatched_subs
@@ -1133,6 +1158,52 @@ def _extract_dvd_subtitle_fallback(
         % (len(fallback_tracks), len(unmatched_subs))
     )
     return fallback_path, fallback_tracks, unmatched_subs
+
+
+def _extract_dvd_cc608_sidecar(
+    title: Title,
+    inputs: list[Path],
+    temp_files: list[Path],
+    config: Config | None = None,
+) -> Path | None:
+    """Extract EIA-608 closed captions from the mux inputs as a text sidecar.
+
+    The declared CC stream (``CC608_CODECS``, synthesised at scan time from
+    the IFO's Line 21 flag plus verified VOB user data) has no MPEG
+    sub-stream, so it cannot come from the VOB input itself; the captions
+    are decoded from the video user data and muxed from a sidecar file —
+    SubRip (portable plain text) or ASS (preserves the CC grid's speaker
+    positioning and italics) per ``Config.cc608_format``.
+    """
+    if not any(stream.codec in CC608_CODECS for stream in title.subtitle_streams):
+        return None
+    events = extract_cc608_captions(inputs)
+    if not any(event.rows for event in events):
+        log_debug("CC608: no caption events in mux range; skipping track")
+        return None
+    effective_config = config or RUNTIME_STATE.config
+    pts_offset = _vobsub_pts_offset(inputs)
+    use_ass = effective_config.cc608_format == "ass"
+    srt_path = Path(
+        tempfile.NamedTemporaryFile(
+            suffix=".ass" if use_ass else ".srt",
+            delete=False,
+            dir=str(tempfile.gettempdir()),
+        ).name
+    )
+    if use_ass:
+        resolution = (720, 480)
+        if title.dvd_video_attrs is not None and title.dvd_video_attrs.resolution:
+            resolution = title.dvd_video_attrs.resolution
+        write_cc608_ass(events, srt_path, pts_offset=pts_offset, resolution=resolution)
+    else:
+        write_cc608_srt(events, srt_path, pts_offset=pts_offset)
+    temp_files.append(srt_path)
+    log_info(
+        f"CC608: extracted {sum(1 for e in events if e.rows)} caption(s) "
+        f"to {srt_path.name}"
+    )
+    return srt_path
 
 
 def _create_chapters_file(
@@ -1336,12 +1407,19 @@ class MKVCreator:
             fallback_tracks = []
             unmatched_ifo_subs = []
 
+        cc608_srt = None
+        if input_plan.is_dvd_vob:
+            cc608_srt = _extract_dvd_cc608_sidecar(
+                title, input_plan.inputs, self.cleanup.temp_files, self.config
+            )
+
         return _PreparedMuxTracks(
             ident_tracks=ident_tracks,
             mapped=mapped,
             subtitle_fallback=fallback_path,
             fallback_tracks=fallback_tracks,
             unmatched_ifo_subs=unmatched_ifo_subs,
+            cc608_srt=cc608_srt,
         )
 
     def _validate_mux_result(
@@ -1465,6 +1543,7 @@ class MKVCreator:
                 prepared_tracks.subtitle_fallback,
                 prepared_tracks.fallback_tracks,
                 prepared_tracks.unmatched_ifo_subs,
+                prepared_tracks.cc608_srt,
                 input_plan.cleanup,
                 self.cleanup.temp_files,
             )

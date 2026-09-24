@@ -105,6 +105,8 @@ mkvsmith> q          # quit
 | `--all-audio` / `--no-all-audio` | Keep all audio (default on) |
 | `--no-subs` | Drop subtitles |
 | `--no-forced` | Drop forced subtitles |
+| `--cc-srt` / `--no-cc-srt` | EIA-608 closed captions as a text track (default off) |
+| `--cc-format srt\|ass` | CC track format: portable text or positioned ASS |
 | `--min-duration N` | Ignore titles shorter than N seconds |
 | `--show-all` | Show low-quality titles (menus/trailers) |
 | `--temp-dir DIR` | Temp dir (use a disk path for large ISOs) |
@@ -198,6 +200,21 @@ To run them locally, capture the fixtures into `tests/fixtures/` yourself:
 cp VIDEO_TS/VIDEO_TS.IFO tests/fixtures/dvd_video_ts.ifo
 cp VIDEO_TS/VTS_01_0.IFO tests/fixtures/dvd_vts_01_0.ifo
 ```
+
+Optional, disc-specific fixtures (their tests skip when absent):
+
+```sh
+# Treasure Planet (2002) R1 DVD9 — alternate-edition PGC detection:
+7z e treasure_planet.iso "VIDEO_TS/VTS_01_0.IFO" "VIDEO_TS/VTS_09_0.IFO" -otests/fixtures -y
+mv tests/fixtures/VTS_01_0.IFO tests/fixtures/treasure_vts_01_0.ifo
+mv tests/fixtures/VTS_09_0.IFO tests/fixtures/treasure_vts_09_0.ifo
+
+# Beauty and the Beast (1991) multi-angle DVD — see
+# tests/test_parser_fixtures.py for the files it expects.
+```
+
+`scripts/inspect_fixtures.py` re-parses whatever is in `tests/fixtures/` and
+prints the values the tests expect, which is handy when swapping in a new disc.
 
 `scripts/inspect_fixtures.py` re-parses whatever is in `tests/fixtures/` and
 prints the values the tests expect, which is handy when swapping in a new disc.

@@ -75,7 +75,7 @@ jobs:
           platforms: arm64
 
       # Plain pip inside the container: uv.lock is per-platform and the unit
-      # suite only needs rich + pytest.
+      # suite only needs its runtime deps (rich, xdg-base-dirs) + pytest.
       - name: Run tests under emulation
         run: |
           docker run --rm --platform linux/arm64 \
@@ -83,5 +83,5 @@ jobs:
             python:3.12-slim \
             bash -lc 'apt-get update && \
                       apt-get install -y --no-install-recommends mkvtoolnix p7zip-full && \
-                      pip install --no-cache-dir rich pytest && \
+                      pip install --no-cache-dir rich xdg-base-dirs pytest && \
                       python -m pytest -ra'

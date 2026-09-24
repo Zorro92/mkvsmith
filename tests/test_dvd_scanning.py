@@ -44,6 +44,61 @@ def _patch_title_builder(monkeypatch: Any) -> list[tuple[int | None, str | None]
     return calls
 
 
+def test_plan_dvd_pgc_titles_episode_group(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        dvdbuild, "_detect_episode_pgcs", lambda _data, _minimum: ([2, 3], 5)
+    )
+    monkeypatch.setattr(dvdbuild, "_default_pgc_number", lambda _data: 2)
+    monkeypatch.setattr(
+        dvdifo,
+        "_enumerate_vts_pgcs",
+        lambda _data: [
+            (1, 0, 30.0, 1),
+            (2, 0, 100.0, 1),
+            (3, 0, 105.0, 1),
+            (4, 0, 120.0, 1),
+            (5, 0, 205.0, 1),
+            (6, 0, 59.0, 1),
+        ],
+    )
+
+    plan = dvdbuild._plan_dvd_pgc_titles(b"ifo")
+
+    assert plan.episode_pgcs == [2, 3]
+    assert plan.play_all_pgc == 5
+    assert plan.default_pgc_num == 2
+    # PGC 4 is substantial and outside the group (extra); PGC 5 is the
+    # play-all chain; PGC 1 and 6 are below the 60s minimum duration.
+    assert plan.extras == [4]
+    assert plan.editions == []
+
+
+def test_plan_dvd_pgc_titles_alternate_editions(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        dvdbuild, "_detect_episode_pgcs", lambda _data, _minimum: ([], None)
+    )
+    monkeypatch.setattr(dvdbuild, "_default_pgc_number", lambda _data: 1)
+    monkeypatch.setattr(
+        dvdbuild,
+        "_find_alternate_edition_pgcs",
+        lambda _data, _minimum: [(2, True), (3, False)],
+    )
+
+    plan = dvdbuild._plan_dvd_pgc_titles(b"ifo")
+
+    assert plan.episode_pgcs == []
+    assert plan.play_all_pgc is None
+    assert plan.default_pgc_num == 1
+    assert plan.extras == []
+    assert plan.editions == [(2, True), (3, False)]
+
+
+def test_plan_dvd_pgc_titles_empty_ifo() -> None:
+    assert dvdbuild._plan_dvd_pgc_titles(b"") == dvdbuild._DvdPgcPlan(
+        [], None, None, [], []
+    )
+
+
 def test_scan_dvd_source_builds_episodes_play_all_and_extra(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
@@ -55,19 +110,15 @@ def test_scan_dvd_source_builds_episodes_play_all_and_extra(
     }
     monkeypatch.setattr(dvdbuild, "_parse_vmg_ifo", lambda _path: vmg)
     calls = _patch_title_builder(monkeypatch)
-    monkeypatch.setattr(
-        dvdbuild, "_detect_episode_pgcs", lambda _data, _minimum: ([1, 2], 3)
+    plan = dvdbuild._DvdPgcPlan(
+        episode_pgcs=[1, 2],
+        play_all_pgc=3,
+        default_pgc_num=1,
+        extras=[4],
+        editions=[],
     )
-    monkeypatch.setattr(dvdbuild, "_default_pgc_number", lambda _data: 1)
     monkeypatch.setattr(
-        dvdifo,
-        "_enumerate_vts_pgcs",
-        lambda _data: [
-            (1, 0, 100.0, []),
-            (2, 0, 100.0, []),
-            (3, 0, 200.0, []),
-            (4, 0, 120.0, []),
-        ],
+        dvdbuild, "_plan_dvd_pgc_titles", lambda _ifo_bytes, _config=None: plan
     )
 
     titles, metadata = dvdbuild._scan_dvd_source(source)
@@ -101,12 +152,15 @@ def test_scan_dvd_source_builds_alternate_editions(
     source = _make_dvd_source(tmp_path)
     monkeypatch.setattr(dvdbuild, "_parse_vmg_ifo", lambda _path: VmgInfo())
     _patch_title_builder(monkeypatch)
-    monkeypatch.setattr(
-        dvdbuild, "_detect_episode_pgcs", lambda _data, _minimum: ([], None)
+    plan = dvdbuild._DvdPgcPlan(
+        episode_pgcs=[],
+        play_all_pgc=None,
+        default_pgc_num=1,
+        extras=[],
+        editions=[(2, True), (3, True)],
     )
-    monkeypatch.setattr(dvdbuild, "_default_pgc_number", lambda _data: 1)
     monkeypatch.setattr(
-        dvdbuild, "_find_alternate_edition_pgcs", lambda _data, _minimum: [2, 3]
+        dvdbuild, "_plan_dvd_pgc_titles", lambda _ifo_bytes, _config=None: plan
     )
 
     titles, metadata = dvdbuild._scan_dvd_source(source)
@@ -129,7 +183,9 @@ def test_build_dvd_streams_rejects_invalid_ifo() -> None:
     assert dvdbuild._build_dvd_streams_from_ifo(b"NOTDVDVTS\x00\x00", 100.0) == []
 
 
-def test_build_dvd_streams_uses_active_pgc_and_attributes(monkeypatch: Any) -> None:
+def test_build_dvd_streams_uses_vts_attribute_table_and_pgc_languages(
+    monkeypatch: Any,
+) -> None:
     ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
     monkeypatch.setattr(
         dvdbuild,
@@ -199,9 +255,15 @@ def test_build_dvd_streams_uses_active_pgc_and_attributes(monkeypatch: Any) -> N
 
     streams = dvdbuild._build_dvd_streams_from_ifo(ifo_data, 100.0, 2)
 
+    # The VTS attribute-table set (via the merged language map) drives the
+    # listing — streams the PGC marks unavailable must not be dropped
+    # (MakeMKV lists every declared stream). PGC control only overrides
+    # languages.
     assert [(stream.stream_type, stream.sub_id) for stream in streams] == [
         (StreamType.VIDEO, 0x1E0),
+        (StreamType.AUDIO, 0x80),
         (StreamType.AUDIO, 0x81),
+        (StreamType.SUBTITLE, 0x20),
         (StreamType.SUBTITLE, 0x21),
     ]
     video = streams[0]
@@ -212,25 +274,31 @@ def test_build_dvd_streams_uses_active_pgc_and_attributes(monkeypatch: Any) -> N
     assert video.color_transfer == "bt709"
     assert video.color_space == "smpte170m"
 
-    audio = streams[1]
-    assert audio.codec == "dts"
-    assert audio.language == "eng"
-    assert audio.channels == 6
-    assert audio.sample_rate == "48000"
-    assert audio.bits_per_sample == 24
-    assert audio.title == "DTS 5.1"
-    assert audio.is_commentary is True
-    assert audio.type_index == 0
+    first_audio, dts_audio = streams[1], streams[2]
+    assert first_audio.language == "und"
+    assert first_audio.codec == "ac3"
+    assert first_audio.channels == 2
+    assert first_audio.type_index == 0
+    assert dts_audio.codec == "dts"
+    assert dts_audio.language == "eng"
+    assert dts_audio.channels == 6
+    assert dts_audio.sample_rate == "48000"
+    assert dts_audio.bits_per_sample == 24
+    assert dts_audio.title == "DTS 5.1"
+    assert dts_audio.is_commentary is True
+    assert dts_audio.type_index == 1
 
-    subtitle = streams[2]
-    assert subtitle.codec == "dvd_subtitle"
-    assert subtitle.language == "fre"
-    assert subtitle.is_forced is True
-    assert subtitle.is_hearing_impaired is True
-    assert subtitle.type_index == 0
+    plain_subtitle, forced_subtitle = streams[3], streams[4]
+    assert plain_subtitle.codec == "dvd_subtitle"
+    assert plain_subtitle.language == "und"
+    assert plain_subtitle.type_index == 0
+    assert forced_subtitle.language == "fre"
+    assert forced_subtitle.is_forced is True
+    assert forced_subtitle.is_hearing_impaired is True
+    assert forced_subtitle.type_index == 1
 
 
-def test_build_dvd_streams_falls_back_to_vts_ids(monkeypatch: Any) -> None:
+def test_build_dvd_streams_uses_vts_language_ids(monkeypatch: Any) -> None:
     ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
     monkeypatch.setattr(
         dvdbuild, "_get_active_pgc_streams", lambda _data, _pgc: (set(), set())
@@ -273,6 +341,70 @@ def test_build_dvd_streams_falls_back_to_vts_ids(monkeypatch: Any) -> None:
     ]
     assert streams[1].codec == "ac3"
     assert streams[1].channels == 2
+
+
+def test_build_dvd_streams_falls_back_to_pgc_active_ids(monkeypatch: Any) -> None:
+    """When the attribute tables yield no IDs, the PGC active set is used."""
+    ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
+    monkeypatch.setattr(
+        dvdbuild, "_get_active_pgc_streams", lambda _data, _pgc: ({0x81}, {0x21})
+    )
+    monkeypatch.setattr(
+        dvdbuild,
+        "_parse_vts_video_attrs",
+        lambda _data: None,
+    )
+    monkeypatch.setattr(
+        dvdbuild,
+        "_parse_vts_ifo_languages",
+        lambda _data: ({}, {}),
+    )
+    monkeypatch.setattr(
+        dvdbuild,
+        "_parse_pgc_stream_languages",
+        lambda _data, _pgc: ({}, {}),
+    )
+    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", lambda _data: {})
+    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", lambda _data: {})
+
+    streams = dvdbuild._build_dvd_streams_from_ifo(ifo_data, 100.0)
+
+    assert [stream.sub_id for stream in streams] == [0x1E0, 0x81, 0x21]
+
+
+def test_scan_dvd_source_labels_plain_pgcs_not_editions(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    source = _make_dvd_source(tmp_path)
+    monkeypatch.setattr(dvdbuild, "_parse_vmg_ifo", lambda _path: VmgInfo())
+    _patch_title_builder(monkeypatch)
+    plan = dvdbuild._DvdPgcPlan(
+        episode_pgcs=[],
+        play_all_pgc=None,
+        default_pgc_num=1,
+        extras=[],
+        editions=[(2, True), (3, False), (4, True)],
+    )
+    monkeypatch.setattr(
+        dvdbuild, "_plan_dvd_pgc_titles", lambda _ifo_bytes, _config=None: plan
+    )
+
+    titles, _metadata = dvdbuild._scan_dvd_source(source)
+
+    # Edition numbering counts only genuine re-cuts; unrelated substantial
+    # PGCs (bonus features sharing the VTS) get a neutral "PGC N" label.
+    assert [title.name for title in titles] == [
+        "Title 1",
+        "Title 1 - Edition 2",
+        "Title 1 - PGC 3",
+        "Title 1 - Edition 3",
+    ]
+    assert [title.dvd_edition_label for title in titles] == [
+        None,
+        "Edition 2",
+        "PGC 3",
+        "Edition 3",
+    ]
 
 
 def test_apply_dvd_ifo_languages_updates_streams_and_timing(

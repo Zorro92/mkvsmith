@@ -10,6 +10,9 @@ Fixtures (see ``tests/fixtures/``):
   - ``dvd_video_ts.ifo`` / ``dvd_vts_01_0.ifo`` — Cats Don't Dance (1997) DVD.
   - ``beauty_vts_09_0.ifo`` / ``beauty_vts_09_subpictures.vob`` — Beauty and
     the Beast (1991) multi-angle DVD.
+  - ``treasure_vts_01_0.ifo`` / ``treasure_vts_09_0.ifo`` — Treasure Planet
+    (2002) DVD: a movie VTS whose alternate PGC re-cuts the default title
+    (seamless branching), and a bonus-features VTS with one PGC per extra.
 """
 
 from __future__ import annotations
@@ -22,6 +25,9 @@ from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from dvdifo import (
     _EditionCell,
     _detect_episode_pgcs,
+    _shared_runtime_fraction,
+    _pgc_cell_durations,
+    _find_alternate_edition_pgcs,
     _enumerate_vts_pgcs,
     _find_main_pgc,
     _get_active_pgc_streams,
@@ -40,6 +46,7 @@ from dvdifo import (
     _vts_ttn1_pgc_abs,
     _build_main_edition_vobu_ranges,
 )
+from dvdbuild import _build_dvd_streams_from_ifo
 from models import StreamType
 from vobsub import _extract_spu_palette, _scan_vob_pts, _scan_vob_subpictures
 
@@ -424,3 +431,65 @@ def test_scan_multi_angle_vob_video_pts(fixtures_dir: Path) -> None:
     )
 
     assert result == [(25257, 2062)]
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "treasure_vts_01_0.ifo").is_file(),
+    reason="Treasure Planet movie VTS fixture not present",
+)
+def test_alternate_pgc_recutting_default_is_an_edition(fixtures_dir: Path) -> None:
+    data = (fixtures_dir / "treasure_vts_01_0.ifo").read_bytes()
+
+    # The default movie PGC's audio-control table marks the commentary
+    # stream (0x83) unavailable; the alternate PGC 2 plays the same cells
+    # plus 21 half-second interstitials and enables it.
+    assert _get_active_pgc_streams(data, 1) == ({0x80, 0x81, 0x82}, {0x20})
+
+    default = _find_main_pgc(data)
+    assert default is not None
+    default_durations = _pgc_cell_durations(data, default[0], default[2])
+    _num, pgc2_abs, _duration, pgc2_cells = _enumerate_vts_pgcs(data)[1]
+    candidate = _pgc_cell_durations(data, pgc2_abs, pgc2_cells)
+    assert _shared_runtime_fraction(default_durations, candidate) > 0.99
+
+    # PGC 2 re-cuts the default title -> an edition. PGC 3 is a 1s link
+    # PGC and falls below the substantial-PGC threshold.
+    assert _find_alternate_edition_pgcs(data) == [(2, True)]
+
+    # Pre shared-footage guard the default/variant pair clusters as an
+    # episode pair; the guard that suppresses it arrives with the episode
+    # overhaul.
+    assert _detect_episode_pgcs(data) == ([1, 2], None)
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "treasure_vts_01_0.ifo").is_file(),
+    reason="Treasure Planet movie VTS fixture not present",
+)
+def test_build_dvd_streams_lists_pg_unavailable_streams(fixtures_dir: Path) -> None:
+    """Streams a PGC marks unavailable still exist in the VOBs; list them.
+
+    MakeMKV lists all four audio streams for this PGC (verified with
+    makemkvcon v1.18.4) even though its stream-control table disables the
+    commentary; mkvsmith must not drop it.
+    """
+    data = (fixtures_dir / "treasure_vts_01_0.ifo").read_bytes()
+
+    streams = _build_dvd_streams_from_ifo(data, 5719.0, 1)
+
+    audio = [s for s in streams if s.stream_type == StreamType.AUDIO]
+    assert [s.sub_id for s in audio] == [0x80, 0x81, 0x82, 0x83]
+    assert [(s.language, s.channels) for s in audio] == [
+        ("en", 6),
+        ("fr", 2),
+        ("es", 2),
+        ("en", 2),
+    ]
+    assert audio[3].is_commentary is True
+
+    subtitles = [s for s in streams if s.stream_type == StreamType.SUBTITLE]
+    assert [(s.sub_id, s.language, s.is_forced) for s in subtitles] == [
+        (0x20, "en", False),
+        (0x21, "fr", True),
+        (0x22, "es", True),
+    ]

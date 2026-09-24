@@ -604,11 +604,13 @@ class Title:
     # multiple substantial PGCs (seamless-branching editions) so each can be
     # exposed and ripped as its own separate title.
     dvd_pgc_number: int | None = None
-    # Human-readable label for an alternate seamless-branching edition (e.g.
-    # "Edition 2"), set alongside ``dvd_pgc_number``. ``_apply_disc_name``
-    # appends this to the generic "<disc> - Title N" label instead of
-    # discarding it, so alternate editions stay visually distinguishable in
-    # the title listing.
+    # Human-readable label for a substantial PGC exposed as its own title,
+    # set alongside ``dvd_pgc_number``: "Edition N" when the PGC re-cuts the
+    # default title's footage (seamless branching), or "PGC N" for an
+    # unrelated program sharing the VTS (e.g. a bonus feature). See
+    # ``_find_alternate_edition_pgcs``. ``_apply_disc_name`` appends this to
+    # the generic "<disc> - Title N" label instead of discarding it, so
+    # alternate PGCs stay visually distinguishable in the title listing.
     dvd_edition_label: str | None = None
     # 1-indexed episode number for TV-series discs detected by
     # ``_detect_episode_pgcs``. When set, ``_apply_disc_name`` labels the

@@ -1334,23 +1334,106 @@ def _pgc_cell_position_signature(
     return tuple(sig)
 
 
+# runtime, while bonus features packed into shared extras VTSs cover at
+# most 2% (a single shared title-card cell).
+_EDITION_SHARED_RUNTIME_MIN = 0.5
+
+_AlternatePgc = tuple[int, bool]
+
+
+def _pgc_cell_durations(
+    ifo_data: bytes, pgc_abs: int, n_cells: int
+) -> dict[tuple[int, int], float]:
+    """Map each ``(vob_id, cell_id)`` a PGC plays to its playback seconds.
+
+    Cell positions come from the PGC's cell position info table and
+    durations from the cell playback info table (24-byte entries, duration
+    at offset 4; libdvdread ``ifo_types.h`` ``cell_playback_t``). A cell
+    referenced more than once (loops, interleaved angle blocks) accumulates
+    onto its key, so the values sum to the PGC's full playback time.
+    Returns an empty dict when either table is unreadable.
+    """
+    tables = _pgc_program_tables(ifo_data, pgc_abs)
+    if tables is None:
+        return {}
+    _program_map, cell_table, _program_count, cell_count = tables
+    positions = _pgc_cell_position_signature(ifo_data, pgc_abs, n_cells)
+    durations: dict[tuple[int, int], float] = {}
+    for cell in range(1, min(n_cells, cell_count) + 1):
+        key = positions[cell - 1] if positions and cell <= len(positions) else (0, cell)
+        duration = _cell_duration(ifo_data, _cell_playback_base(cell_table, cell))
+        durations[key] = durations.get(key, 0.0) + duration
+    return durations
+
+
+def _shared_runtime_fraction(
+    default_durations: dict[tuple[int, int], float],
+    candidate_durations: dict[tuple[int, int], float],
+) -> float:
+    """Fraction of the default PGC's playback time shared with a candidate.
+
+    An alternate edition re-cuts the same footage, so most of the default
+    PGC's runtime comes from cells the candidate also plays. A bonus feature
+    that merely shares the VTS (or re-uses a title-card cell) shares little
+    or nothing. Returns 0.0 when either cell table is unreadable.
+    """
+    if not default_durations:
+        return 0.0
+    shared = sum(
+        seconds
+        for key, seconds in default_durations.items()
+        if key in candidate_durations
+    )
+    return shared / sum(default_durations.values())
+
+
+def _effective_pgc_durations(
+    ifo_data: bytes, pgcs: list[_EnumeratedPgc]
+) -> list[_EnumeratedPgc]:
+    """Replace declared PGC header durations with the built title's runtime.
+
+    Exposure gates must agree with what a title build actually produces:
+    ``_pgc_chapters_and_duration`` applies the trailing-menu trim (programs
+    under 10s are menu filler), so a still-cell montage can declare 112s in
+    its PGC header (Treasure Planet's VTS 16 PGC 2: 38 x 3s thumbnails) yet
+    build as a 3s title. Gating on the declared value exposes such chains
+    and then ships a 3s "title"; gating on the post-trim runtime keeps the
+    exposure decision consistent with the muxed output. PGCs whose program
+    tables cannot be parsed keep their declared value.
+    """
+    effective: list[_EnumeratedPgc] = []
+    for num, pgc_abs, declared, n_cells in pgcs:
+        _chapters, runtime = _pgc_chapters_and_duration(ifo_data, pgc_abs)
+        effective.append(
+            (num, pgc_abs, runtime if runtime > 0.0 else declared, n_cells)
+        )
+    return effective
+
+
 def _find_alternate_edition_pgcs(
     ifo_data: bytes,
     min_duration: float = 60.0,
-) -> list[int]:
-    """Return 1-indexed PGC numbers for substantial PGCs other than the
-    disc's default title PGC (VTS_TTN 1).
+) -> list[_AlternatePgc]:
+    """Return substantial PGCs other than the disc's default title PGC
+    (VTS_TTN 1) as ``(pgc_number, is_edition)`` pairs.
 
-    Used to expose additional editions on seamless-branching discs (e.g. a
-    theatrical cut plus one or more longer bonus/extended cuts sharing
-    footage) as their own separate, independently rippable titles - matching
-    how MakeMKV lists each edition as its own title rather than collapsing
-    them into one.
+    Used to expose additional programs on the disc as their own separate,
+    independently rippable titles - matching how MakeMKV lists every
+    substantial PGC as its own title (verified with makemkvcon on a movie
+    DVD with a shared extras VTS: 1 movie title + 20 bonus-feature titles,
+    none of them carrying edition semantics).
 
-    A PGC qualifies as an "alternate edition" when its own declared playback
-    duration is at least ``min_duration`` (so menu loops, thumbnail/
-    link PGCs, etc. are excluded) and it isn't the same PGC already used by
-    the default title.
+    A PGC qualifies as substantial when its own declared playback duration
+    is at least ``min_duration`` (so menu loops, thumbnail/link PGCs, etc.
+    are excluded) and it isn't the same PGC already used by the default
+    title.
+
+    ``is_edition`` is True only for plausible re-cuts of the default title:
+    PGCs whose cells cover at least ``_EDITION_SHARED_RUNTIME_MIN`` of the
+    default PGC's playback time (seamless-branching theatrical/director's
+    cuts share nearly all of it). Other substantial PGCs - e.g. bonus
+    features sharing a VTS - are returned with ``is_edition=False`` so
+    callers can still expose them under a neutral label.
 
     PGCs are not de-duplicated even if they have identical cell position
     info — they may use different angles (via SetSTN pre-commands) which
@@ -1361,14 +1444,25 @@ def _find_alternate_edition_pgcs(
     PGC number.
     """
     default = _find_main_pgc(ifo_data)
-    default_abs = default[0] if default else None
-    extras: list[int] = []
-    for num, pgc_abs, duration, n_cells in _enumerate_vts_pgcs(ifo_data):
+    default_abs: int | None = None
+    default_durations: dict[tuple[int, int], float] = {}
+    if default is not None:
+        default_abs, _default_duration, default_cells = default
+        default_durations = _pgc_cell_durations(ifo_data, default_abs, default_cells)
+    extras: list[_AlternatePgc] = []
+    for num, pgc_abs, duration, n_cells in _effective_pgc_durations(
+        ifo_data, _enumerate_vts_pgcs(ifo_data)
+    ):
         if pgc_abs == default_abs:
             continue
         if duration < min_duration or n_cells < 1:
             continue
-        extras.append(num)
+        candidate = _pgc_cell_durations(ifo_data, pgc_abs, n_cells)
+        is_edition = (
+            _shared_runtime_fraction(default_durations, candidate)
+            >= _EDITION_SHARED_RUNTIME_MIN
+        )
+        extras.append((num, is_edition))
     return sorted(extras)
 
 
@@ -1483,7 +1577,7 @@ def _detect_episode_pgcs(
     The "play all" PGC — common on TV-series discs — is then identified by
     matching its duration against the sum of episode durations (within 5 %).
     """
-    all_pgcs = _enumerate_vts_pgcs(ifo_data)
+    all_pgcs = _effective_pgc_durations(ifo_data, _enumerate_vts_pgcs(ifo_data))
     substantial = [
         pgc
         for pgc in all_pgcs

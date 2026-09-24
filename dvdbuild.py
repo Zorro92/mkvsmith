@@ -28,6 +28,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -248,115 +249,73 @@ def _build_dvd_pgc_title(
     return title
 
 
-def _classify_default_episode_title(
-    default_title: Title,
-    episode_pgcs: list[int],
-    play_all_pgc: int | None,
-    default_pgc_num: int | None,
-) -> None:
-    if default_pgc_num in set(episode_pgcs):
-        default_title.dvd_episode_number = (
-            episode_pgcs.index(default_pgc_num) + 1
-            if default_pgc_num is not None
-            else None
-        )
-    elif play_all_pgc is not None and default_pgc_num == play_all_pgc:
-        default_title.dvd_play_all = True
+@dataclass(frozen=True)
+class _DvdPgcPlan:
+    """Per-VTS classification of which substantial PGCs to expose as titles.
+
+    Produced by ``_plan_dvd_pgc_titles`` — the single decision tree shared by
+    every DVD source mode (extracted ``VIDEO_TS`` folders and ISO images
+    alike), so both produce identical title layouts for identical content.
+    """
+
+    # 1-indexed PGC numbers of detected TV episodes. Empty for non-episodic
+    # VTSs; two or more entries mean the VTS is treated as an episode group.
+    episode_pgcs: list[int]
+    # PGC number of the "play all" chain (duration ~= sum of episodes).
+    play_all_pgc: int | None
+    # PGC number used by the disc's default title (VTS_TTN 1 designation).
+    default_pgc_num: int | None
+    # Episode groups only: substantial PGCs outside the episode / play-all /
+    # default set, exposed as "Extra" titles.
+    extras: list[int]
+    # Non-episode VTSs only: substantial PGCs other than the default title's,
+    # as ``(pgc_number, is_edition)`` — editions re-cut the default title's
+    # footage, plain PGCs are unrelated programs (e.g. bonus features).
+    editions: list[tuple[int, bool]]
 
 
-def _append_dvd_episode_pgcs(
-    titles: list[Title],
-    default_title: Title,
-    layout: _DvdVtsLayout,
-    metadata: _DvdDiscMetadata,
-    config: Config | None,
-    episode_pgcs: list[int],
-    default_pgc_num: int | None,
-) -> None:
-    for episode_index, pgc_num in enumerate(episode_pgcs, start=1):
-        if pgc_num == default_pgc_num:
-            log_debug(
-                f"  Episode {episode_index}: PGC {pgc_num} "
-                f"({default_title.duration_seconds:.0f}s) [default title]"
-            )
-            continue
+def _plan_dvd_pgc_titles(ifo_bytes: bytes, config: Config | None = None) -> _DvdPgcPlan:
+    """Classify a VTS's substantial PGCs into the titles to expose.
 
-        title = _build_dvd_pgc_title(
-            titles,
-            layout,
-            metadata,
-            pgc_num,
-            f"{layout.title_name} - Episode {episode_index}",
-            config=config,
-        )
-        if title is None:
-            continue
-        title.dvd_episode_number = episode_index
-        titles.append(title)
-        log_debug(
-            f"  Episode {episode_index}: PGC {pgc_num} ({title.duration_seconds:.0f}s)"
-        )
-
-
-def _append_dvd_play_all(
-    titles: list[Title],
-    layout: _DvdVtsLayout,
-    metadata: _DvdDiscMetadata,
-    config: Config | None,
-    play_all_pgc: int | None,
-    default_pgc_num: int | None,
-) -> None:
-    if play_all_pgc is None or play_all_pgc == default_pgc_num:
-        return
-
-    title = _build_dvd_pgc_title(
-        titles,
-        layout,
-        metadata,
-        play_all_pgc,
-        f"{layout.title_name} - Play All",
-        config=config,
-    )
-    if title is None:
-        return
-    title.dvd_play_all = True
-    titles.append(title)
-    log_debug(f"  Play all: PGC {play_all_pgc} ({title.duration_seconds:.0f}s)")
-
-
-def _append_dvd_extras(
-    titles: list[Title],
-    layout: _DvdVtsLayout,
-    metadata: _DvdDiscMetadata,
-    config: Config | None,
-    episode_pgcs: list[int],
-    play_all_pgc: int | None,
-    default_pgc_num: int | None,
-    ifo_bytes: bytes,
-) -> None:
-    episode_set = set(episode_pgcs)
+    TV-episode VTSs (two or more similar-duration PGCs with distinct cell
+    tables, see ``_detect_episode_pgcs``) expose one title per episode plus
+    an optional "Play All" chain and "Extra" titles; every other VTS exposes
+    alternate editions and plain PGCs (see ``_find_alternate_edition_pgcs``).
+    Returns an empty plan for a missing or unparseable IFO.
+    """
+    if not ifo_bytes:
+        return _DvdPgcPlan([], None, None, [], [])
     minimum_duration = (config or RUNTIME_STATE.config).min_duration
-    for pgc_num, _start, duration, _cells in dvdifo._enumerate_vts_pgcs(ifo_bytes):
-        if (
-            pgc_num in episode_set
-            or pgc_num == play_all_pgc
-            or pgc_num == default_pgc_num
-            or duration < minimum_duration
-        ):
-            continue
 
-        title = _build_dvd_pgc_title(
-            titles,
-            layout,
-            metadata,
-            pgc_num,
-            f"{layout.title_name} - Extra",
-            config=config,
+    episode_pgcs, play_all_pgc = _detect_episode_pgcs(ifo_bytes, minimum_duration)
+    default_pgc_num = _default_pgc_number(ifo_bytes)
+    if len(episode_pgcs) >= 2:
+        episode_set = set(episode_pgcs)
+        extras = [
+            num
+            for num, _pgc_abs, duration, _cells in dvdifo._effective_pgc_durations(
+                ifo_bytes, dvdifo._enumerate_vts_pgcs(ifo_bytes)
+            )
+            if num not in episode_set
+            and num != play_all_pgc
+            and num != default_pgc_num
+            and duration >= minimum_duration
+        ]
+        return _DvdPgcPlan(episode_pgcs, play_all_pgc, default_pgc_num, extras, [])
+
+    editions = _find_alternate_edition_pgcs(ifo_bytes, minimum_duration)
+    return _DvdPgcPlan([], None, default_pgc_num, [], editions)
+
+
+def _classify_default_episode_title(default_title: Title, plan: _DvdPgcPlan) -> None:
+    if plan.default_pgc_num is not None and plan.default_pgc_num in set(
+        plan.episode_pgcs
+    ):
+        default_title.dvd_episode_number = (
+            plan.episode_pgcs.index(plan.default_pgc_num) + 1
         )
-        if title is None:
-            continue
-        titles.append(title)
-        log_debug(f"  Extra: PGC {pgc_num} ({title.duration_seconds:.0f}s)")
+    elif plan.play_all_pgc is not None and plan.default_pgc_num == plan.play_all_pgc:
+        default_title.dvd_play_all = True
 
 
 def _log_dvd_episode_group(
@@ -374,73 +333,83 @@ def _log_dvd_episode_group(
 
 def _append_dvd_episode_titles(
     titles: list[Title],
+    plan: _DvdPgcPlan,
     default_title: Title,
-    layout: _DvdVtsLayout,
-    metadata: _DvdDiscMetadata,
-    config: Config | None,
-    episode_pgcs: list[int],
-    play_all_pgc: int | None,
-    default_pgc_num: int | None,
-    ifo_bytes: bytes,
+    title_name: str,
+    vts: int,
+    build_title: Callable[[int, str], Title | None],
 ) -> None:
-    _classify_default_episode_title(
-        default_title, episode_pgcs, play_all_pgc, default_pgc_num
-    )
-    _append_dvd_episode_pgcs(
-        titles,
-        default_title,
-        layout,
-        metadata,
-        config,
-        episode_pgcs,
-        default_pgc_num,
-    )
-    _append_dvd_play_all(
-        titles, layout, metadata, config, play_all_pgc, default_pgc_num
-    )
-    _append_dvd_extras(
-        titles,
-        layout,
-        metadata,
-        config,
-        episode_pgcs,
-        play_all_pgc,
-        default_pgc_num,
-        ifo_bytes,
-    )
-    _log_dvd_episode_group(len(episode_pgcs), layout.vts, play_all_pgc)
+    """Append one title per episode PGC, plus play-all and extra titles.
+
+    Shared driver for every DVD source mode: ``build_title`` builds a title
+    for a PGC under its source mode's own bookkeeping (its arguments are the
+    1-indexed PGC number and the final title name) and must not append it;
+    this driver owns appending, numbering, flags, and logging.
+    """
+    _classify_default_episode_title(default_title, plan)
+    for episode_index, pgc_num in enumerate(plan.episode_pgcs, start=1):
+        if pgc_num == plan.default_pgc_num:
+            log_debug(
+                f"  Episode {episode_index}: PGC {pgc_num} "
+                f"({default_title.duration_seconds:.0f}s) [default title]"
+            )
+            continue
+
+        title = build_title(pgc_num, f"{title_name} - Episode {episode_index}")
+        if title is None:
+            continue
+        title.dvd_episode_number = episode_index
+        titles.append(title)
+        log_debug(
+            f"  Episode {episode_index}: PGC {pgc_num} ({title.duration_seconds:.0f}s)"
+        )
+
+    if plan.play_all_pgc is not None and plan.play_all_pgc != plan.default_pgc_num:
+        title = build_title(plan.play_all_pgc, f"{title_name} - Play All")
+        if title is not None:
+            title.dvd_play_all = True
+            titles.append(title)
+            log_debug(
+                f"  Play all: PGC {plan.play_all_pgc} ({title.duration_seconds:.0f}s)"
+            )
+
+    for pgc_num in plan.extras:
+        title = build_title(pgc_num, f"{title_name} - Extra")
+        if title is None:
+            continue
+        titles.append(title)
+        log_debug(f"  Extra: PGC {pgc_num} ({title.duration_seconds:.0f}s)")
+
+    _log_dvd_episode_group(len(plan.episode_pgcs), vts, plan.play_all_pgc)
 
 
 def _append_dvd_alternate_editions(
     titles: list[Title],
-    layout: _DvdVtsLayout,
-    metadata: _DvdDiscMetadata,
-    ifo_bytes: bytes,
-    config: Config | None = None,
+    title_name: str,
+    plan: _DvdPgcPlan,
+    build_title: Callable[[int, str], Title | None],
 ) -> None:
-    extra_pgcs = (
-        _find_alternate_edition_pgcs(
-            ifo_bytes, (config or RUNTIME_STATE.config).min_duration
-        )
-        if ifo_bytes
-        else []
-    )
-    for edition_offset, pgc_num in enumerate(extra_pgcs, start=2):
-        title = _build_dvd_pgc_title(
-            titles,
-            layout,
-            metadata,
-            pgc_num,
-            f"{layout.title_name} - Edition {edition_offset}",
-            config=config,
-        )
+    """Append titles for a non-episodic VTS's alternate PGCs.
+
+    Shared driver for every DVD source mode (see
+    ``_append_dvd_episode_titles``): genuine re-cuts of the default title are
+    labelled "Edition N" (numbered by editions only); unrelated substantial
+    PGCs such as bonus features sharing the VTS get a neutral "PGC N" label.
+    """
+    edition_offset = 2
+    for pgc_num, is_edition in plan.editions:
+        label = f"Edition {edition_offset}" if is_edition else f"PGC {pgc_num}"
+        title = build_title(pgc_num, f"{title_name} - {label}")
         if title is None:
             continue
-        title.dvd_edition_label = f"Edition {edition_offset}"
+        title.dvd_edition_label = label
         titles.append(title)
+        if is_edition:
+            edition_offset += 1
         log_debug(
-            f"  Alternate edition: PGC {pgc_num} "
-            f"({title.duration_seconds:.0f}s) exposed as '{title.name}'"
+            f"  {'Alternate edition' if is_edition else 'Additional PGC'}: "
+            f"PGC {pgc_num} ({title.duration_seconds:.0f}s) "
+            f"exposed as '{title.name}'"
         )
 
 
@@ -452,32 +421,24 @@ def _append_dvd_pgc_titles(
     ifo_bytes: bytes,
     config: Config | None = None,
 ) -> None:
-    # TV-series discs use multiple similar-duration PGCs as separate episodes.
-    # Detect that pattern first; otherwise expose substantial alternate PGCs as
-    # seamless-branching editions, matching MakeMKV's separate listings.
-    episode_pgcs: list[int] = []
-    play_all_pgc: int | None = None
-    if ifo_bytes:
-        episode_pgcs, play_all_pgc = _detect_episode_pgcs(
-            ifo_bytes,
-            (config or RUNTIME_STATE.config).min_duration,
-        )
-    default_pgc_num = _default_pgc_number(ifo_bytes) if ifo_bytes else None
+    # One shared classification drives every DVD source mode (extracted
+    # VIDEO_TS folders and ISO images alike), so both label identical
+    # content identically; see `_plan_dvd_pgc_titles`.
+    plan = _plan_dvd_pgc_titles(ifo_bytes, config)
+    if not (plan.episode_pgcs or plan.editions):
+        return
 
-    if len(episode_pgcs) >= 2:
+    def build_title(pgc_number: int, name: str) -> Title | None:
+        return _build_dvd_pgc_title(
+            titles, layout, metadata, pgc_number, name, config=config
+        )
+
+    if plan.episode_pgcs:
         _append_dvd_episode_titles(
-            titles,
-            default_title,
-            layout,
-            metadata,
-            config,
-            episode_pgcs,
-            play_all_pgc,
-            default_pgc_num,
-            ifo_bytes,
+            titles, plan, default_title, layout.title_name, layout.vts, build_title
         )
     else:
-        _append_dvd_alternate_editions(titles, layout, metadata, ifo_bytes, config)
+        _append_dvd_alternate_editions(titles, layout.title_name, plan, build_title)
 
 
 def _ensure_dvd_subtitle_streams(title: "Title", sub_by_id: dict[int, str]) -> None:
@@ -588,13 +549,17 @@ def _build_dvd_audio_streams(
     audio_languages: dict[int, str],
 ) -> list[Stream]:
     audio_attrs = _parse_vts_audio_attrs(ifo_data)
-    if active_audio:
+    # The VTS attribute-table set (via the merged language map) is
+    # authoritative, matching MakeMKV: a PGC's stream-control table may mark
+    # streams unavailable for its presentation (commentary tracks enabled
+    # only in an alternate PGC), but the streams exist in the VOBs and
+    # rippers list them. The PGC active set is only a fallback for discs
+    # whose attribute tables yield no stream IDs at all.
+    audio_ids = sorted(audio_languages)
+    if not audio_ids:
         audio_ids = sorted(active_audio)
-    else:
-        # Some discs do not mark all streams available in PGC control entries.
-        audio_ids = sorted(audio_languages)
         if audio_ids:
-            log_debug(f"PGC active_audio empty, using VTS audio IDs: {audio_ids}")
+            log_debug(f"VTS audio IDs empty, using PGC active IDs: {audio_ids}")
 
     streams: list[Stream] = []
     for type_index, stream_id in enumerate(audio_ids):
@@ -631,14 +596,13 @@ def _build_dvd_subtitle_streams(
     subtitle_languages: dict[int, str],
 ) -> list[Stream]:
     subtitle_attrs = _parse_vts_subp_attrs(ifo_data)
-    if active_subtitles:
+    # Attribute-table set first, PGC active set as fallback — same MakeMKV
+    # rationale as the audio path above.
+    subtitle_ids = sorted(subtitle_languages)
+    if not subtitle_ids:
         subtitle_ids = sorted(active_subtitles)
-    else:
-        # Some discs author subtitle streams without marking them available in
-        # the PGC stream-control table.
-        subtitle_ids = sorted(subtitle_languages)
         if subtitle_ids:
-            log_debug(f"PGC active_sub empty, using VTS sub IDs: {subtitle_ids}")
+            log_debug(f"VTS sub IDs empty, using PGC active IDs: {subtitle_ids}")
 
     streams: list[Stream] = []
     for type_index, stream_id in enumerate(subtitle_ids):
@@ -667,9 +631,15 @@ def _build_dvd_streams_from_ifo(
 ) -> list[Stream]:
     """Build authoritative DVD streams from a VTS IFO.
 
-    Returns video, audio, and subpicture streams in mux order. Active PGC IDs
-    are preferred; VTS attribute-table IDs are used when PGC control omits all
-    streams. An invalid IFO returns an empty list so callers can probe instead.
+    Returns video, audio, and subpicture streams in mux order. The VTS
+    attribute-table stream set is authoritative — matching MakeMKV, which
+    lists every stream a VTS declares even when a PGC's stream-control
+    table marks it unavailable (e.g. Treasure Planet's 2002 R1 DVD9: the
+    commentary track is disabled in the default movie PGC and enabled only
+    in its alternate, yet MakeMKV lists all four audio streams for both).
+    PGC control entries supply per-stream language overrides; the PGC
+    active set is only a fallback when the attribute table yields nothing.
+    An invalid IFO returns an empty list so callers can probe instead.
     """
     if len(ifo_data) < 12 or ifo_data[:12] != _VTS_IFO_IDENT:
         return []

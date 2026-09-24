@@ -183,3 +183,35 @@ def test_display_title_details_prints_groups_in_order(
     assert "1920x1080" in output
     assert "8ch" in output
     assert "(forced)" in output
+
+
+def test_display_titles_marks_episodes_on_series_discs(monkeypatch, tmp_path, capsys):
+    """A series disc has no main feature: every episode gets a circle
+    marker (play-alls excluded) instead of a star on one arbitrary title."""
+    monkeypatch.setattr(cli, "get_terminal_width", lambda: 80)
+    titles = []
+    for index, episode in ((0, 1), (1, 1), (2, None), (3, None)):
+        title = Title(
+            index=index,
+            source_file=tmp_path / f"t{index}.vob",
+            name=f"Show - Episode {index + 1}",
+            duration_seconds=1200.0 + index,
+        )
+        title.dvd_episode_number = episode
+        if index == 3:
+            title.dvd_play_all = True
+        titles.append(title)
+
+    cli.display_titles(titles, config=cli.Config(show_all=True))
+
+    output = capsys.readouterr().out
+    lines = [line for line in output.splitlines() if "Episode" in line]
+    assert lines[0].endswith("○")
+    assert lines[1].endswith("○")
+    # The bonus title (no episode number) and the play-all chain are
+    # unmarked; no star appears anywhere on a series disc.
+    assert lines[2].endswith("V:0 A:0 S:0")
+    assert lines[3].endswith("V:0 A:0 S:0")
+    assert "★" not in output
+    assert "○ = episode" in output
+    assert "★ = main feature" not in output

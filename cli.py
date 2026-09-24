@@ -118,6 +118,11 @@ def display_titles(
     w = get_terminal_width()
     visible, hidden = _get_notable_titles(titles, config)
     main_idx = pick_main_feature(titles, config)
+    # A series disc has no "main feature": episodes are peers, and the
+    # scoring would land the star on an arbitrary episode or even a bonus
+    # title (Superman 1988's star went to a 13-minute featurette). Mark
+    # every episode instead; the star stays for movie discs.
+    series_disc = any(_is_episode_title(title) for title in titles)
     index_width = max([1, *(len(str(title.index)) for title in visible)])
     summary_width = max(
         [len("Streams"), *(len(title.streams_summary) for title in visible)]
@@ -157,7 +162,11 @@ def display_titles(
         n = _title_list_name(t, nw)
         playlist = t.playlist_name or ""
         playlist_value = f"{playlist:<{playlist_width}}  " if show_playlist else ""
-        marker = " \u2605" if t.index == main_idx else ""
+        if series_disc:
+            is_episode = _is_episode_title(t) and not t.dvd_play_all
+            marker = " \u25cb" if is_episode else ""
+        else:
+            marker = " \u2605" if t.index == main_idx else ""
         print(
             f"{t.index:>{index_width}}  {t.duration_display:<8}  {n:<{nw}}  "
             f"{playlist_value}{t.streams_summary}{marker}"
@@ -170,7 +179,11 @@ def display_titles(
         total_msg += "  " + tr(
             "({n} low-quality titles hidden; use --show-all to view)", n=hidden
         )
-    total_msg += "  " + tr("\u2605 = main feature")
+    total_msg += (
+        "  " + tr("\u25cb = episode")
+        if series_disc
+        else "  " + tr("\u2605 = main feature")
+    )
     print("═" * rule_w + f"\n{total_msg}\n")
 
 
@@ -430,6 +443,12 @@ class _InteractiveRipper:
         self.rip_index(idx, stream_args if stream_args else None)
 
     def _handle_main_feature(self) -> None:
+        # A series disc has no single main feature; ripping "the feature"
+        # means the episodes.
+        if any(_is_episode_title(title) for title in self.titles):
+            log_info(tr("Series disc: no single main feature; ripping all episodes"))
+            self._handle_episodes()
+            return
         idx = pick_main_feature(self.titles, self.creator.config)
         if idx < 0:
             log_warn(tr("No titles"))
@@ -1270,6 +1289,11 @@ def _run_main_feature_rip(
     runtime_state: RuntimeState | None = None,
 ) -> None:
     state = runtime_state or RUNTIME_STATE
+    # A series disc has no single main feature; -m means the episodes.
+    if any(_is_episode_title(title) for title in titles):
+        log_info(tr("Series disc: no single main feature; ripping all episodes"))
+        _rip_episode_batch(titles, state)
+        return
     index = pick_main_feature(titles, state.config)
     if index < 0:
         log_warn(tr("No titles found"))

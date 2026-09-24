@@ -189,3 +189,25 @@ def test_run_action_forwards_interactive_runtime_state(
     )
 
     assert calls == [([title], metadata, state)]
+
+
+def test_run_main_feature_rip_falls_back_to_episodes_on_series_discs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """-m on a series disc rips the episodes: there is no single main
+    feature, and the star-scoring can land on an unrelated bonus title."""
+    episode = make_title(0)
+    episode.dvd_episode_number = 1
+    bonus = make_title(1)
+    state = models.RuntimeState()
+    batch_calls: list[tuple[list[Title], models.RuntimeState]] = []
+
+    def rip_batch(titles: list[Title], runtime_state=None) -> None:
+        assert runtime_state is not None
+        batch_calls.append((titles, runtime_state))
+
+    monkeypatch.setattr(cli, "_rip_title_batch", rip_batch)
+
+    cli._run_main_feature_rip([bonus, episode], None, runtime_state=state)
+
+    assert batch_calls == [([episode], state)]

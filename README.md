@@ -96,7 +96,7 @@ mkvsmith> q          # quit
 | Flag | Description |
 |---|---|
 | `-t, --title N` | Rip a specific title |
-| `-m, --main` | Rip the detected main feature |
+| `-m, --main` | Rip the detected main feature (all episodes on series discs) |
 | `-a, --all` | Rip all titles |
 | `-e, --episodes` | Rip all detected TV episodes |
 | `-i, --info` | Just scan and list titles |
@@ -212,9 +212,6 @@ mv tests/fixtures/VTS_09_0.IFO tests/fixtures/treasure_vts_09_0.ifo
 # Beauty and the Beast (1991) multi-angle DVD — see
 # tests/test_parser_fixtures.py for the files it expects.
 ```
-
-`scripts/inspect_fixtures.py` re-parses whatever is in `tests/fixtures/` and
-prints the values the tests expect, which is handy when swapping in a new disc.
 
 `scripts/inspect_fixtures.py` re-parses whatever is in `tests/fixtures/` and
 prints the values the tests expect, which is handy when swapping in a new disc.

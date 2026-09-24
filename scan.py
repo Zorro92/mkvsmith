@@ -60,6 +60,8 @@ from dvdbuild import (
     _apply_dvd_ifo_languages,
     _build_title_from_ifo,
     _create_title,
+    _demote_dwarfed_episode_groups,
+    _label_cross_vts_episodes,
     _plan_dvd_pgc_titles,
     _scan_dvd_source,
 )
@@ -1039,8 +1041,9 @@ def _build_iso_bluray_playlist_title(
     return title
 
 
-def _scanned_title_sort_key(title: Title) -> tuple[int, int, float]:
-    # Episodes first, other titles by duration, then the play-all chain last.
+def _scanned_title_sort_key(title: Title) -> tuple[int, int, str, float]:
+    # Episodes first (part "a" before part "b" within one episode), other
+    # titles by duration, then the play-all chain last.
     if title.dvd_play_all:
         group = 2
     elif title.dvd_episode_number is not None:
@@ -1050,6 +1053,7 @@ def _scanned_title_sort_key(title: Title) -> tuple[int, int, float]:
     return (
         group,
         title.dvd_episode_number if title.dvd_episode_number is not None else 0,
+        title.dvd_episode_part or "",
         -title.duration_seconds,
     )
 
@@ -1178,6 +1182,14 @@ class Scanner:
 
         self.disc_name = self.disc_metadata.name
         self._runtime_state.disc_metadata = self.disc_metadata
+        # Within-VTS episode groups are demoted when a longer title
+        # elsewhere on the disc dwarfs them (movie discs with anthology
+        # bonus VTSs), then cross-VTS episode labelling runs, then the
+        # sort — so episode numbers participate in the ordering
+        # (within-VTS episodes are numbered during scanning and already
+        # do).
+        _demote_dwarfed_episode_groups(self.titles, self.config)
+        _label_cross_vts_episodes(self.titles, self.config)
         _sort_and_reindex_titles(self.titles)
         if self.titles:
             self._apply_disc_name()
@@ -1194,6 +1206,10 @@ class Scanner:
         TV-series episodes (``dvd_episode_number``) are labelled "Episode N"
         regardless of main-feature status, and the "play all" chain is
         explicitly marked so it isn't mistaken for the series itself.
+
+        One-episode-per-VTS series (each episode its own title, invisible to
+        the within-VTS PGC detection) are labelled before the title sort in
+        ``scan()`` so they list in episode order.
         """
         if not self.disc_name:
             source_name = self.source.name if self.source.is_dir() else self.source.stem
@@ -1205,7 +1221,8 @@ class Scanner:
         main_idx = pick_main_feature(self.titles, self.config)
         for t in self.titles:
             if t.dvd_episode_number is not None:
-                t.name = f"{self.disc_name} - Episode {t.dvd_episode_number}"
+                part = t.dvd_episode_part or ""
+                t.name = f"{self.disc_name} - Episode {t.dvd_episode_number}{part}"
             elif t.dvd_play_all:
                 t.name = f"{self.disc_name} - Play All"
             elif t.index == main_idx:

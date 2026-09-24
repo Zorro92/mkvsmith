@@ -11,6 +11,7 @@ import pytest
 
 import disc_reader
 import mkv
+from cc608 import CC608_CODEC_SRT
 from mkv import MappedStream, _map_streams_to_ident_tracks, _track_filter_options
 import models
 from models import StreamType
@@ -405,6 +406,7 @@ def test_build_mkvmerge_command_orders_metadata_inputs_and_fallback(
         subtitle_fallback,
         [{"id": 0, "type": "subtitles"}],
         [subtitle],
+        None,
         cleanup,
         temp_files,
     )
@@ -438,6 +440,70 @@ def test_build_mkvmerge_command_orders_metadata_inputs_and_fallback(
     ]
     assert cleanup == [cleanup[0], cleanup[1], subtitle_fallback]
     assert temp_files == cleanup[:2]
+
+
+def test_build_mkvmerge_command_appends_cc608_srt_track(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    temp_files: list[Path] = []
+    source = tmp_path / "movie.vob"
+    source.write_bytes(b"video")
+    title = Title(
+        index=0,
+        source_file=source,
+        name="Movie",
+        duration_seconds=100.0,
+    )
+    cc_stream = Stream(
+        index=1,
+        stream_type=StreamType.SUBTITLE,
+        codec=CC608_CODEC_SRT,
+        language="en",
+        is_hearing_impaired=True,
+        type_index=0,
+    )
+    cc_stream.title = "Closed Captions"
+    title.streams = [
+        Stream(index=0, stream_type=StreamType.VIDEO, codec="mpeg2video"),
+        cc_stream,
+    ]
+    cc_srt = tmp_path / "captions.srt"
+    cc_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nHi\n")
+    cleanup: list[Path] = []
+
+    cmd = mkv._build_mkvmerge_command(
+        title,
+        tmp_path / "movie.mkv",
+        [source],
+        [],
+        [],
+        None,
+        [],
+        None,
+        [],
+        [],
+        cc_srt,
+        cleanup,
+        temp_files,
+    )
+
+    # The sidecar's single text track is track 0 within its own file, and
+    # the SRT is appended as the last input.
+    srt_index = cmd.index(str(cc_srt))
+    assert cmd[srt_index - 8 :] == [
+        "--language",
+        "0:en",
+        "--default-track",
+        "0:no",
+        "--hearing-impaired-flag",
+        "0:yes",
+        "--track-name",
+        "0:Closed Captions",
+        str(cc_srt),
+    ]
+    assert cmd[-1] == str(cc_srt)
+    assert cleanup[-1] == cc_srt
 
 
 def test_output_file_for_title_sanitizes_name(tmp_path: Path) -> None:

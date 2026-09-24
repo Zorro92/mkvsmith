@@ -7,6 +7,7 @@ from typing import Any
 
 import dvdifo
 import dvdbuild
+from cc608 import CC608_CODEC_SRT
 from dvdifo import VmgInfo
 from models import Config, Stream, StreamType, Title
 
@@ -732,6 +733,48 @@ def test_undeclared_subpicture_phase_survives_malformed_ifo(monkeypatch: Any) ->
     )
 
     assert len(title.streams) == 1
+
+
+def test_append_dvd_closed_captions_respects_config_flag(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The CC text track is opt-out via Config.cc608_srt (--no-cc-srt)."""
+    vob = tmp_path / "VTS_01_1.VOB"
+    vob.write_bytes(b"packets")
+    monkeypatch.setattr(dvdbuild, "_has_cc608_data", lambda _path: True)
+
+    def make_title() -> Title:
+        title = Title(0, vob, "Title 1", 100.0)
+        title.dvd_video_attrs = dvdifo._IFOVideoAttrs(
+            mpeg_version="MPEG-2",
+            standard="NTSC",
+            aspect_ratio="16:9",
+            resolution=(720, 480),
+            letterboxed=False,
+            film_mode=False,
+            cc_field_1=True,
+            cc_field_2=False,
+        )
+        title.streams = [
+            Stream(index=0, stream_type=StreamType.VIDEO, codec="mpeg2video"),
+            Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3", language="en"),
+        ]
+        return title
+
+    enabled = make_title()
+    dvdbuild._append_dvd_closed_captions(
+        enabled, [vob], config=Config(extract_cc608=True)
+    )
+    assert [stream.codec for stream in enabled.subtitle_streams] == [CC608_CODEC_SRT]
+    cc_stream = enabled.subtitle_streams[0]
+    assert cc_stream.is_hearing_impaired is True
+    assert cc_stream.language == "en"
+
+    disabled = make_title()
+    dvdbuild._append_dvd_closed_captions(
+        disabled, [vob], config=Config(extract_cc608=False)
+    )
+    assert disabled.subtitle_streams == []
 
 
 def test_label_cross_vts_episodes_labels_one_per_vts_series(

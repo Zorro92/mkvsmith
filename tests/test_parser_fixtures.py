@@ -26,17 +26,16 @@ from dvdifo import (
     _EditionCell,
     _detect_episode_pgcs,
     _effective_pgc_durations,
-    _shared_runtime_fraction,
-    _pgc_cell_durations,
-    _find_alternate_edition_pgcs,
     _enumerate_vts_pgcs,
     _episode_part_labels,
+    _find_alternate_edition_pgcs,
     _find_main_pgc,
     _get_active_pgc_streams,
     _parse_pgc_stream_languages,
     _lookup_main_feature_range,
     _parse_vmg_ifo,
     _pgc_angle_from_commands,
+    _pgc_cell_durations,
     _parse_vts_c_adt,
     _parse_vts_ifo_languages,
     _parse_vts_pgc_info,
@@ -45,6 +44,7 @@ from dvdifo import (
     _parse_vts_audio_attrs,
     _parse_vts_vobu_admap,
     _select_main_edition_cells,
+    _shared_runtime_fraction,
     _vts_ttn1_pgc_abs,
     _build_main_edition_vobu_ranges,
 )
@@ -437,6 +437,9 @@ def test_scan_multi_angle_vob_video_pts(fixtures_dir: Path) -> None:
     )
 
     assert result == [(25257, 2062)]
+
+
+# --- DVD alternate PGCs (editions vs bonus features) ---------------------------
 
 
 @pytest.mark.skipif(

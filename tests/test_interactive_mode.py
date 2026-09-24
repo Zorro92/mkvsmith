@@ -285,3 +285,26 @@ def test_interactive_mode_uses_injected_runtime_state(
     assert rippers[0].edition_groups == []
     assert rippers[0].debug is False
     assert rippers[0].completed is True
+
+
+@pytest.mark.usefixtures("preserved_cli_state")
+def test_interactive_main_feature_falls_back_to_episodes(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """rm on a series disc rips the episodes instead of the star-scored
+    title (which can be an unrelated bonus)."""
+    episode = make_title(0, episode=1)
+    bonus = make_title(1)
+    ripper = make_ripper(tmp_path)
+    ripper.titles = [episode, bonus]
+    ripped: list[Title] = []
+
+    def rip_collection(selected: list[Title]) -> tuple[int, int]:
+        ripped.extend(selected)
+        return len(selected), 0
+
+    monkeypatch.setattr(ripper, "rip_collection", rip_collection)
+
+    ripper._handle_main_feature()
+
+    assert ripped == [episode]

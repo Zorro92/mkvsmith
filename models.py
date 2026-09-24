@@ -103,6 +103,10 @@ class RuntimeLogger:
 # Check at module level whether mkvmerge is on PATH.
 _HAS_MKVMERGE: bool = shutil.which("mkvmerge") is not None
 
+# Keep in sync with pyproject.toml [project].version. Shared modules such as
+# discdb.py cannot import cli.py without creating a dependency cycle.
+MKVSMITH_VERSION = "0.4.0"
+
 
 # =============================================================================
 # VTS IFO sector-pointer offsets

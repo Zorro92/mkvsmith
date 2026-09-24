@@ -8,7 +8,7 @@ locales.
 
 Language resolution order (first match wins):
     1. --ui-lang flag            (explicit, overrides everything)
-    2. settings file ("language" key in ~/.mkvsmith_config.json)
+    2. settings file ("language" key in $XDG_CONFIG_HOME/mkvsmith/config.json)
     3. LC_MESSAGES / LANG env    (POSIX locale auto-detection)
     4. "en"                      (default)
 
@@ -147,8 +147,8 @@ _ES: dict[str, str] = {
     "mount/sudo not found on PATH.": "mount/sudo no encontrado en el PATH.",
     "mount exception: {err}": "excepción de montaje: {err}",
     "Temp dir '{dir}' is RAM-backed; limiting extracts to {gb:.1f} GB "
-    "({pct:.0%} of {total_gb:.1f} GB RAM). Oversized titles spill to disk.": "El directorio temporal '{dir}' está en RAM; limitando las extracciones "
-    "a {gb:.1f} GB ({pct:.0%} de {total_gb:.1f} GB de RAM). Los títulos "
+    "({pct:.0%} of {total_gb:.1f} GB {kind}). Oversized titles spill to disk.": "El directorio temporal '{dir}' está en RAM; limitando las extracciones "
+    "a {gb:.1f} GB ({pct:.0%} de {total_gb:.1f} GB de {kind}). Los títulos "
     "demasiado grandes se pasan al disco.",
     "Temp dir '{dir}' is RAM-backed but installed RAM could not be "
     "detected; large rips may exhaust memory. Use --temp-dir to point "
@@ -164,10 +164,17 @@ _ES: dict[str, str] = {
     "using disk-backed temp '{dir}' for this title.": "El título, estimado en {est:.1f} GB, cabe en el presupuesto de RAM de "
     "{budget:.1f} GB pero la memoria disponible es baja ({avail:.1f} GB libres); "
     "usando el directorio temporal en disco '{dir}' para este título.",
+    "Title estimated at {est:.1f} GB fits the RAM budget of {budget:.1f} GB "
+    "but the temp filesystem is low on space ({avail:.1f} GB free); "
+    "using disk-backed temp '{dir}' for this title.": "El título, estimado en {est:.1f} GB, cabe en el presupuesto de RAM de "
+    "{budget:.1f} GB pero el sistema de archivos temporal tiene poco espacio "
+    "({avail:.1f} GB libres); usando el directorio temporal en disco '{dir}' "
+    "para este título.",
     "7z missing. Install with: sudo apt install p7zip-full": "Falta 7z. Instálalo con: sudo apt install p7zip-full",
     "7z failed: {err}": "7z falló: {err}",
     "7z extraction failed: {err}": "la extracción con 7z falló: {err}",
     "7z exception: {err}": "excepción de 7z: {err}",
+    "'{name}' already exists. Overwrite? [y/N]:": "'{name}' ya existe. ¿Sobrescribir? [y/N]:",
     # --- misc ------------------------------------------------------------------
     "Not found: {path}": "No encontrado: {path}",
     # --- argparse / --help -----------------------------------------------------
@@ -177,12 +184,13 @@ _ES: dict[str, str] = {
     "rip all detected TV-series episodes": "extraer todos los episodios de series detectados",
     "rip the given playlist titles as ONE multi-edition MKV (comma-separated title numbers, first is the default edition); e.g. --multi-edition 0,1,2": "extrae los títulos de playlist indicados como UN MKV multi-edición (números de título separados por comas, el primero es la edición predeterminada); p. ej. --multi-edition 0,1,2",
     "show all titles including low-quality ones (menus, trailers, etc.)": "mostrar todos los títulos, incluidos los de baja calidad (menús, tráilers, etc.)",
-    "directory for temporary files (default: system temp dir, often /tmp/tmpfs). ": "directorio para archivos temporales (predeterminado: tmp del sistema, a menudo /tmp/tmpfs). ",
-    "Set to a disk-backed path when ripping large ISOs to avoid filling RAM.": "Usa una ruta en disco al extraer ISOs grandes para evitar llenar la RAM.",
-    "max fraction of installed RAM that RAM-backed (tmpfs) temp dirs may "
-    "use before spilling to disk (default: 0.8). 0 disables the check.": "fracción máxima de la RAM instalada que los directorios temporales en "
-    "RAM (tmpfs) pueden usar antes de pasar al disco (predeterminado: 0.8). "
-    "0 desactiva la comprobación.",
+    "directory for temporary files (default: /var/tmp when usable, else system temp). ": "directorio para archivos temporales (predeterminado: /var/tmp si está disponible, si no el tmp del sistema). ",
+    "Set explicitly to use tmpfs/RAM (see --ram-limit) or another disk path.": "Defínelo explícitamente para usar tmpfs/RAM (ver --ram-limit) u otra ruta en disco.",
+    "max fraction of RAM-backed (tmpfs) temp capacity that extractions may "
+    "use before spilling to disk (default: 0.8). 0 disables the check.": "fracción máxima de la capacidad temporal en "
+    "RAM (tmpfs) que las extracciones pueden usar antes de pasar al disco "
+    "(predeterminado: 0.8). 0 desactiva la comprobación.",
+    "overwrite existing output files without asking": "sobrescribir los archivos de salida existentes sin preguntar",
     "skip all sudo-based ISO mounting (loop mount, etc.)": "omitir todo el montaje de ISO con sudo (loop mount, etc.)",
     "do not tag, even in interactive mode when a TMDB key is available": "no etiquetar, ni siquiera en modo interactivo cuando hay una clave de TMDB",
     "fetch TMDB metadata and tag each rip during muxing": "obtener metadatos de TMDB y etiquetar cada extracción durante el muxado",

@@ -461,3 +461,104 @@ def test_is_device_path_matches_windows_drive_paths() -> None:
 def test_detect_source_type_matches_windows_drive_paths() -> None:
     assert disc_reader.detect_source_type(Path("Q:")) == disc_reader.SourceType.DEVICE
     assert disc_reader.detect_source_type(Path("Z:/")) == disc_reader.SourceType.DEVICE
+
+
+def _isolated_link_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Point per-process link state at tmp_path (no global leakage)."""
+    import tempfile
+
+    monkeypatch.setattr(disc_reader, "_SAFE_LINK_DIR", None)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+
+def test_safe_7z_path_leaves_clean_names_alone(tmp_path: Path) -> None:
+    iso = tmp_path / "movie.iso"
+    iso.write_bytes(b"fake")
+
+    assert disc_reader._get_safe_7z_path(iso) == (iso, None)
+    assert list(tmp_path.iterdir()) == [iso]
+
+
+def test_safe_7z_path_links_inside_private_temp_not_media_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _isolated_link_dir(monkeypatch, tmp_path)
+    media = tmp_path / "media"
+    media.mkdir()
+    iso = media / "Movie (2020).iso"
+    iso.write_bytes(b"fake")
+    registry: list[Path] = []
+
+    target, link = disc_reader._get_safe_7z_path(iso, registry)
+
+    assert link is not None
+    assert target == link
+    assert link.parent != media
+    assert link.resolve() == iso.resolve()
+    # The media folder sees no stray symlink (folder watchers stay quiet).
+    assert list(media.iterdir()) == [iso]
+    assert registry == [link]
+
+
+def test_safe_7z_path_registers_globally_without_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import models
+
+    _isolated_link_dir(monkeypatch, tmp_path)
+    state = models.RuntimeState()
+    monkeypatch.setattr(disc_reader, "RUNTIME_STATE", state)
+    iso = tmp_path / "Movie (2020).iso"
+    iso.write_bytes(b"fake")
+
+    _, link = disc_reader._get_safe_7z_path(iso)
+
+    assert link is not None
+    assert state.cleanup.symlinks == [link]
+
+
+def test_safe_7z_path_uniquifies_colliding_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _isolated_link_dir(monkeypatch, tmp_path)
+    first = tmp_path / "a" / "Movie (2020).iso"
+    second = tmp_path / "b" / "Movie (2020).iso"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+
+    target_a, link_a = disc_reader._get_safe_7z_path(first, [])
+    target_b, link_b = disc_reader._get_safe_7z_path(second, [])
+
+    assert link_a is not None and link_b is not None
+    assert target_a != target_b
+    assert link_a.resolve() == first.resolve()
+    assert link_b.resolve() == second.resolve()
+
+
+def test_safe_7z_path_reuses_link_for_same_iso(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _isolated_link_dir(monkeypatch, tmp_path)
+    iso = tmp_path / "Movie (2020).iso"
+    iso.write_bytes(b"fake")
+
+    assert disc_reader._get_safe_7z_path(iso, []) == disc_reader._get_safe_7z_path(
+        iso, []
+    )
+
+
+def test_safe_7z_path_falls_back_when_no_temp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import tempfile
+
+    monkeypatch.setattr(disc_reader, "_SAFE_LINK_DIR", None)
+    monkeypatch.setattr(
+        tempfile, "mkdtemp", lambda *_a, **_k: (_ for _ in ()).throw(OSError())
+    )
+    iso = tmp_path / "Movie (2020).iso"
+    iso.write_bytes(b"fake")
+
+    assert disc_reader._get_safe_7z_path(iso, []) == (iso, None)

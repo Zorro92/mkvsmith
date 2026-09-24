@@ -40,8 +40,9 @@ from i18n import tr
 # =============================================================================
 
 # Kept for backwards-compat with older call sites; settings now live in the
-# unified ~/.mkvsmith_config.json (see settings.py), with one-time migration from
-# the legacy ~/.mkv_tagger_config.json handled inside load_settings().
+# XDG config file ($XDG_CONFIG_HOME/mkvsmith/config.json, see settings.py),
+# with one-time migration from the legacy ~/.mkvsmith_config.json and
+# ~/.mkv_tagger_config.json handled inside load_settings().
 TAGGER_CONFIG_PATH = None  # type: ignore[assignment]
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"

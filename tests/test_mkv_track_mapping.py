@@ -898,22 +898,28 @@ def test_append_track_options_skips_unmatched_streams() -> None:
     assert cmd == ["mkvmerge"]
 
 
-def test_parse_and_read_mkvmerge_progress_across_chunks() -> None:
+def test_parse_and_read_mkvmerge_progress_line_by_line() -> None:
     assert mkv._parse_mkvmerge_progress("Progress: 999%") == 100
     assert mkv._parse_mkvmerge_progress("no progress") is None
+    # A line carrying several updates reports the latest, not the first.
+    assert mkv._parse_mkvmerge_progress("Progress: 3% ... Progress: 42%") == 42
 
-    progress_prefix = "Progress: 4"
-    first_chunk = "x" * (512 - len(progress_prefix)) + progress_prefix
-    second_chunk = "2%\n" + "y" * 64
-    third_chunk = "Progress: 999%\n"
-    stdout = _FakeTextStdout([first_chunk, second_chunk, third_chunk])
+    lines = [
+        "mkvmerge v96.0\n",
+        "Progress: 1%\r",
+        "Progress: 1%\r",  # unchanged values don't re-fire
+        "Progress: 42%\r",
+        "warnings...\n",
+        "Progress: 100%\r",
+    ]
+    stdout = _FakeTextStdout(lines)
     progress: list[int] = []
     stdout_for_reader: Any = stdout
 
     output = mkv._read_mkvmerge_output(stdout_for_reader, progress.append)
 
-    assert output == first_chunk + second_chunk + third_chunk
-    assert progress == [42, 100]
+    assert output == "".join(lines)
+    assert progress == [1, 42, 100]
 
 
 def test_kill_mkvmerge_process_delegates_to_platform_kill(
@@ -974,15 +980,22 @@ def test_mkvmerge_watchdog_records_timeout_and_kills_process(
 
 
 class _FakeTextStdout:
-    def __init__(self, chunks: list[str] | BaseException):
-        self.chunks = chunks
+    """Mimics a text-mode pipe: readline() returns one framed line at a time."""
 
-    def read(self, _size: int) -> str:
-        if isinstance(self.chunks, BaseException):
-            raise self.chunks
-        if not self.chunks:
+    def __init__(self, chunks: list[str] | BaseException):
+        if isinstance(chunks, BaseException):
+            self._error: BaseException | None = chunks
+            self._lines: list[str] = []
+        else:
+            self._error = None
+            self._lines = "".join(chunks).splitlines(keepends=True)
+
+    def readline(self) -> str:
+        if self._error is not None:
+            raise self._error
+        if not self._lines:
             return ""
-        return self.chunks.pop(0)
+        return self._lines.pop(0)
 
 
 class _FakeMuxProcess:
@@ -1292,3 +1305,135 @@ def test_audio_filter_logic_for_complete_and_incomplete_dvd_audio() -> None:
 
     assert mkv._should_use_audio_filter(complete_ident_tracks, complete_title) is True
     assert mkv._should_use_audio_filter(ident_tracks, incomplete_title) is False
+
+
+def _mux_result_title(tmp_path: Path) -> Title:
+    return Title(
+        index=0,
+        source_file=tmp_path / "movie.vob",
+        name="Movie",
+        duration_seconds=100.0,
+    )
+
+
+def _mux_result_streams() -> list[Stream]:
+    return [Stream(index=0, stream_type=StreamType.VIDEO, codec="mpeg2video")]
+
+
+def test_build_mkvmerge_command_verbose_adds_flag(tmp_path: Path) -> None:
+    args: list[Any] = [
+        _mux_result_title(tmp_path),
+        tmp_path / "movie.mkv",
+        [tmp_path / "movie.vob"],
+        [],
+        [],
+        None,
+        [],
+        None,
+        [],
+        [],
+        None,
+        [],
+        [],
+    ]
+
+    assert mkv._build_mkvmerge_command(*args)[:2] == ["mkvmerge", "-o"]
+    assert mkv._build_mkvmerge_command(*args, verbose=True)[:3] == [
+        "mkvmerge",
+        "-v",
+        "-o",
+    ]
+
+
+def test_validate_mux_result_prints_warnings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    creator = mkv.MKVCreator(tmp_path, runtime_state=models.RuntimeState())
+    out = tmp_path / "Movie_t00.mkv"
+    out.write_bytes(b"partial")
+    output = "Progress: 100%\nWarning: track wobbled\nMultiplexing took 1s.\n"
+
+    creator._validate_mux_result(
+        _mux_result_title(tmp_path),
+        _mux_result_streams(),
+        ["mkvmerge"],
+        out,
+        1,
+        output,
+        False,
+    )
+
+    text = capsys.readouterr().out
+    assert "mkvmerge completed with warnings:" in text
+    assert "mkvmerge: Warning: track wobbled" in text
+    assert "Progress" not in text
+
+
+def test_validate_mux_result_caps_warnings_outside_debug(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    creator = mkv.MKVCreator(tmp_path, runtime_state=models.RuntimeState())
+    out = tmp_path / "Movie_t00.mkv"
+    out.write_bytes(b"partial")
+    output = "".join(f"Warning: wobble {n}\n" for n in range(12))
+
+    creator._validate_mux_result(
+        _mux_result_title(tmp_path),
+        _mux_result_streams(),
+        ["mkvmerge"],
+        out,
+        1,
+        output,
+        False,
+    )
+
+    text = capsys.readouterr().out
+    assert "mkvmerge: Warning: wobble 9" in text
+    assert "mkvmerge: Warning: wobble 10" not in text
+    assert "and 2 more" in text
+
+
+def test_validate_mux_result_shows_all_warnings_in_debug(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from models import Config
+
+    state = models.RuntimeState(config=Config(debug=True))
+    creator = mkv.MKVCreator(tmp_path, runtime_state=state)
+    out = tmp_path / "Movie_t00.mkv"
+    out.write_bytes(b"partial")
+    output = "".join(f"Warning: wobble {n}\n" for n in range(12))
+
+    creator._validate_mux_result(
+        _mux_result_title(tmp_path),
+        _mux_result_streams(),
+        ["mkvmerge"],
+        out,
+        1,
+        output,
+        False,
+    )
+
+    text = capsys.readouterr().out
+    assert "mkvmerge: Warning: wobble 11" in text
+    assert "more" not in text
+
+
+def test_validate_mux_result_notes_missing_warning_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    creator = mkv.MKVCreator(tmp_path, runtime_state=models.RuntimeState())
+    out = tmp_path / "Movie_t00.mkv"
+    out.write_bytes(b"partial")
+
+    creator._validate_mux_result(
+        _mux_result_title(tmp_path),
+        _mux_result_streams(),
+        ["mkvmerge"],
+        out,
+        1,
+        "Progress: 100%\nMultiplexing took 1s.\n",
+        False,
+    )
+
+    assert "no warning lines were captured" in capsys.readouterr().out

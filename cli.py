@@ -626,9 +626,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help=tr(
-            "directory for temporary files (default: system temp dir, often /tmp/tmpfs). "
+            "directory for temporary files (default: /var/tmp when usable, else system temp). "
         )
-        + tr("Set to a disk-backed path when ripping large ISOs to avoid filling RAM."),
+        + tr("Set explicitly to use tmpfs/RAM (see --ram-limit) or another disk path."),
     )
     p.add_argument(
         "--ram-limit",
@@ -636,9 +636,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=0.8,
         metavar="FRAC",
         help=tr(
-            "max fraction of installed RAM that RAM-backed (tmpfs) temp dirs may "
+            "max fraction of RAM-backed (tmpfs) temp capacity that extractions may "
             "use before spilling to disk (default: 0.8). 0 disables the check."
         ),
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help=tr("overwrite existing output files without asking"),
     )
     p.add_argument(
         "--no-sudo",
@@ -852,6 +857,7 @@ def _apply_parsed_args(
     config.debug = a.debug
     config.temp_dir = a.temp_dir
     config.ram_limit = a.ram_limit
+    config.force_overwrite = a.force
     config.no_sudo = a.no_sudo
     config.show_all = a.show_all
     config.extract_cc608 = a.cc_srt
@@ -1158,6 +1164,17 @@ def _configure_runtime(runtime_state: RuntimeState | None = None) -> None:
     if config.temp_dir:
         config.temp_dir.mkdir(parents=True, exist_ok=True)
         tempfile.tempdir = str(config.temp_dir)
+    else:
+        # Default to disk-backed /var/tmp (see disc_reader.default_temp_dir)
+        # so temp files never silently land on a RAM-backed /tmp.
+        from disc_reader import default_temp_dir
+
+        default = default_temp_dir()
+        try:
+            default.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            default = Path(tempfile.gettempdir())
+        tempfile.tempdir = str(default)
 
     from disc_reader import init_ram_budget
 

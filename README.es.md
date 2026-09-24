@@ -109,8 +109,9 @@ mkvsmith> q          # salir
 | `--no-forced` | Descarta los subtítulos forzados |
 | `--min-duration N` | Ignora los títulos de menos de N segundos |
 | `--show-all` | Muestra los títulos de baja calidad (menús/tráileres) |
-| `--temp-dir DIR` | Directorio temporal (usa una ruta en disco para ISOs grandes) |
-| `--ram-limit FRAC` | Fracción máxima de RAM para directorios temporales en RAM |
+| `--temp-dir DIR` | Directorio temporal (predeterminado: /var/tmp; para tmpfs/RAM u otra ruta en disco) |
+| `--ram-limit FRAC` | Fracción máxima de capacidad tmpfs para directorios temporales en RAM |
+| `--force` | Sobrescribir los archivos de salida existentes sin preguntar |
 | `--no-sudo` | Omite el montaje en bucle con sudo |
 | `--tag` / `--no-tag` | Controles de etiquetado TMDB |
 | `--discdb` / `--no-discdb` | Consulta de TheDiscDB (participativa) |
@@ -122,8 +123,8 @@ mkvsmith> q          # salir
 ### TheDiscDB
 
 La consulta a TheDiscDB está desactivada por defecto. Actívala con `--discdb` o
-persistela en `~/.mkvsmith_config.json` bajo
-`"discdb": {"enabled": true}`. La consulta envía solo identificadores del
+persistela en `$XDG_CONFIG_HOME/mkvsmith/config.json` (por defecto `~/.config/...`)
+bajo `"discdb": {"enabled": true}`. La consulta envía solo identificadores del
 disco; nunca envía datos de playlists ni contenidos multimedia.
 
 ```sh
@@ -170,9 +171,14 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   soporte de Windows y macOS no está probado.
 - Los discos comerciales cifrados necesitan `libdvdcss` (DVD) / `libaacs`
   (Blu-ray) a nivel de sistema.
-- El directorio temporal por defecto suele ser un tmpfs respaldado en RAM en
-  Linux. `mkvsmith` lo detecta y vuelca de forma transparente las extracciones
-  demasiado grandes a disco (`--ram-limit` controla el umbral).
+- Los archivos temporales usan `/var/tmp` (en disco) por defecto cuando está
+  disponible, y si no el directorio temporal del sistema. Si el directorio
+  temporal efectivo está respaldado en RAM (tmpfs — p. ej. un `--temp-dir /tmp`
+  explícito), `mkvsmith` lo detecta y vuelca de forma transparente las
+  extracciones demasiado grandes a disco. El presupuesto es `--ram-limit` del
+  menor entre la RAM total y el tamaño del tmpfs (un tmpfs suele estar limitado
+  a una fracción de la RAM), con comprobaciones adicionales para la RAM
+  disponible y el espacio libre del tmpfs, ya que `/tmp` es compartido.
 - El montaje directo de ISO en bucle usa `sudo`; pasa `--no-sudo` para
   desactivarlo.
 - **La salida MKV multi-edición es experimental.** Está desactivada por defecto

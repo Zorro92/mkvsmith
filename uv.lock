@@ -46,6 +46,7 @@ version = "0.4.0"
 source = { virtual = "." }
 dependencies = [
     { name = "rich" },
+    { name = "xdg-base-dirs" },
 ]
 
 [package.dev-dependencies]
@@ -56,7 +57,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "rich", specifier = ">=15.0.0" }]
+requires-dist = [
+    { name = "rich", specifier = ">=15.0.0" },
+    { name = "xdg-base-dirs", specifier = ">=6.0.3" },
+]
 
 [package.metadata.requires-dev]
 dev = [
@@ -169,4 +173,13 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ee/3e/21a0873da8f1ece28e166fbbaf696cd48c55fd7cd203dba0266a1fe05ceb/ty-0.0.71-py3-none-win32.whl", hash = "sha256:a273fe0dcc453e94cf2e1955076efec8b739e6e1a890862de29d3c5a1c9ddaff", size = 11953321 },
     { url = "https://files.pythonhosted.org/packages/69/fa/ce6614c748f7abfc546d12983d4bad1085116b6458b8c84d9372eb713f08/ty-0.0.71-py3-none-win_amd64.whl", hash = "sha256:65f5f980551ed79f68a0f6c0f2fb71b39a8d54ed0625d2529b01f6c919db72c5", size = 12570891 },
     { url = "https://files.pythonhosted.org/packages/77/7f/0fb022535c66fd96e7dd2a1f9c14e3a0e39544a4c3f35a451e8835562730/ty-0.0.71-py3-none-win_arm64.whl", hash = "sha256:6d5552078b9934d359bd5f381dbcb160f1fc5addfca59a960021adca38a73741", size = 12338716 },
+]
+
+[[package]]
+name = "xdg-base-dirs"
+version = "6.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ae/3b/4dc3f77ec9c5073467d95b9c9ded466cfba9a8b71a889096a01ac94b9b4e/xdg_base_dirs-6.0.3.tar.gz", hash = "sha256:9e8274f6d2514b587d257bda21d7fcf758180343c4ad5a47be0b202548211ec2", size = 4076 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/7b/e1376eb2e5c3c0c7feca70687ba1def829d848b607a7e8d1811ea9a2c155/xdg_base_dirs-6.0.3-py3-none-any.whl", hash = "sha256:c80886a8f4e369d6148fdebd7abf182bf053ce6c744f7b7eec5853fec835ff44", size = 5431 },
 ]

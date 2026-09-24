@@ -50,15 +50,17 @@ from dvdifo import (
     VmgInfo,
     _read_u16,
     _read_u32,
-    _find_alternate_edition_pgcs,
     _parse_vmg_ifo,
     _compute_libdvdread_disc_id,
     _compute_libdvdread_disc_id_from_paths,
 )
 from dvdbuild import (
+    _append_dvd_alternate_editions,
+    _append_dvd_episode_titles,
     _apply_dvd_ifo_languages,
     _build_title_from_ifo,
     _create_title,
+    _plan_dvd_pgc_titles,
     _scan_dvd_source,
 )
 from i18n import tr
@@ -1632,7 +1634,8 @@ class Scanner:
                 sizes,
             )
             self.titles.append(title)
-            self._scan_iso_dvd_alternate_editions(
+            self._scan_iso_dvd_pgc_titles(
+                title,
                 ifo_path,
                 first_vob_extracted,
                 title_name,
@@ -1672,8 +1675,9 @@ class Scanner:
         title.disc_name = self.disc_name
         title.dvd_title_id = logical_title
 
-    def _scan_iso_dvd_alternate_editions(
+    def _scan_iso_dvd_pgc_titles(
         self,
+        default_title: Title,
         ifo_path: Path,
         first_vob_extracted: Path,
         title_name: str,
@@ -1683,31 +1687,37 @@ class Scanner:
         vts_all_vobs: dict[int, list[str]],
         sizes: dict[str, int],
     ) -> None:
+        """Expose a VTS's additional PGCs as titles, ISO-source flavour.
+
+        Uses the same PGC classification as the extracted-VIDEO_TS scan
+        (``_plan_dvd_pgc_titles``) so an ISO and its extracted contents
+        produce identical titles: episode groups get "Episode N" plus
+        play-all and "Extra" titles, everything else gets editions and plain
+        PGCs.
+        """
         try:
             ifo_bytes = ifo_path.read_bytes()
         except OSError as exc:
-            log_debug(f"Alternate-edition PGC scan skipped for {ifo_path.name}: {exc}")
-            ifo_bytes = b""
+            log_debug(f"Alternate PGC scan skipped for {ifo_path.name}: {exc}")
+            return
 
-        extra_pgcs = (
-            _find_alternate_edition_pgcs(ifo_bytes, self.config.min_duration)
-            if ifo_bytes
-            else []
-        )
-        for edition_num, pgc_num in enumerate(extra_pgcs, start=2):
-            edition_name = f"{title_name} - Edition {edition_num}"
+        plan = _plan_dvd_pgc_titles(ifo_bytes, self.config)
+        if not (plan.episode_pgcs or plan.editions):
+            return
+
+        def build_title(pgc_number: int, name: str) -> Title | None:
             alternate = _build_title_from_ifo(
                 self.titles,
                 first_vob_extracted,
                 ifo_path,
                 [first_vob_extracted],
                 vts,
-                title_name=edition_name,
-                pgc_number=pgc_num,
+                title_name=name,
+                pgc_number=pgc_number,
                 config=self.config,
             )
             if alternate is None:
-                continue
+                return None
             self._apply_iso_dvd_source(
                 alternate,
                 vts,
@@ -1716,13 +1726,14 @@ class Scanner:
                 vts_all_vobs,
                 sizes,
             )
-            alternate.dvd_edition_label = f"Edition {edition_num}"
-            self.titles.append(alternate)
-            log_debug(
-                f"  Alternate edition: PGC {pgc_num} "
-                f"({alternate.duration_seconds:.0f}s) exposed as "
-                f"'{edition_name}'"
+            return alternate
+
+        if plan.episode_pgcs:
+            _append_dvd_episode_titles(
+                self.titles, plan, default_title, title_name, vts, build_title
             )
+        else:
+            _append_dvd_alternate_editions(self.titles, title_name, plan, build_title)
 
     def _build_iso_bluray_title(
         self,

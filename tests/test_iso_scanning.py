@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import disc_reader
+import dvdbuild
 import pytest
 from bluray import _parse_mpls
 import scan
@@ -143,7 +144,7 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     extraction_calls: list[tuple[Path, list[str], Path]] = []
     partial_calls: list[tuple[Path, str]] = []
     build_calls: list[tuple[Path, Path, int, str]] = []
-    alternate_calls: list[tuple[Path, Path, str, int]] = []
+    alternate_calls: list[tuple[Title, Path, Path, str, int]] = []
 
     monkeypatch.setattr(
         disc_reader,
@@ -177,9 +178,9 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     monkeypatch.setattr(scan, "_build_title_from_ifo", build_title)
     monkeypatch.setattr(
         scanner,
-        "_scan_iso_dvd_alternate_editions",
-        lambda ifo_path, source, title_name, vts, *_args: alternate_calls.append(
-            (ifo_path, source, title_name, vts)
+        "_scan_iso_dvd_pgc_titles",
+        lambda default_title, ifo_path, source, title_name, vts, *_args: (
+            alternate_calls.append((default_title, ifo_path, source, title_name, vts))
         ),
     )
 
@@ -194,7 +195,15 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     ]
     assert partial_calls == [(scanner.source, "VIDEO_TS/VTS_01_1.VOB")]
     assert build_calls == [(first_vob, extracted_ifos[1], 1, "Title 7 (VTS 1)")]
-    assert alternate_calls == [(extracted_ifos[1], first_vob, "Title 7 (VTS 1)", 1)]
+    assert alternate_calls == [
+        (
+            scanner.titles[0],
+            extracted_ifos[1],
+            first_vob,
+            "Title 7 (VTS 1)",
+            1,
+        )
+    ]
     assert scanner.disc_name == "Test Disc"
     assert len(scanner.titles) == 1
     title = scanner.titles[0]
@@ -207,6 +216,84 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     assert title.estimated_size_bytes == 60
     assert title.disc_name == "Test Disc"
     assert scanner.disc_metadata.upc_ean == "12345"
+
+
+def test_scan_iso_dvd_exposes_episode_pgc_titles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An ISO and its extracted VIDEO_TS folder share one PGC classification.
+
+    Episode detection used to run only on the extracted-folder scan, so the
+    same TV-series disc listed "Episode N" titles when extracted but
+    "Edition N"/"PGC N" titles when read straight from the ISO. Both source
+    modes now consume ``_plan_dvd_pgc_titles``.
+    """
+    runtime_state = RuntimeState()
+    scanner = Scanner(tmp_path / "series.iso", runtime_state=runtime_state)
+    paths = [
+        "VIDEO_TS/VTS_01_1.VOB",
+        "VIDEO_TS/VTS_01_0.IFO",
+        "VIDEO_TS/VIDEO_TS.IFO",
+    ]
+    sizes = {"VIDEO_TS/VTS_01_1.VOB": 10}
+    vmg = VmgInfo(disc_name="Series Disc", barcode="42", title_map={7: (1, 1)})
+    extracted_ifos = [tmp_path / "VIDEO_TS.IFO", tmp_path / "VTS_01_0.IFO"]
+    for extracted_ifo in extracted_ifos:
+        extracted_ifo.write_bytes(b"mock IFO")
+    first_vob = tmp_path / "probe.vob"
+
+    monkeypatch.setattr(
+        disc_reader,
+        "_extract_with_7z",
+        lambda _source, _internal_paths, _out_dir, symlinks=None: extracted_ifos,
+    )
+    monkeypatch.setattr(
+        disc_reader,
+        "_extract_partial_7z",
+        lambda _source, _internal_path, **_kwargs: first_vob,
+    )
+    monkeypatch.setattr(scan, "_parse_vmg_ifo", lambda _path: vmg)
+
+    def build_title(
+        titles: list[Title],
+        source: Path,
+        _ifo_path: Path,
+        _vob_parts: list[Path],
+        _vts: int,
+        title_name: str | None = None,
+        pgc_number: int | None = None,
+        config: object | None = None,
+    ) -> Title:
+        title = Title(len(titles), source, title_name or "", 120.0)
+        title.dvd_pgc_number = pgc_number
+        return title
+
+    monkeypatch.setattr(scan, "_build_title_from_ifo", build_title)
+    plan = dvdbuild._DvdPgcPlan(
+        episode_pgcs=[1, 2],
+        play_all_pgc=3,
+        default_pgc_num=1,
+        extras=[4],
+        editions=[],
+    )
+    monkeypatch.setattr(
+        scan, "_plan_dvd_pgc_titles", lambda _ifo_bytes, _config=None: plan
+    )
+
+    scanner._scan_iso_dvd(paths, sizes)
+
+    assert [title.name for title in scanner.titles] == [
+        "Title 7 (VTS 1)",
+        "Title 7 (VTS 1) - Episode 2",
+        "Title 7 (VTS 1) - Play All",
+        "Title 7 (VTS 1) - Extra",
+    ]
+    assert [title.dvd_episode_number for title in scanner.titles] == [1, 2, None, None]
+    assert [title.dvd_pgc_number for title in scanner.titles] == [None, 2, 3, 4]
+    assert scanner.titles[2].dvd_play_all is True
+    for title in scanner.titles:
+        assert title.source_file == scanner.source
+        assert title.dvd_title_id == 7
 
 
 def test_first_iso_playlist_clpi_reads_first_clip_name(

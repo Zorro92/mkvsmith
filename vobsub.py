@@ -45,6 +45,17 @@ from models import (
 # resetting its timeline to ~0). 5 s is well above B-frame reorder jitter while
 # still catching every real cell reset (which are tens of seconds).
 _CELL_PTS_RESET_TICKS = 5 * 90000
+# PTS-scan cap: enough samples for cell-boundary detection without scanning
+# multi-gigabyte titles indefinitely (see _scan_vob_pts).
+_PTS_SCAN_MAX_BYTES = 512 * 1024 * 1024
+# A PTS-continuous segment at either edge of the scanned VOB is lead-in /
+# lead-out junk (warning cards, logos, menu loops) when it runs no longer
+# than this fraction of the longest segment. Mid-movie clock-reset epochs
+# are mutually comparable in length and are all kept — the previous
+# "longest segment wins" rule truncated multi-epoch movies (Treasure
+# Planet 2002 resets its clock at nearly every one of 42 cell runs) to a
+# single ~7-minute epoch.
+_EDGE_JUNK_FRACTION_OF_LONGEST = 0.4
 # MPEG-PS pack start code (system clock reference follows it).
 _PS_PACK_START = b"\x00\x00\x01\xba"
 # MPEG-PS video stream start code.
@@ -74,6 +85,68 @@ class _SubpicturePayload:
     sub_stream_id: int
     start: int
     pts: int
+
+
+class _PtsTimelineRebaser:
+    """Re-base raw VOB PTS into one continuous timeline across clock resets.
+
+    Non-seamless DVDs restart the system time clock at cell boundaries, so
+    raw PTS jumps backward mid-title: Treasure Planet (2002, R1 DVD9)
+    resets at nearly every one of its 42 cell runs, capping raw PTS at the
+    longest cell (~7 minutes) even though the movie runs 95. Each backward
+    jump beyond the tolerance is a reset; it is snapped to the end of the
+    previous timeline — the same re-basing mkvmerge applies to appended
+    program-stream segments. Without this, subtitle and caption timelines
+    built from raw PTS end at the first clock reset.
+
+    ``rebase`` must be fed in true stream order. The VOB subpicture scan
+    feeds it every video PES packet's PTS as the walk passes them (dense
+    and positional, so the timeline tracks the video itself), then maps
+    each subpicture PTS through the same state; re-basing from sparse
+    subpicture emissions alone both drifts at gaps and mis-orders
+    interleaved sub streams.
+    """
+
+    def __init__(self, tolerance: int = 5 * 90000) -> None:
+        self.tolerance = tolerance
+        self.offset = 0
+        self.last_effective: int | None = None
+
+    def rebase(self, raw_pts: int) -> int:
+        """Map one raw PTS onto the continuous timeline (90 kHz ticks)."""
+        effective = raw_pts + self.offset
+        if (
+            self.last_effective is not None
+            and effective < self.last_effective - self.tolerance
+        ):
+            self.offset = self.last_effective - raw_pts
+            effective = raw_pts + self.offset
+        if self.last_effective is None or effective > self.last_effective:
+            self.last_effective = effective
+        return effective
+
+
+def _video_pes_pts(
+    data: bytearray | bytes | mmap.mmap,
+    pes_start: int,
+    data_len: int | None = None,
+) -> int | None:
+    """PTS of the video PES packet at *pes_start* when its header has one.
+
+    PES layout per ISO/IEC 13818-1: start code (4), packet length (2),
+    flags (2), header length (1), then the optional fields — PTS first
+    when its flag is set. *data_len* defaults to ``len(data)``; callers
+    that already hold the buffer length may pass it.
+    """
+    limit = len(data) if data_len is None else data_len
+    if pes_start + 9 > limit:
+        return None
+    flags = data[pes_start + 6]
+    if (flags & 0xC0) != 0x80:
+        return None
+    if not data[pes_start + 7] & 0x80:  # PTS present
+        return None
+    return _decode_pes_pts(data, pes_start + 9)
 
 
 @dataclass(slots=True)
@@ -387,7 +460,7 @@ def _scan_vob_pts_window(
 
 
 def _scan_vob_pts(
-    inputs: list[Path], max_bytes: int = 512 * 1024 * 1024
+    inputs: list[Path], max_bytes: int = _PTS_SCAN_MAX_BYTES
 ) -> list[tuple[int, int]]:
     """Scan VOB data for video PTS values and their byte positions.
 
@@ -766,6 +839,7 @@ def _scan_vob_subpicture_window(
     window_offset: int,
     result: dict[int, list[tuple[int, bytes]]],
     spu_accumulator: _SpuAccumulator,
+    pts_rebaser: _PtsTimelineRebaser,
 ) -> _VobScanCounts:
     counts = _VobScanCounts()
     data_len = len(data)
@@ -801,19 +875,37 @@ def _scan_vob_subpicture_window(
             if subpicture is not None:
                 counts.subpictures += 1
                 spu_chunk = bytes(data[subpicture.start : packet.end])
+                # Re-base the subpicture's per-cell PTS clock as the walk
+                # reaches it (the shared state is current at this file
+                # position — see _PtsTimelineRebaser). Packets without a
+                # PTS keep 0 so the accumulator joins them with their
+                # predecessor.
+                spu_pts = pts_rebaser.rebase(subpicture.pts) if subpicture.pts else 0
                 completed_spu = spu_accumulator.add(
-                    subpicture.sub_stream_id, subpicture.pts, spu_chunk
+                    subpicture.sub_stream_id, spu_pts, spu_chunk
                 )
                 if completed_spu is not None:
                     result.setdefault(subpicture.sub_stream_id, []).append(
                         completed_spu
                     )
             scan = max(packet.end, index + 4)
+        elif stream_id == _PS_VIDEO_SID:
+            # Video packets drive the shared timeline state: they are
+            # dense (an I-picture PTS roughly every half second) and read
+            # in true file order, so clock resets are detected where they
+            # happen instead of being inferred from sparse, interleaved
+            # subpicture emissions.
+            video_pts = _video_pes_pts(data, index, data_len)
+            if video_pts:
+                pts_rebaser.rebase(video_pts)
+            scan = _vob_pes_skip(data, index)
         elif stream_id == _PS_PRIVATE2_SID:
             counts.private_two += 1
             packet_end, pts, spu_chunks = _parse_private2_subpictures(
                 data, index, data_len
             )
+            if pts:
+                pts = pts_rebaser.rebase(pts)
             if spu_chunks:
                 counts.subpictures += len(spu_chunks)
                 for _pts, spu_data in spu_chunks:
@@ -830,6 +922,7 @@ def _scan_vob_subpicture_file(
     vob_file: Path,
     file_limit: int,
     spu_accumulator: _SpuAccumulator,
+    pts_rebaser: _PtsTimelineRebaser,
 ) -> tuple[dict[int, list[tuple[int, bytes]]], _VobScanCounts]:
     result: dict[int, list[tuple[int, bytes]]] = {}
     counts = _VobScanCounts()
@@ -859,7 +952,7 @@ def _scan_vob_subpicture_file(
                 break
             try:
                 window_counts = _scan_vob_subpicture_window(
-                    data, vob_file.name, offset, result, spu_accumulator
+                    data, vob_file.name, offset, result, spu_accumulator, pts_rebaser
                 )
                 counts.private_one += window_counts.private_one
                 counts.private_two += window_counts.private_two
@@ -899,7 +992,10 @@ def _scan_vob_subpictures(
     avoiding the chunk-boundary and buffer-management issues that affected
     the previous bytearray-based implementation.
 
-    Returns ``{sub_stream_id: [(pts_90khz, spu_data), ...]}``.
+    Returns ``{sub_stream_id: [(pts_90khz, spu_data), ...]}`` with PTS
+    re-based onto one continuous timeline (see ``_PtsTimelineRebaser``) —
+    raw per-cell clocks on non-seamless discs would otherwise collapse the
+    subtitle timeline at the first clock reset.
 
     *max_bytes* limits per-file scanning (default 0 = scan entire file).
     """
@@ -909,6 +1005,10 @@ def _scan_vob_subpictures(
     result: dict[int, list[tuple[int, bytes]]] = {}
     totals = _VobScanCounts()
     spu_accumulator = _SpuAccumulator()
+    # One rebaser across every file and window: the input list is played in
+    # order, and cell clock resets can land anywhere, including file
+    # boundaries.
+    pts_rebaser = _PtsTimelineRebaser()
 
     for vob_file in inputs:
         if not vob_file.exists():
@@ -920,7 +1020,7 @@ def _scan_vob_subpictures(
         file_limit = file_size if max_bytes <= 0 else min(max_bytes, file_size)
 
         file_result, counts = _scan_vob_subpicture_file(
-            vob_file, file_limit, spu_accumulator
+            vob_file, file_limit, spu_accumulator, pts_rebaser
         )
         for sub_stream_id, entries in file_result.items():
             result.setdefault(sub_stream_id, []).extend(entries)
@@ -937,6 +1037,7 @@ def _scan_vob_subpictures(
 
     # Flush any remaining SPUs in the accumulator (PTS-based boundaries already
     # handled all splits; just emit everything remaining, no spu_size truncation).
+    # Entries carry re-based PTS from add time.
     for sid, entries in spu_accumulator.flush().items():
         result.setdefault(sid, []).extend(entries)
 
@@ -1520,14 +1621,28 @@ def _dvd_main_content_range(inputs: list[Path]) -> tuple[int, int] | None:
     """Return the (start_byte, end_byte) of the movie in a multi-cell DVD VOB.
 
     Scans the video packet PTS across the concatenated inputs to find
-    PTS-continuous segments (each bounded by a backward jump = a cell reset) and
-    picks the longest one - the main feature. Returns None when the content is a
-    single clean run (no warning/intro cells) and needs no trimming, or if the
-    scan fails for any reason (callers fall back to the raw VOBs).
+    PTS-continuous segments (each bounded by a backward jump = a cell clock
+    reset), then trims short lead-in / lead-out junk — warning cards,
+    logos, menu loops — from the edges. Everything from the first to the
+    last substantial segment is kept, which handles both the classic
+    junk-surrounded movie and multi-epoch movies whose cells reset the
+    clock repeatedly: Treasure Planet (2002, R1 DVD9) resets at nearly
+    every one of its 42 cell runs, and the previous "longest segment
+    wins" rule truncated such titles to a single ~7-minute epoch.
+
+    The trailing edge is trimmed only when the scan covered every input
+    byte: the PTS scan is capped (_PTS_SCAN_MAX_BYTES), and a scan that
+    stopped early leaves the last segment partially measured.
+
+    Returns None when there is nothing to trim (a single continuous run,
+    or only substantial segments — including equal-length episodes that
+    share a VOB), when the trim would drop most of the content, or when
+    the scan fails for any reason (callers fall back to the raw VOBs).
     """
     if not inputs:
         return None
 
+    total = sum(f.stat().st_size for f in inputs)
     scanned = _scan_vob_pts(inputs)
     if len(scanned) < 2:
         log_debug(
@@ -1550,19 +1665,40 @@ def _dvd_main_content_range(inputs: list[Path]) -> tuple[int, int] | None:
     total_ticks = sum(s[2] for s in segments)
     if total_ticks <= 0:
         return None
-    longest = max(segments, key=lambda s: s[2])
-    # If the movie run is essentially the whole thing, there is nothing to trim.
-    if longest[2] >= total_ticks * 0.98:
+
+    longest = max(s[2] for s in segments)
+    junk_limit = longest * _EDGE_JUNK_FRACTION_OF_LONGEST
+
+    # Lead-in junk: the scan starts at byte 0, so the first segment is
+    # always fully measured.
+    keep_start = 0
+    while keep_start < len(segments) - 1 and segments[keep_start][2] <= junk_limit:
+        keep_start += 1
+
+    # Lead-out junk: only when every input byte was scanned.
+    keep_end = len(segments) - 1
+    if total <= _PTS_SCAN_MAX_BYTES:
+        while keep_end > keep_start and segments[keep_end][2] <= junk_limit:
+            keep_end -= 1
+
+    if keep_start == 0 and keep_end == len(segments) - 1:
         log_debug(
-            "DVD PTS scan: single continuous run "
-            f"({longest[2] / 90000:.0f}s / {total_ticks / 90000:.0f}s), no trimming needed"
+            "DVD PTS scan: no lead-in/lead-out junk to trim "
+            f"({len(segments)} segment(s), longest {longest / 90000:.0f}s)"
         )
         return None
 
-    total = sum(f.stat().st_size for f in inputs)
-    start_pos = pos[longest[0]]
-    # End at the start of the following cell (clean boundary), or end of stream.
-    next_seg_idx = longest[1] + 1
+    kept_ticks = sum(s[2] for s in segments[keep_start : keep_end + 1])
+    if kept_ticks < total_ticks * 0.5:
+        log_debug(
+            "DVD PTS scan: edge trim would drop most of the content; not trimming"
+        )
+        return None
+
+    start_pos = pos[segments[keep_start][0]]
+    # End at the start of the first dropped segment (clean boundary), or
+    # end of stream.
+    next_seg_idx = segments[keep_end][1] + 1
     end_pos = pos[next_seg_idx] if next_seg_idx < len(pos) else total
 
     start = _snap_to_pack(inputs, start_pos, total)
@@ -1570,7 +1706,7 @@ def _dvd_main_content_range(inputs: list[Path]) -> tuple[int, int] | None:
     if end <= start:
         return None
     log_debug(
-        f"DVD cell trim: movie is {longest[2] / 90000:.0f}s of "
+        f"DVD cell trim: PTS scan keeping {kept_ticks / 90000:.0f}s of "
         f"{total_ticks / 90000:.0f}s; extracting bytes {start}-{end}"
     )
     return start, end

@@ -105,7 +105,7 @@ _HAS_MKVMERGE: bool = shutil.which("mkvmerge") is not None
 
 # Keep in sync with pyproject.toml [project].version. Shared modules such as
 # discdb.py cannot import cli.py without creating a dependency cycle.
-MKVSMITH_VERSION = "0.5.0"
+MKVSMITH_VERSION = "0.6.0"
 
 
 # =============================================================================

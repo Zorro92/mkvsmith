@@ -31,6 +31,12 @@ XPL = """<?xml version="1.0" encoding="UTF-8"?>
                 <Video track="1" mediaAttr="2" />
                 <Audio track="1" streamNumber="1" mediaAttr="1" description="English DD+ 5.1" />
             </PrimaryAudioVideoClip>
+            <TrackNavigationList>
+                <AudioTrack track="1" langcode="en:01" selectable="true" />
+                <AudioTrack track="2" langcode="fr:01" selectable="true" />
+                <SubtitleTrack track="1" langcode="en:01" selectable="true" />
+                <SubtitleTrack track="2" langcode="fr:09" selectable="true" />
+            </TrackNavigationList>
             <ChapterList>
                 <Chapter displayName="Chapter  1" titleTimeBegin="00:00:00:00" />
                 <Chapter displayName="Chapter  2" titleTimeBegin="00:02:04:35" />
@@ -98,6 +104,13 @@ def test_parse_xpl_titles_clips_chapters(tmp_path: Path) -> None:
     assert main.streams[3].language == "eng"
     assert main.streams[4].language == "fra"
     assert main.streams[4].is_forced is True
+    # Nav langcodes are authoritative; video takes the disc default language.
+    assert main.streams[0].language == "eng"
+    assert main.audio_nav_langs == {1: "eng", 2: "fra"}
+    assert main.subtitle_nav_langs == {1: "eng", 2: "fra"}
+    assert disc.default_language == "eng"
+    # Undescribed video with no nav entry takes the disc default language.
+    assert disc.titles[1].streams[0].language == "eng"
 
 
 def test_parse_xpl_missing_file_returns_empty(tmp_path: Path) -> None:

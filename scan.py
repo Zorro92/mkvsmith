@@ -946,7 +946,7 @@ def _apply_hddvd_languages(title: Title, ht: HddvdTitle) -> None:
     the same positional assumption as the Blu-ray STN fallback. Secondary
     PiP tracks (SubVideo/SubAudio) are not muxed.
     """
-    wanted: dict[str, list[Any]] = {"audio": [], "subtitle": []}
+    wanted: dict[str, list[Any]] = {"video": [], "audio": [], "subtitle": []}
     pip = False
     for hs in ht.streams:
         if hs.kind in ("subvideo", "subaudio"):
@@ -956,7 +956,9 @@ def _apply_hddvd_languages(title: Title, ht: HddvdTitle) -> None:
     if pip:
         log_debug(f"  Title {ht.number}: skipping secondary PiP tracks")
     for stream in title.streams:
-        if stream.stream_type == StreamType.AUDIO:
+        if stream.stream_type == StreamType.VIDEO:
+            candidates = wanted["video"]
+        elif stream.stream_type == StreamType.AUDIO:
             candidates = wanted["audio"]
         elif stream.stream_type == StreamType.SUBTITLE:
             candidates = wanted["subtitle"]

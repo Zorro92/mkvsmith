@@ -30,7 +30,7 @@ from pathlib import Path
 _XPL_TIME_RE = re.compile(r"(\d+):(\d\d):(\d\d):(\d\d)")
 
 # Description text (e.g. "English DD+ 5.1", "Brazilian Portuguese",
-# "French Forced") is the only language source in XPL. Codes are ISO 639-2.
+# "French Forced") is the fallback language source in XPL. Codes are ISO 639-2.
 _DESCRIPTION_LANGUAGES = (
     ("brazilian portuguese", "por"),
     ("portuguese", "por"),
@@ -45,6 +45,36 @@ _DESCRIPTION_LANGUAGES = (
     ("chinese", "zho"),
     ("korean", "kor"),
 )
+
+# ISO 639-1 -> 639-2 for TrackNavigationList langcodes ("en:01") and the
+# TitleSet defaultLanguage. Only common DVD languages; unknown codes fall
+# back to description parsing.
+_LANG_2_TO_3 = {
+    "en": "eng",
+    "fr": "fra",
+    "es": "spa",
+    "de": "deu",
+    "it": "ita",
+    "pt": "por",
+    "nl": "nld",
+    "ja": "jpn",
+    "ru": "rus",
+    "zh": "zho",
+    "ko": "kor",
+    "sv": "swe",
+    "da": "dan",
+    "fi": "fin",
+    "no": "nor",
+    "pl": "pol",
+    "cs": "ces",
+    "hu": "hun",
+    "el": "ell",
+    "tr": "tur",
+    "ar": "ara",
+    "he": "heb",
+    "hi": "hin",
+    "th": "tha",
+}
 
 _DISCID_MAGIC = b"HDDVD-V_CONF"
 
@@ -80,6 +110,11 @@ class HddvdTitle:
     duration_seconds: float = 0.0
     clips: list[HddvdClip] = field(default_factory=list)
     chapters: list[float] = field(default_factory=list)
+    # Authoritative per-track languages from TrackNavigationList langcodes
+    # ("en:01"), keyed by XPL track number. Missing entries fall back to
+    # description parsing, then the disc default language (video only).
+    audio_nav_langs: dict[int, str] = field(default_factory=dict)
+    subtitle_nav_langs: dict[int, str] = field(default_factory=dict)
 
     @property
     def streams(self) -> list[HddvdStream]:
@@ -91,6 +126,7 @@ class HddvdTitle:
 class HddvdDisc:
     titles: list[HddvdTitle] = field(default_factory=list)
     provider: str | None = None
+    default_language: str = "und"
 
 
 def _local(tag: str) -> str:
@@ -118,6 +154,38 @@ def _fps_from_titleset(root: ET.Element) -> float:
     return 60.0
 
 
+def _default_language_from_titleset(root: ET.Element) -> str:
+    """TitleSet defaultLanguage ("en") as ISO 639-2, else ``und``."""
+    for child in root:
+        if _local(child.tag) == "TitleSet":
+            return _LANG_2_TO_3.get((child.get("defaultLanguage") or "").lower(), "und")
+    return "und"
+
+
+def _nav_langs(title_el: ET.Element) -> tuple[dict[int, str], dict[int, str]]:
+    """TrackNavigationList langcodes per XPL track number (audio, subtitle)."""
+    audio: dict[int, str] = {}
+    subs: dict[int, str] = {}
+    for nav in title_el.iter():
+        if _local(nav.tag) != "TrackNavigationList":
+            continue
+        for entry in nav:
+            kind = _local(entry.tag)
+            try:
+                track = int(entry.get("track", "0"))
+            except ValueError:
+                continue
+            code = (entry.get("langcode") or "").split(":")[0].lower()
+            lang = _LANG_2_TO_3.get(code)
+            if not lang:
+                continue
+            if kind == "AudioTrack":
+                audio[track] = lang
+            elif kind == "SubtitleTrack":
+                subs[track] = lang
+    return audio, subs
+
+
 def describe_language(description: str) -> tuple[str, bool, bool, bool]:
     """Map an XPL track description to (code, forced, commentary, sdh)."""
     lowered = description.lower()
@@ -134,9 +202,19 @@ def describe_language(description: str) -> tuple[str, bool, bool, bool]:
     )
 
 
-def _parse_stream(element: ET.Element, kind: str) -> HddvdStream:
+def _parse_stream(
+    element: ET.Element,
+    kind: str,
+    nav_lang: str | None = None,
+    default: str = "und",
+) -> HddvdStream:
     description = element.get("description", "")
-    code, forced, commentary, sdh = describe_language(description)
+    desc_code, forced, commentary, sdh = describe_language(description)
+    # TrackNavigationList langcodes are authoritative; description text is
+    # the fallback; video falls back to the disc default language.
+    code = nav_lang or desc_code
+    if code == "und" and kind == "video":
+        code = default
     try:
         track = int(element.get("track", "1"))
     except ValueError:
@@ -183,6 +261,7 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
     except (OSError, ET.ParseError):
         return disc
     fps = _fps_from_titleset(root)
+    disc.default_language = _default_language_from_titleset(root)
     for element in root.iter():
         if _local(element.tag) != "Title":
             continue
@@ -201,6 +280,9 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
             name=name,
             duration_seconds=parse_xpl_time(element.get("titleDuration"), fps),
         )
+        audio_nav, sub_nav = _nav_langs(element)
+        title.audio_nav_langs = audio_nav
+        title.subtitle_nav_langs = sub_nav
         for child in element:
             local = _local(child.tag)
             if local == "PrimaryAudioVideoClip":
@@ -215,7 +297,21 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
                 for track_el in child:
                     kind = _local(track_el.tag).lower()
                     if kind in ("video", "audio", "subtitle", "subvideo", "subaudio"):
-                        clip.streams.append(_parse_stream(track_el, kind))
+                        try:
+                            track_no = int(track_el.get("track", "1"))
+                        except ValueError:
+                            track_no = 1
+                        if kind == "audio":
+                            nav_lang: str | None = audio_nav.get(track_no)
+                        elif kind == "subtitle":
+                            nav_lang = sub_nav.get(track_no)
+                        else:
+                            nav_lang = None
+                        clip.streams.append(
+                            _parse_stream(
+                                track_el, kind, nav_lang, disc.default_language
+                            )
+                        )
                 title.clips.append(clip)
             elif local == "ChapterList":
                 for chapter in child:

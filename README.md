@@ -70,9 +70,9 @@ uv run ./main.py /path/to/disc -t 1
 # rip all titles
 uv run ./main.py /path/to/disc -a
 
-# rip all detected TV episodes (within-VTS PGC clusters and
-# one-episode-per-VTS authoring both supported)
-uv run ./main.py /path/to/disc -e
+# -m is smart: main feature on movies, all episodes on series discs
+# (within-VTS PGC clusters and one-episode-per-VTS authoring both supported)
+uv run ./main.py /path/to/disc -m
 
 # write output to a specific directory (second positional argument)
 uv run ./main.py /path/to/disc -m ~/rips
@@ -80,13 +80,12 @@ uv run ./main.py /path/to/disc -m ~/rips
 
 ### Interactive mode
 
-Run without `-t/-m/-a/-e` to drop into the interactive prompt:
+Run without `-t/-m/-a` to drop into the interactive prompt:
 
 ```text
 mkvsmith> n          # show details for title n
 mkvsmith> r 1        # rip title 1
-mkvsmith> rm         # rip the main feature
-mkvsmith> re         # rip all episodes
+mkvsmith> rm         # rip the main feature (episodes on series discs)
 mkvsmith> ra         # rip all titles
 mkvsmith> q          # quit
 ```
@@ -98,7 +97,6 @@ mkvsmith> q          # quit
 | `-t, --title N` | Rip a specific title |
 | `-m, --main` | Rip the detected main feature (all episodes on series discs) |
 | `-a, --all` | Rip all titles |
-| `-e, --episodes` | Rip all detected TV episodes |
 | `-i, --info` | Just scan and list titles |
 | `-s, --streams` | Select streams (e.g. `v:0 a:eng s:all`) |
 | `-l, --lang` | Preferred languages (default `eng,en,und`) |

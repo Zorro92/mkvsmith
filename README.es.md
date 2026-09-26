@@ -73,8 +73,8 @@ uv run ./main.py /ruta/al/disco -t 1
 # extrae todos los títulos
 uv run ./main.py /ruta/al/disco -a
 
-# extrae todos los episodios de TV detectados
-uv run ./main.py /ruta/al/disco -e
+# -m es inteligente: película principal en cine, episodios en series
+uv run ./main.py /ruta/al/disco -m
 
 # escribe la salida en un directorio concreto (segundo argumento posicional)
 uv run ./main.py /ruta/al/disco -m ~/rips
@@ -82,13 +82,12 @@ uv run ./main.py /ruta/al/disco -m ~/rips
 
 ### Modo interactivo
 
-Ejecuta sin `-t/-m/-a/-e` para entrar en el prompt interactivo:
+Ejecuta sin `-t/-m/-a` para entrar en el prompt interactivo:
 
 ```text
 mkvsmith> n          # muestra los detalles del título n
 mkvsmith> r 1        # extrae el título 1
-mkvsmith> rm         # extrae la película principal
-mkvsmith> re         # extrae todos los episodios
+mkvsmith> rm         # extrae la película principal (episodios en series)
 mkvsmith> ra         # extrae todos los títulos
 mkvsmith> q          # salir
 ```
@@ -98,9 +97,8 @@ mkvsmith> q          # salir
 | Opción | Descripción |
 |---|---|
 | `-t, --title N` | Extrae un título concreto |
-| `-m, --main` | Extrae la película principal detectada |
+| `-m, --main` | Extrae la película principal detectada (todos los episodios en series) |
 | `-a, --all` | Extrae todos los títulos |
-| `-e, --episodes` | Extrae todos los episodios de TV detectados |
 | `-i, --info` | Solo escanea y lista los títulos |
 | `-s, --streams` | Selecciona pistas (p. ej. `v:0 a:eng s:all`) |
 | `-l, --lang` | Idiomas preferidos (por defecto `eng,en,und`) |

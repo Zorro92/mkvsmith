@@ -45,6 +45,7 @@ from models import (
     RuntimeState,
     TagOptions,
     RUNTIME_STATE,
+    UserPrompts,
     DEFAULT_TAG_METADATA,
     Stream,
     StreamType,
@@ -290,9 +291,12 @@ class _InteractiveTagState:
     offer_tag: bool
     art_from_flag: str | None
     options: TagOptions = field(default_factory=lambda: RUNTIME_STATE.tag_options)
+    prompts: UserPrompts | None = None
 
     @classmethod
-    def from_options(cls, opts: TagOptions) -> "_InteractiveTagState":
+    def from_options(
+        cls, opts: TagOptions, prompts: UserPrompts | None = None
+    ) -> "_InteractiveTagState":
         from tagger import _resolve_tmdb_key
 
         return cls(
@@ -300,6 +304,7 @@ class _InteractiveTagState:
             offer_tag=(not opts.no_tag) and bool(_resolve_tmdb_key(opts)),
             art_from_flag=opts.art,
             options=opts,
+            prompts=prompts,
         )
 
     def announce(self) -> None:
@@ -313,12 +318,12 @@ class _InteractiveTagState:
         if self.tag_from_flag:
             want = True
         elif self.offer_tag:
-            want = _tag_confirm(tr("Look up & tag this rip on TMDB?"))
+            want = _tag_confirm(tr("Look up & tag this rip on TMDB?"), self.prompts)
         else:
             want = False
         self.options.enabled = want
         if want and self.art_from_flag is None:
-            self.options.art = _prompt_art_choice()
+            self.options.art = _prompt_art_choice(self.prompts)
 
 
 def _interactive_edition_groups(titles: list[Title], debug: bool) -> list[list[Title]]:
@@ -487,7 +492,9 @@ class _InteractiveRipper:
                 log_warn(tr("Invalid: {idx}", idx=idx))
         elif command == "r" or (command.startswith("r") and command[1:].isdigit()):
             self._handle_rip_command(command, args)
-        elif command == "rm":
+        elif command == "rm" or command == "re":
+            if command == "re":
+                log_warn(tr("re is deprecated; use rm (episodes on series discs)"))
             self._handle_main_feature()
         elif command == "me" and self.debug:
             indices = self.multi_edition_indices(args)
@@ -495,8 +502,6 @@ class _InteractiveRipper:
                 self.rip_multi_edition(indices)
         elif command == "ra":
             self._handle_all()
-        elif command == "re":
-            self._handle_episodes()
         else:
             log_warn(tr("Unknown: {cmd}", cmd=command))
         return True
@@ -504,10 +509,7 @@ class _InteractiveRipper:
     def _print_prompt(self, has_episodes: bool) -> None:
         if has_episodes:
             print(
-                tr(
-                    "[n]=details  r N=rip title N  re=rip all episodes  "
-                    "ra=rip all  q=quit"
-                )
+                tr("[n]=details  r N=rip title N  rm=rip episodes  ra=rip all  q=quit")
             )
         else:
             print(
@@ -544,7 +546,7 @@ def interactive_mode(
         state.tag_options,
         runtime_state=state,
     )
-    tagging = _InteractiveTagState.from_options(state.tag_options)
+    tagging = _InteractiveTagState.from_options(state.tag_options, state.prompts)
     tagging.announce()
     print()
     _InteractiveRipper(
@@ -573,14 +575,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "-m",
         "--main",
         action="store_true",
-        help=tr("rip only the detected main feature"),
+        help=tr("rip the detected main feature (all episodes on series discs)"),
     )
     p.add_argument("-a", "--all", action="store_true")
+    # Deprecated alias for --main (kept for scripts; hidden from --help).
     p.add_argument(
         "-e",
         "--episodes",
         action="store_true",
-        help=tr("rip all detected TV-series episodes"),
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--multi-edition",
@@ -904,14 +907,16 @@ def _select_action(
 ) -> tuple[Path | None, str, int | None, list[str] | None]:
     if details is not None:
         return src, "details", details, sids
-    if a.main:
+    if a.main or a.episodes:
+        if a.episodes and not a.main:
+            log_warn(
+                tr("--episodes is deprecated; use --main (episodes on series discs)")
+            )
         return src, "rip_main", None, sids
     if title_num is not None:
         return src, "rip_title", title_num, sids
     if a.all:
         return src, "rip_all", None, sids
-    if a.episodes:
-        return src, "rip_episodes", None, sids
     if a.info:
         return src, "info", None, sids
     return src, "interactive", None, sids
@@ -1306,7 +1311,8 @@ def _run_main_feature_rip(
     runtime_state: RuntimeState | None = None,
 ) -> None:
     state = runtime_state or RUNTIME_STATE
-    # A series disc has no single main feature; -m means the episodes.
+    # A series disc has no single main feature; -m (and deprecated -e)
+    # means the episodes.
     if any(_is_episode_title(title) for title in titles):
         log_info(tr("Series disc: no single main feature; ripping all episodes"))
         _rip_episode_batch(titles, state)
@@ -1457,14 +1463,14 @@ def _run_action(
         _show_action_details(titles, number, action)
     elif action == "rip_title":
         _rip_selected_title(titles, number, stream_ids, state)
-    elif action == "rip_main":
+    elif action == "rip_main" or action == "rip_episodes":
+        # "rip_episodes" is the deprecated --episodes alias: same smart
+        # behaviour as --main (episodes on series discs, feature otherwise).
         _run_main_feature_rip(titles, stream_ids, state)
     elif action == "rip_multi_edition":
         _rip_selected_editions(titles, edition_indices, stream_ids, state)
     elif action == "rip_all":
         _rip_title_batch(titles, state)
-    elif action == "rip_episodes":
-        _rip_episode_batch(titles, state)
     elif action == "interactive":
         interactive_mode(titles, disc_metadata, state)
     else:

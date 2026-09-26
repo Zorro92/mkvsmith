@@ -47,6 +47,7 @@ _ES: dict[str, str] = {
     # --- interactive_mode ------------------------------------------------------
     "TMDB tagging available (key found) -- you'll be asked per rip.": "Etiquetado TMDB disponible (clave encontrada) -- se te preguntará por cada extracción.",
     "[n]=details  r N=rip title N  re=rip all episodes  ra=rip all  q=quit": "[n]=detalles  r N=extraer título N  re=extraer todos los episodios  ra=extraer todo  q=salir",
+    "[n]=details  r N=rip title N  rm=rip episodes  ra=rip all  q=quit": "[n]=detalles  r N=extraer título N  rm=extraer episodios  ra=extraer todo  q=salir",
     "[n]=details  r N=rip title N  rm=main feature  ra=rip all  q=quit": "[n]=detalles  r N=extraer título N  rm=película principal  ra=extraer todo  q=salir",
     "Goodbye!": "¡Adiós!",
     "Usage: r N  (e.g. 'r 1')": "Uso: r N  (p. ej. 'r 1')",
@@ -181,7 +182,10 @@ _ES: dict[str, str] = {
     "MakeMKV-like ripper using mkvmerge (MKVToolNix) + 7z": "Extractor tipo MakeMKV usando mkvmerge (MKVToolNix) + 7z",
     "output directory (default: current directory)": "directorio de salida (predeterminado: directorio actual)",
     "rip only the detected main feature": "extraer solo la película principal detectada",
+    "rip the detected main feature (all episodes on series discs)": "extraer la película principal detectada (todos los episodios en discos de series)",
     "rip all detected TV-series episodes": "extraer todos los episodios de series detectados",
+    "--episodes is deprecated; use --main (episodes on series discs)": "--episodes está obsoleto; usa --main (episodios en discos de series)",
+    "re is deprecated; use rm (episodes on series discs)": "re está obsoleto; usa rm (episodios en discos de series)",
     "rip the given playlist titles as ONE multi-edition MKV (comma-separated title numbers, first is the default edition); e.g. --multi-edition 0,1,2": "extrae los títulos de playlist indicados como UN MKV multi-edición (números de título separados por comas, el primero es la edición predeterminada); p. ej. --multi-edition 0,1,2",
     "show all titles including low-quality ones (menus, trailers, etc.)": "mostrar todos los títulos, incluidos los de baja calidad (menús, tráilers, etc.)",
     "directory for temporary files (default: /var/tmp when usable, else system temp). ": "directorio para archivos temporales (predeterminado: /var/tmp si está disponible, si no el tmp del sistema). ",

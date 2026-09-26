@@ -632,6 +632,9 @@ class Title:
     # title as HD DVD-sourced so the muxer runs the EVO subtitle fallback;
     # None for all other sources.
     hddvd_title_number: int | None = None
+    # XPL id attribute ("MainMovie", "Trailer3") for HD DVD titles: the
+    # authorial main-feature token. None for all other sources.
+    hddvd_id: str | None = None
     # Per-clip play durations (seconds), aligned with the title's clip
     # sequence: [source_file] + append_clips (folder/device sources) or
     # iso_internal_paths (ISO sources). Populated during Blu-ray scanning

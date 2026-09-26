@@ -110,6 +110,9 @@ class HddvdTitle:
     duration_seconds: float = 0.0
     clips: list[HddvdClip] = field(default_factory=list)
     chapters: list[float] = field(default_factory=list)
+    # XPL id attribute ("MainMovie", "Trailer3") — the authorial token,
+    # distinct from the human displayName.
+    id: str = ""
     # Authoritative per-track languages from TrackNavigationList langcodes
     # ("en:01"), keyed by XPL track number. Missing entries fall back to
     # description parsing, then the disc default language (video only).
@@ -279,6 +282,7 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
             number=number,
             name=name,
             duration_seconds=parse_xpl_time(element.get("titleDuration"), fps),
+            id=element.get("id") or "",
         )
         audio_nav, sub_nav = _nav_langs(element)
         title.audio_nav_langs = audio_nav

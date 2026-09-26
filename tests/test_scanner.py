@@ -333,3 +333,25 @@ def test_apply_disc_name_keeps_hddvd_xpl_names(tmp_path: Path) -> None:
     assert movie.name == "Main Movie"
     assert trailer.name == "Trailer3"
     assert plain.name == "Some Disc"
+
+
+def test_authorial_main_feature_wins_hddvd_ties() -> None:
+    hud = make_title(0, 8600.0, hddvd_title_number=4)
+    hud.name = "Transformers HUD"
+    hud.hddvd_id = "HUD"
+    main = make_title(1, 8600.0, hddvd_title_number=3)
+    main.name = "Main Movie"
+    main.hddvd_id = "MainMovie"
+
+    assert scan.pick_main_feature([hud, main]) == 1
+    assert scan.pick_main_feature([main, hud]) == 1
+
+
+def test_authorial_main_feature_ignores_generated_names() -> None:
+    first = make_title(0, 8600.0)
+    first.name = "Main Movie"
+    second = make_title(1, 8600.0)
+    second.name = "Main Movie"
+
+    # No HD DVD marker: no authorial boost, scan order breaks the tie.
+    assert scan.pick_main_feature([first, second]) == 0

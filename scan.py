@@ -1022,6 +1022,7 @@ def _build_hddvd_title(
     title.disc_name = disc_name
     title.playlist_name = f"Title {ht.number}"
     title.hddvd_title_number = ht.number
+    title.hddvd_id = ht.id or None
     title.clip_durations = [
         max(clip.end_seconds - clip.begin_seconds, 0.0) for clip in ht.clips
     ]
@@ -2186,7 +2187,7 @@ def _get_notable_titles(
 
 def _main_feature_score(
     title: Title, config: Config | None = None
-) -> tuple[int, int, int, int, float]:
+) -> tuple[int, int, int, int, int, float]:
     """Rank titles for "main feature" detection.
 
     DVDs put the real film in the title set with the richest audio/subtitle
@@ -2194,7 +2195,13 @@ def _main_feature_score(
     Primary key: a uniquely correlated TheDiscDB ``MainMovie`` playlist. With
     no remote result, this is zero and the local heuristic below governs.
 
-    Secondary key: number of audio + subtitle streams. This matches the
+    Second key: the disc author's own main-feature designation. HD DVD XPL
+    titles carry an authorial id (``MainMovie``) that outranks stream-count
+    ties — e.g. a PiP-profile duplicate ("Transformers HUD") with identical
+    richness, chapters, and duration. Gated to HD DVD titles so generated
+    names elsewhere ("Playlist 00800", disc names) can never match.
+
+    Tertiary key: number of audio + subtitle streams. This matches the
     heuristic MakeMKV uses to flag the main title.
 
     Tertiary key: whether this is the disc's own designated default title
@@ -2215,17 +2222,32 @@ def _main_feature_score(
     or warning cards with unusually rich stream tables.
     """
     if title.duration_seconds < (config or RUNTIME_STATE.config).min_duration:
-        return (-1, 0, 0, 0, 0.0)
+        return (-1, 0, 0, 0, 0, 0.0)
     richness = len(title.audio_streams) + len(title.subtitle_streams)
     is_default_edition = 0 if title.dvd_pgc_number is not None else 1
     remote_main = 1 if title.discdb_is_main_movie else 0
     return (
         remote_main,
+        _is_authorial_main_feature(title),
         richness,
         is_default_edition,
         len(title.chapters),
         title.duration_seconds,
     )
+
+
+def _is_authorial_main_feature(title: Title) -> int:
+    """1 when the disc author designates this title as the main feature."""
+    if title.hddvd_title_number is None:
+        return 0
+    tokens = {
+        re.sub(r"[^a-z]", "", (title.hddvd_id or "").lower()),
+        re.sub(r"[^a-z]", "", title.name.lower()),
+    }
+    return 1 if tokens & _AUTHORIAL_MAIN_FEATURE_TOKENS else 0
+
+
+_AUTHORIAL_MAIN_FEATURE_TOKENS = frozenset({"mainmovie", "mainfeature", "featurefilm"})
 
 
 def pick_main_feature(titles: list[Title], config: Config | None = None) -> int:

@@ -16,8 +16,13 @@ más sensato, pero es una reimplementación independiente con licencia GPL.
 
 - **Extrae discos DVD (VIDEO_TS) y Blu-ray (BDMV), ISOs, archivos
   `.m2ts`/`.vob` sueltos y archivos de vídeo normales** a Matroska (`.mkv`).
+- **Extrae discos e ISOs HD DVD** (`HVDVD_TS/*.evo` + listas XPL, con
+  capítulos, idiomas XPL y extracción de subimágenes EVO).
 - **Conserva el audio, los subtítulos y los capítulos**, incluidos los flujos
   de subimagen de DVD que otros escáneres más simples pasan por alto.
+- **Escribe etiquetas `SOURCE_ID` por pista** (PID de
+  Blu-ray / IDs de flujo+VTS de DVD) junto a las etiquetas estadísticas de
+  mkvmerge.
 - **Muestra identificadores estables del disco**, incluida la huella
   [matrix256v1](https://github.com/shitwolfymakes/matrix256) del sistema de
   archivos y los identificadores de metadatos DVD/Blu-ray.

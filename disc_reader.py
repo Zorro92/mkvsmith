@@ -49,6 +49,8 @@ class SourceType(Enum):
     DVD_RAW = "dvd_raw"
     BLURAY = "bluray"
     BLURAY_RAW = "bluray_raw"
+    HDDVD = "hddvd"
+    HDDVD_RAW = "hddvd_raw"
     VIDEO_FILE = "video_file"
     ISO_UNKNOWN = "iso_unknown"
     DEVICE = "device"
@@ -77,6 +79,7 @@ def _has_file_with_ext(root: Path, exts: tuple[str, ...]) -> bool:
 _VIDEO_FILE_EXTENSIONS = (
     ".m2ts",
     ".vob",
+    ".evo",
     ".mkv",
     ".mp4",
     ".avi",
@@ -93,10 +96,14 @@ def _directory_source_type(source: Path) -> SourceType | None:
         return SourceType.DVD
     if (source / "BDMV").is_dir() or (source / "bdmv").is_dir():
         return SourceType.BLURAY
+    if (source / "HVDVD_TS").is_dir():
+        return SourceType.HDDVD
     if _has_file_with_ext(source, (".m2ts",)):
         return SourceType.BLURAY_RAW
     if _has_file_with_ext(source, (".vob",)):
         return SourceType.DVD_RAW
+    if _has_file_with_ext(source, (".evo",)):
+        return SourceType.HDDVD_RAW
     if _has_file_with_ext(source, (".iso",)):
         return SourceType.ISO_UNKNOWN
     return None
@@ -544,12 +551,17 @@ _ISO_MEDIA_PREFIXES = (
     "BDMV/CLIPINF/",
     "VIDEO_TS/",
     "BDMV/META/",
+    "HVDVD_TS/",
+    "ADV_OBJ/",
 )
 
 _ISO_MEDIA_EXTENSIONS = (
     ".mpls",
     ".m2ts",
     ".vob",
+    ".evo",
+    ".xpl",
+    ".map",
     ".clpi",
     ".xml",
     ".ifo",

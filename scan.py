@@ -65,6 +65,12 @@ from dvdbuild import (
     _plan_dvd_pgc_titles,
     _scan_dvd_source,
 )
+from hddvd import (
+    HddvdTitle,
+    find_playlist,
+    parse_discid,
+    parse_xpl,
+)
 from i18n import tr
 from matrix256 import fingerprint as matrix256_fingerprint
 from matrix256 import fingerprint_entries as matrix256_fingerprint_entries
@@ -784,6 +790,11 @@ def _is_primary_bdmv_path(internal_path: str) -> bool:
     )
 
 
+def _is_primary_hddvd_path(internal_path: str) -> bool:
+    parts = Path(internal_path).parts
+    return len(parts) >= 2 and parts[0].lower() == "adv_obj"
+
+
 def _read_bdmv_metadata(bdmv: Path) -> DiscMetadata:
     disc_name = _parse_bdmv_disc_name(bdmv)
     upc_ean = _parse_bdmv_catalog_number(bdmv)
@@ -925,6 +936,182 @@ def _scan_m2ts_dir(sd: Path, titles: list[Title]) -> None:
     for m2ts in sorted(sd.glob("*.m2ts")):
         if t := _create_title(titles, m2ts, m2ts.stem):
             titles.append(t)
+
+
+def _apply_hddvd_languages(title: Title, ht: HddvdTitle) -> None:
+    """Overlay XPL languages/flags onto probed streams, positionally by type.
+
+    mkvmerge reports no languages for EVO tracks, so the XPL track lists
+    (first clip; clips repeat the layout) are matched by per-type order —
+    the same positional assumption as the Blu-ray STN fallback. Secondary
+    PiP tracks (SubVideo/SubAudio) are not muxed.
+    """
+    wanted: dict[str, list[Any]] = {"audio": [], "subtitle": []}
+    pip = False
+    for hs in ht.streams:
+        if hs.kind in ("subvideo", "subaudio"):
+            pip = True
+        elif hs.kind in wanted:
+            wanted[hs.kind].append(hs)
+    if pip:
+        log_debug(f"  Title {ht.number}: skipping secondary PiP tracks")
+    for stream in title.streams:
+        if stream.stream_type == StreamType.AUDIO:
+            candidates = wanted["audio"]
+        elif stream.stream_type == StreamType.SUBTITLE:
+            candidates = wanted["subtitle"]
+        else:
+            continue
+        if stream.type_index >= len(candidates):
+            continue
+        hs = candidates[stream.type_index]
+        stream.language = hs.language
+        stream.is_forced = stream.is_forced or hs.is_forced
+        stream.is_commentary = stream.is_commentary or hs.is_commentary
+        stream.is_hearing_impaired = (
+            stream.is_hearing_impaired or hs.is_hearing_impaired
+        )
+
+
+def _build_hddvd_title(
+    titles: list[Title],
+    ht: HddvdTitle,
+    probe_files: list[Path],
+    record_files: list[Path] | list[str],
+    source_file: Path,
+    disc_name: str | None,
+    config: Config | None,
+    *,
+    is_iso: bool = False,
+    sizes: dict[str, int] | None = None,
+) -> Title | None:
+    """Build one Title from an XPL title entry.
+
+    *probe_files* are probed with mkvmerge (real EVOs for folder sources,
+    bounded 7z prefixes for ISO sources); *record_files* are what the muxer
+    will use (same paths for folders, internal ISO paths for ISOs).
+    """
+    min_duration = (config or RUNTIME_STATE.config).min_duration
+    if ht.duration_seconds < min_duration:
+        log_debug(f"  Title {ht.number} below min-duration; skipping")
+        return None
+    if not probe_files:
+        return None
+    title = _create_title(
+        titles, probe_files[0], ht.name, override_duration=ht.duration_seconds
+    )
+    if title is None:
+        return None
+    title.duration_seconds = ht.duration_seconds
+    title.source_file = source_file
+    if is_iso:
+        title.iso_internal_paths = [str(path) for path in record_files]
+        if sizes is not None:
+            title.estimated_size_bytes = sum(
+                sizes.get(str(path), 0) for path in record_files
+            )
+    else:
+        title.append_clips = [
+            path for path in record_files[1:] if isinstance(path, Path)
+        ]
+    title.chapters = [c for c in ht.chapters if c < ht.duration_seconds]
+    if title.chapters and title.chapters[-1] >= ht.duration_seconds:
+        title.chapters = title.chapters[:-1]
+    title.disc_name = disc_name
+    title.playlist_name = f"Title {ht.number}"
+    title.hddvd_title_number = ht.number
+    title.clip_durations = [
+        max(clip.end_seconds - clip.begin_seconds, 0.0) for clip in ht.clips
+    ]
+    try:
+        title.clip_sizes = [
+            path.stat().st_size for path in probe_files if path.is_file()
+        ]
+    except OSError:
+        title.clip_sizes = []
+    _apply_hddvd_languages(title, ht)
+    _synthesize_hddvd_subtitles(title, ht)
+    return title
+
+
+def _synthesize_hddvd_subtitles(title: Title, ht: HddvdTitle) -> None:
+    """Add XPL-declared subtitles mkvmerge cannot see in the EVO.
+
+    EVO subpictures ride the 0xBD private stream like DVD subpictures, and
+    mkvmerge misses them the same way — so they become unmatched streams
+    (``sub_id`` 0x20+) that the VobSub fallback extracts at mux time.
+    Only synthesised when the probe found none, to never double a track
+    mkvmerge did detect.
+    """
+    if title.subtitle_streams:
+        return
+    declared = [hs for hs in ht.streams if hs.kind == "subtitle"]
+    if not declared:
+        return
+    base = len(title.streams)
+    for pos, hs in enumerate(declared):
+        title.streams.append(
+            Stream(
+                index=base + pos,
+                stream_type=StreamType.SUBTITLE,
+                codec="dvd_subtitle",
+                language=hs.language,
+                is_forced=hs.is_forced,
+                is_commentary=hs.is_commentary,
+                is_hearing_impaired=hs.is_hearing_impaired,
+                type_index=pos,
+                sub_id=0x20 + hs.stream_number - 1,
+            )
+        )
+    log_debug(f"  Title {ht.number}: synthesised {len(declared)} XPL subtitle(s)")
+
+
+def _scan_hddvd_source(
+    source: Path, config: Config | None = None
+) -> tuple[list[Title], DiscMetadata]:
+    """Scan an HD DVD directory (HVDVD_TS + ADV_OBJ) via its XPL playlist."""
+    hvdvd_ts = source / "HVDVD_TS" if (source / "HVDVD_TS").is_dir() else source
+    adv_obj = source / "ADV_OBJ" if (source / "ADV_OBJ").is_dir() else source
+    metadata = DiscMetadata()
+    provider = parse_discid(adv_obj / "DISCID.DAT")
+    if provider:
+        metadata = replace(metadata, provider_id=provider)
+        log_debug(f"HD DVD provider: {provider}")
+    titles: list[Title] = []
+    xpl = find_playlist(adv_obj)
+    if xpl is None:
+        log_debug("No XPL playlist; scanning raw EVO files")
+        for evo in sorted(hvdvd_ts.glob("*.EVO")) + sorted(hvdvd_ts.glob("*.evo")):
+            if t := _create_title(titles, evo, evo.stem, config=config):
+                titles.append(t)
+        return titles, metadata
+    disc = parse_xpl(xpl, hvdvd_ts)
+    log_info(
+        tr("HD DVD playlist: {name} ({n} title(s))", name=xpl.name, n=len(disc.titles))
+    )
+    for ht in disc.titles:
+        kept = [clip for clip in ht.clips if clip.evo_path.is_file()]
+        if not kept:
+            log_debug(f"  Title {ht.number}: clips missing; skipping")
+            continue
+        if len(kept) < len(ht.clips):
+            log_debug(f"  Title {ht.number}: some clips missing; using {len(kept)}")
+            ht = replace(ht, clips=kept)
+        clips = [clip.evo_path for clip in kept]
+        if title := _build_hddvd_title(
+            titles, ht, clips, clips, clips[0], None, config
+        ):
+            titles.append(title)
+    return titles, metadata
+
+
+def _scan_hddvd_raw_source(source: Path) -> tuple[list[Title], DiscMetadata]:
+    """Scan a directory of raw .evo files (no HVDVD_TS structure)."""
+    titles: list[Title] = []
+    for evo in sorted(source.glob("*.EVO")) + sorted(source.glob("*.evo")):
+        if t := _create_title(titles, evo, evo.stem):
+            titles.append(t)
+    return titles, DiscMetadata()
 
 
 def _scan_video_source(source: Path) -> list[Title]:
@@ -1106,6 +1293,12 @@ class Scanner:
             )
         elif source_type == SourceType.BLURAY_RAW:
             self.titles, self.disc_metadata = _scan_bluray_raw_source(self.source)
+        elif source_type == SourceType.HDDVD:
+            self.titles, self.disc_metadata = _scan_hddvd_source(
+                self.source, self.config
+            )
+        elif source_type == SourceType.HDDVD_RAW:
+            self.titles, self.disc_metadata = _scan_hddvd_raw_source(self.source)
         elif source_type == SourceType.VIDEO_FILE:
             self.titles = _scan_video_source(self.source)
         elif source_type == SourceType.DEVICE:
@@ -1116,6 +1309,8 @@ class Scanner:
             SourceType.DVD_RAW,
             SourceType.BLURAY,
             SourceType.BLURAY_RAW,
+            SourceType.HDDVD,
+            SourceType.HDDVD_RAW,
         ):
             self._add_matrix256_fingerprint(self.source)
             self._add_discdb_identifiers(source_type)
@@ -1255,7 +1450,9 @@ class Scanner:
         media_paths = [path for path in paths if _is_iso_media_path(path)]
         if not media_paths:
             log_error(
-                tr("7z could not find any .mpls, .m2ts, or .vob files inside the ISO.")
+                tr(
+                    "7z could not find any .mpls, .m2ts, .vob, or .evo files inside the ISO."
+                )
             )
             return
         if all(path in sizes for path in paths):
@@ -1278,6 +1475,11 @@ class Scanner:
             for p in media_paths
             if p.lower().endswith(".mpls") and _is_primary_bdmv_path(p)
         ]
+        xpl_files = [
+            p
+            for p in media_paths
+            if p.lower().endswith(".xpl") and _is_primary_hddvd_path(p)
+        ]
         m2ts_files = [
             p
             for p in media_paths
@@ -1287,13 +1489,91 @@ class Scanner:
         ]
         if mpls_files:
             self._scan_iso_bluray(media_paths, sizes, mpls_files, m2ts_files)
-        if not mpls_files and m2ts_files:
+        if not mpls_files and xpl_files:
+            self._scan_iso_hddvd(media_paths, sizes, xpl_files)
+        if not mpls_files and not xpl_files and m2ts_files:
             self._scan_iso_raw_m2ts(m2ts_files, sizes)
-        elif not mpls_files and not m2ts_files:
+        elif not mpls_files and not xpl_files and not m2ts_files:
             self._scan_iso_dvd(media_paths, sizes)
 
         if mpls_files:
             self.titles = _dedup_duplicate_playlists(self.titles)
+
+    def _scan_iso_hddvd(
+        self, media_paths: list[str], sizes: dict[str, int], xpl_files: list[str]
+    ) -> None:
+        """Scan an HD DVD ISO via its XPL playlist (7z extraction)."""
+        from disc_reader import _extract_partial_7z, _extract_with_7z
+        from hddvd import parse_xpl
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
+        self.cleanup.register_temp_dir(tmp_dir)
+        extracted = _extract_with_7z(
+            self.source, [xpl_files[0]], tmp_dir, self.cleanup.symlinks
+        )
+        if not extracted:
+            return
+        evo_by_stem = {
+            Path(path).stem.upper(): path
+            for path in media_paths
+            if path.lower().endswith(".evo")
+        }
+        disc = parse_xpl(extracted[0], tmp_dir)
+        # Clips resolve against ISO internal paths, not the filesystem.
+        for ht in disc.titles:
+            for clip in ht.clips:
+                stem = clip.evo_path.stem.upper()
+                if stem in evo_by_stem:
+                    clip.evo_path = Path(evo_by_stem[stem])
+        log_info(
+            tr(
+                "HD DVD playlist: {name} ({n} title(s))",
+                name=Path(xpl_files[0]).name,
+                n=len(disc.titles),
+            )
+        )
+        for ht in disc.titles:
+            internal = [
+                str(clip.evo_path)
+                for clip in ht.clips
+                if Path(str(clip.evo_path)).stem.upper() in evo_by_stem
+            ]
+            if not internal:
+                continue
+            kept = [clip for clip in ht.clips if str(clip.evo_path) in internal]
+            if len(kept) < len(ht.clips):
+                ht = replace(ht, clips=kept)
+            probes: list[Path] = []
+            for path in internal:
+                tmp = _extract_partial_7z(
+                    self.source,
+                    path,
+                    temp_files=self.cleanup.temp_files,
+                    symlinks=self.cleanup.symlinks,
+                )
+                if tmp is None:
+                    break
+                probes.append(tmp)
+            if len(probes) < len(internal):
+                for tmp in probes:
+                    tmp.unlink(missing_ok=True)
+                continue
+            title = _build_hddvd_title(
+                self.titles,
+                ht,
+                probes,
+                internal,
+                self.source,
+                None,
+                self.config,
+                is_iso=True,
+                sizes=sizes,
+            )
+            for tmp in probes:
+                tmp.unlink(missing_ok=True)
+            if title is None:
+                continue
+            self.titles.append(title)
 
     def _scan_iso_raw_m2ts(self, m2ts_files: list[str], sizes: dict[str, int]) -> None:
         from disc_reader import _extract_partial_7z
@@ -1813,10 +2093,17 @@ class Scanner:
             self._add_matrix256_fingerprint(mnt)
             self._add_discdb_identifiers(SourceType.DVD, mnt)
             self._add_discdb_disc_hash(mnt)
+        elif (mnt / "HVDVD_TS").is_dir():
+            hddvd_titles, metadata = _scan_hddvd_source(mnt, self.config)
+            self.titles.extend(hddvd_titles)
+            self.disc_metadata = metadata
+            self.disc_name = metadata.name
+            self._add_matrix256_fingerprint(mnt)
+            self._add_discdb_disc_hash(mnt)
         else:
             log_error(
                 tr(
-                    "Mounted {path} but found neither BDMV nor VIDEO_TS at the top level.",
+                    "Mounted {path} but found neither BDMV, VIDEO_TS, nor HVDVD_TS at the top level.",
                     path=mnt,
                 )
             )

@@ -15,8 +15,12 @@ default, but it is an independent, GPL-licensed reimplementation.
 
 - **Rips DVD (VIDEO_TS) and Blu-ray (BDMV) discs, ISOs, raw `.m2ts`/`.vob`,
   and plain video files** to Matroska (`.mkv`).
+- **Rips HD DVD discs and ISOs** (`HVDVD_TS/*.evo` + XPL playlists, with
+  chapters, XPL languages, and EVO subpicture extraction).
 - **Keeps audio, subtitles, and chapters**, including DVD subpicture streams
   that simpler scanners miss.
+- **Writes per-track `SOURCE_ID` tags** (Blu-ray PID / DVD
+  VTS+stream IDs) alongside mkvmerge's statistics tags.
 - **Shows stable disc identifiers**, including the filesystem-level
   [matrix256v1](https://github.com/shitwolfymakes/matrix256) fingerprint and
   DVD/Blu-ray metadata identifiers.

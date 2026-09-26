@@ -628,6 +628,10 @@ class Title:
     # Logical DVD title number from VMG TT_SRPT. TheDiscDB and MakeMKV use
     # this as a DVD title's source identifier (for example "01").
     dvd_title_id: int | None = None
+    # XPL title number for HD DVD titles (e.g. 3 for "Main Movie"). Marks a
+    # title as HD DVD-sourced so the muxer runs the EVO subtitle fallback;
+    # None for all other sources.
+    hddvd_title_number: int | None = None
     # Per-clip play durations (seconds), aligned with the title's clip
     # sequence: [source_file] + append_clips (folder/device sources) or
     # iso_internal_paths (ISO sources). Populated during Blu-ray scanning

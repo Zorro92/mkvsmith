@@ -118,6 +118,27 @@ def test_parse_xpl_missing_file_returns_empty(tmp_path: Path) -> None:
     assert disc.titles == []
 
 
+def test_clip_path_uses_on_disc_casing(tmp_path: Path) -> None:
+    """XPL casing must not leak into clip paths.
+
+    Probing for the XPL's casing fails on case-sensitive filesystems when
+    the disc disagrees — and lies on case-insensitive ones (Windows,
+    macOS) where every variant "exists". The directory listing carries the
+    real name on every platform.
+    """
+    adv_obj = tmp_path / "ADV_OBJ"
+    hvdt = tmp_path / "HVDVD_TS"
+    adv_obj.mkdir()
+    hvdt.mkdir()
+    (adv_obj / "VPLST000.XPL").write_text(XPL.replace("FEATURE_1.MAP", "MiXeD.MAP"))
+    (hvdt / "Mixed.Evo").write_bytes(b"evo")
+    (hvdt / "FEATURE_2.EVO").write_bytes(b"evo")
+    disc = parse_xpl(adv_obj / "VPLST000.XPL", hvdt)
+
+    main = [t for t in disc.titles if t.number == 3][0]
+    assert [c.evo_path.name for c in main.clips] == ["Mixed.Evo", "FEATURE_2.EVO"]
+
+
 def test_find_playlist_skips_backups(tmp_path: Path) -> None:
     adv_obj, _ = _write_disc(tmp_path)
     (adv_obj / "VPLST001.BAK").write_text("backup")

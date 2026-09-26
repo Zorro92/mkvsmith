@@ -246,14 +246,16 @@ def _clip_evo_path(hvdvd_ts: Path, src: str | None) -> Path | None:
         name = name[: -len(".map")] + ".evo"
     else:
         name = name + ".evo" if not name.lower().endswith(".evo") else name
-    for candidate in (
-        hvdvd_ts / name,
-        hvdvd_ts / name.upper(),
-        hvdvd_ts / name.lower(),
-    ):
-        if candidate.is_file():
-            return candidate
-    return hvdvd_ts / name
+    # NOTE: probing lies on case-insensitive filesystems (Windows,
+    # macOS) — every variant "exists". Match the directory listing so
+    # the returned path carries the on-disc casing on every platform.
+    try:
+        entries = {
+            entry.name.upper(): entry for entry in hvdvd_ts.iterdir() if entry.is_file()
+        }
+    except OSError:
+        return hvdvd_ts / name
+    return entries.get(name.upper(), hvdvd_ts / name)
 
 
 def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:

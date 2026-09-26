@@ -47,6 +47,16 @@ XPL = """<?xml version="1.0" encoding="UTF-8"?>
                 <Video track="1" mediaAttr="1" />
             </PrimaryAudioVideoClip>
         </Title>
+        <Title titleNumber="10" titleDuration="00:02:28:23" id="Trailer1" displayName="IronMan">
+            <PrimaryAudioVideoClip titleTimeBegin="00:00:00:00" titleTimeEnd="00:02:28:23" src="file:///dvddisc/HVDVD_TS/TRAILER.MAP" dataSource="Disc">
+                <Video track="1" mediaAttr="2" />
+            </PrimaryAudioVideoClip>
+        </Title>
+        <Title titleNumber="11" titleDuration="00:01:52:36" id="Trailer2" displayName="Teaser Trailer">
+            <PrimaryAudioVideoClip titleTimeBegin="00:00:00:00" titleTimeEnd="00:01:52:36" src="file:///dvddisc/HVDVD_TS/TEASER.MAP" dataSource="Disc">
+                <Video track="1" mediaAttr="2" />
+            </PrimaryAudioVideoClip>
+        </Title>
     </TitleSet>
 </Playlist>
 """
@@ -92,7 +102,7 @@ def test_parse_xpl_titles_clips_chapters(tmp_path: Path) -> None:
     adv_obj, hvdt = _write_disc(tmp_path)
     disc = parse_xpl(adv_obj / "VPLST000.XPL", hvdt)
 
-    assert [t.number for t in disc.titles] == [3, 8]
+    assert [t.number for t in disc.titles] == [3, 8, 10, 11]
     main = disc.titles[0]
     assert main.name == "Main Movie"
     assert main.duration_seconds == pytest.approx(8598 + 40 / 60.0)
@@ -111,6 +121,10 @@ def test_parse_xpl_titles_clips_chapters(tmp_path: Path) -> None:
     assert disc.default_language == "eng"
     # Undescribed video with no nav entry takes the disc default language.
     assert disc.titles[1].streams[0].language == "eng"
+    # Trailer kind surfaces from the XPL id, once, when the name lacks it.
+    by_number = {t.number: t for t in disc.titles}
+    assert by_number[10].name == "IronMan (Trailer)"
+    assert by_number[11].name == "Teaser Trailer"
 
 
 def test_parse_xpl_missing_file_returns_empty(tmp_path: Path) -> None:

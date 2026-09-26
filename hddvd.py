@@ -136,6 +136,28 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+def _display_name(element: ET.Element, number: int) -> str:
+    """Human title from displayName/description/id, with a kind suffix.
+
+    Suffixes (currently just Trailer) are appended only when the name does
+    not already contain them: "IronMan" becomes "IronMan (Trailer)" while
+    "Teaser Trailer" is untouched. This intentionally diverges from the
+    reference ripper's bare names; the XPL id is the only place the kind
+    is recorded.
+    """
+    name = (
+        element.get("displayName")
+        or element.get("description")
+        or element.get("id")
+        or f"Title {number}"
+    )
+    lowered = name.lower()
+    id_lower = (element.get("id") or "").lower()
+    if "trailer" in id_lower and "trailer" not in lowered:
+        name = f"{name} (Trailer)"
+    return name
+
+
 def parse_xpl_time(text: str | None, fps: float = 60.0) -> float:
     """Parse an XPL ``HH:MM:SS:FF`` timestamp (frames at *fps*) to seconds."""
     if not text:
@@ -274,12 +296,7 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
             number = int(element.get("titleNumber", "0"))
         except ValueError:
             continue
-        name = (
-            element.get("displayName")
-            or element.get("description")
-            or element.get("id")
-            or f"Title {number}"
-        )
+        name = _display_name(element, number)
         title = HddvdTitle(
             number=number,
             name=name,

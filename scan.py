@@ -1789,6 +1789,7 @@ class Scanner:
             self.source,
             self.config,
             direct_mounts=self.cleanup.direct_mounts,
+            prompts=self._runtime_state.prompts,
         )
         if not mnt:
             log_error("All ISO reading methods failed.")

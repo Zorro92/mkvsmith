@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import copy
 from pathlib import Path
 from typing import Any
@@ -70,8 +71,8 @@ def test_interactive_tag_state_resolves_availability(monkeypatch: Any) -> None:
 
 @pytest.mark.usefixtures("preserved_cli_state")
 def test_interactive_tag_prepare_prompts_when_available(monkeypatch: Any) -> None:
-    monkeypatch.setattr(tagger, "_tag_confirm", lambda _prompt: True)
-    monkeypatch.setattr(tagger, "_prompt_art_choice", lambda: "poster")
+    monkeypatch.setattr(tagger, "_tag_confirm", lambda _prompt, *a, **k: True)
+    monkeypatch.setattr(tagger, "_prompt_art_choice", lambda *a, **k: "poster")
     models.RUNTIME_STATE.tag_options.enabled = False
     models.RUNTIME_STATE.tag_options.art = None
     state = _InteractiveTagState(False, True, None)
@@ -86,10 +87,10 @@ def test_interactive_tag_prepare_prompts_when_available(monkeypatch: Any) -> Non
 def test_interactive_tag_flag_skips_prompts(monkeypatch: Any) -> None:
     prompts: list[str] = []
     monkeypatch.setattr(
-        tagger, "_tag_confirm", lambda prompt: prompts.append(prompt) or False
+        tagger, "_tag_confirm", lambda prompt, *a, **k: prompts.append(prompt) or False
     )
     monkeypatch.setattr(
-        tagger, "_prompt_art_choice", lambda: prompts.append("art") or ""
+        tagger, "_prompt_art_choice", lambda *a, **k: prompts.append("art") or ""
     )
     models.RUNTIME_STATE.tag_options.enabled = False
     models.RUNTIME_STATE.tag_options.art = "both"
@@ -204,8 +205,8 @@ def test_interactive_run_dispatches_until_quit(
 
 def test_interactive_tag_state_uses_injected_options(monkeypatch: Any) -> None:
     options = models.TagOptions(enabled=False, art=None)
-    monkeypatch.setattr(tagger, "_tag_confirm", lambda _prompt: True)
-    monkeypatch.setattr(tagger, "_prompt_art_choice", lambda: "poster")
+    monkeypatch.setattr(tagger, "_tag_confirm", lambda _prompt, *a, **k: True)
+    monkeypatch.setattr(tagger, "_prompt_art_choice", lambda *a, **k: "poster")
     state = _InteractiveTagState(False, True, None, options=options)
 
     state.prepare_for_rip()
@@ -213,6 +214,30 @@ def test_interactive_tag_state_uses_injected_options(monkeypatch: Any) -> None:
     assert options.enabled is True
     assert options.art == "poster"
     assert models.RUNTIME_STATE.tag_options.enabled is False
+
+
+@pytest.mark.usefixtures("preserved_cli_state")
+def test_interactive_tag_prepare_forwards_injected_prompts(
+    monkeypatch: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Per-rip tagging answers via hooks instead of reading stdin."""
+    options = models.TagOptions(enabled=False, art=None)
+    seen: list[str] = []
+    injected = models.UserPrompts(
+        confirm=lambda message: seen.append(message) or True,
+        text=lambda _prompt, _default: "1",
+    )
+    monkeypatch.setattr(
+        builtins, "input", lambda _p: (_ for _ in ()).throw(AssertionError())
+    )
+    state = _InteractiveTagState(False, True, None, options=options, prompts=injected)
+
+    state.prepare_for_rip()
+
+    assert options.enabled is True
+    assert options.art is None
+    assert len(seen) == 1
+    capsys.readouterr()
 
 
 @pytest.mark.usefixtures("preserved_cli_state")

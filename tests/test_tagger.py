@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 from typing import Any
 
@@ -257,7 +258,7 @@ def test_fetch_and_confirm_metadata_uses_search_and_options(
     monkeypatch.setattr(
         client,
         "get_movie_id",
-        lambda title, year=None: (
+        lambda title, year=None, *a, **k: (
             calls.append(("movie-id", title, year, "", None)) or 42
         ),
     )
@@ -291,13 +292,38 @@ def test_fetch_and_confirm_metadata_honours_user_cancellation(
     metadata = MovieMetadata(title="Cancelled")
     opts = TagOptions(confirm=True)
     previews: list[MovieMetadata] = []
-    monkeypatch.setattr(client, "get_movie_id", lambda _title, _year=None: 42)
+    monkeypatch.setattr(client, "get_movie_id", lambda _t, _y=None, *a, **k: 42)
     monkeypatch.setattr(client, "get_metadata", lambda *_args, **_kwargs: metadata)
     monkeypatch.setattr(client, "display_preview", previews.append)
-    monkeypatch.setattr(tagger, "_tag_confirm", lambda _prompt: False)
+    monkeypatch.setattr(tagger, "_tag_confirm", lambda _prompt, *a, **k: False)
 
     assert tagger._fetch_and_confirm_metadata(client, "Title", None, opts) is None
     assert previews == [metadata]
+
+
+def test_fetch_and_confirm_metadata_uses_injected_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GUI-style hooks answer the confirm without touching stdin."""
+    client = TmdbClient("test-key")
+    metadata = MovieMetadata(title="Hooked")
+    opts = TagOptions(confirm=True)
+    monkeypatch.setattr(client, "get_movie_id", lambda _t, _y=None, *a, **k: 42)
+    monkeypatch.setattr(client, "get_metadata", lambda *_a, **_k: metadata)
+    monkeypatch.setattr(client, "display_preview", lambda _p: None)
+    monkeypatch.setattr(
+        builtins, "input", lambda _p: (_ for _ in ()).throw(AssertionError())
+    )
+
+    approved = tagger._fetch_and_confirm_metadata(
+        client, "Title", None, opts, models.UserPrompts(confirm=lambda _m: True)
+    )
+    assert approved is metadata
+
+    declined = tagger._fetch_and_confirm_metadata(
+        client, "Title", None, opts, models.UserPrompts(confirm=lambda _m: False)
+    )
+    assert declined is None
 
 
 def test_prepare_art_attachments_selects_and_downloads_requested_images(
@@ -375,7 +401,12 @@ def test_prepare_tagging_fetches_metadata_and_artwork(
             self.api_key = api_key
             created_clients.append(self)
 
-        def get_movie_id(self, title: str, year: int | None = None) -> int:
+        def get_movie_id(
+            self,
+            title: str,
+            year: int | None = None,
+            prompts: models.UserPrompts | None = None,
+        ) -> int:
             assert (title, year) == ("Override", 2020)
             return 42
 

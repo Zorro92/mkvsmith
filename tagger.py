@@ -29,6 +29,7 @@ from models import (
     RipError,
     TagOptions,
     RUNTIME_STATE,
+    UserPrompts,
     log_info,
     log_warn,
 )
@@ -399,7 +400,9 @@ class TmdbClient:
                 raise RipError(message=f"TMDB request failed: {e}")
         raise RipError(message=f"TMDB request failed: {last_err}")
 
-    def get_movie_id(self, title: str, year: int | None = None) -> int:
+    def get_movie_id(
+        self, title: str, year: int | None = None, prompts: UserPrompts | None = None
+    ) -> int:
         params: dict[str, object] = {"query": title}
         if year:
             params["year"] = year
@@ -423,7 +426,7 @@ class TmdbClient:
                     f"  {i + 1}. {m.get('title', 'Unknown')} "
                     f"({m.get('release_date', '?')})"
                 )
-            sel = _tag_prompt("Select the correct movie", default="1")
+            sel = _tag_prompt("Select the correct movie", default="1", prompts=prompts)
             try:
                 idx = int(sel) - 1
             except ValueError:
@@ -489,36 +492,33 @@ class TmdbClient:
 # =============================================================================
 
 
-def _tag_prompt(prompt: str, default: str | None = None) -> str:
-    """Read a line from stdin; return the default on empty input or interrupt."""
-    suffix = f" [{default}]" if default else ""
-    try:
-        ans = input(f"{prompt}{suffix}: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return default or ""
-    return ans or (default or "")
+def _tag_prompt(
+    prompt: str, default: str | None = None, prompts: UserPrompts | None = None
+) -> str:
+    """Read a line via the injected text hook (stdin by default)."""
+    hooks = prompts or RUNTIME_STATE.prompts
+    return hooks.text(prompt, default)
 
 
-def _tag_confirm(prompt: str) -> bool:
-    """Simple y/N confirmation via stdin."""
-    try:
-        ans = input(f"{prompt} [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return False
-    return ans in ("y", "yes")
+def _tag_confirm(prompt: str, prompts: UserPrompts | None = None) -> bool:
+    """Simple y/N confirmation via the injected confirm hook."""
+    hooks = prompts or RUNTIME_STATE.prompts
+    return hooks.confirm(f"{prompt} [y/N]:")
 
 
 _ART_CHOICES = {"1": None, "2": "poster", "3": "backdrop", "4": "both"}
 
 
-def _prompt_art_choice() -> str | None:
+def _prompt_art_choice(prompts: UserPrompts | None = None) -> str | None:
     """Interactively ask which artwork to attach; returns None for 'none'."""
     print(tr("Attach artwork?"))
     print(tr("  1. None"))
     print(tr("  2. Poster"))
     print(tr("  3. Backdrop"))
     print(tr("  4. Both"))
-    return _ART_CHOICES.get(_tag_prompt(tr("Choose"), default="1"), None)
+    return _ART_CHOICES.get(
+        _tag_prompt(tr("Choose"), default="1", prompts=prompts), None
+    )
 
 
 # =============================================================================
@@ -612,6 +612,7 @@ def _fetch_and_confirm_metadata(
     search_title: str,
     search_year: int | None,
     opts: TagOptions,
+    prompts: UserPrompts | None = None,
 ) -> MovieMetadata | None:
     log_info(
         "Looking up TMDB metadata for '"
@@ -619,7 +620,7 @@ def _fetch_and_confirm_metadata(
         + "'"
         + (f" ({search_year})" if search_year else "")
     )
-    movie_id = client.get_movie_id(search_title, search_year)
+    movie_id = client.get_movie_id(search_title, search_year, prompts)
     metadata = client.get_metadata(
         movie_id,
         opts.metadata,
@@ -628,7 +629,9 @@ def _fetch_and_confirm_metadata(
     )
     client.display_preview(metadata)
 
-    if opts.confirm and not _tag_confirm("Tag this rip with the above metadata?"):
+    if opts.confirm and not _tag_confirm(
+        "Tag this rip with the above metadata?", prompts
+    ):
         log_info("Tagging skipped by user")
         return None
     return metadata
@@ -687,7 +690,10 @@ def _prepare_art_attachments(
 
 
 def _prepare_tagging(
-    search_name: str, opts: TagOptions, temp_files: list[Path]
+    search_name: str,
+    opts: TagOptions,
+    temp_files: list[Path],
+    prompts: UserPrompts | None = None,
 ) -> tuple[MovieMetadata | None, list[ArtAttachment]]:
     """Fetch TMDB metadata for a rip, prompting for selection/confirmation."""
     api_key = _resolve_tmdb_key(opts)
@@ -699,7 +705,9 @@ def _prepare_tagging(
 
     client = TmdbClient(api_key)
     search_title, search_year = _tagging_search_title(search_name, opts)
-    metadata = _fetch_and_confirm_metadata(client, search_title, search_year, opts)
+    metadata = _fetch_and_confirm_metadata(
+        client, search_title, search_year, opts, prompts
+    )
     if metadata is None:
         return None, []
 

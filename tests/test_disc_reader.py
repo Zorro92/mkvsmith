@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import os
 from pathlib import Path
 import subprocess
@@ -11,6 +12,7 @@ from typing import Any
 import pytest
 
 import disc_reader
+from models import UserPrompts
 
 
 class _FakeStdout:
@@ -131,7 +133,7 @@ def prepare_direct_mount(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        disc_reader, "_confirm_direct_mount", lambda _iso_path: confirmed
+        disc_reader, "_confirm_direct_mount", lambda _iso_path, *a, **k: confirmed
     )
     monkeypatch.setattr(disc_reader, "_IS_LINUX", True)
     monkeypatch.setattr(disc_reader.tempfile, "mkdtemp", make_mountpoint)
@@ -222,6 +224,56 @@ def test_direct_mount_skipped_on_non_linux_platforms(
 
     assert result is None
     assert not mountpoint.exists()
+
+
+def test_confirm_direct_mount_uses_injected_prompts(tmp_path: Path) -> None:
+    iso = tmp_path / "movie.iso"
+    assert (
+        disc_reader._confirm_direct_mount(
+            iso, UserPrompts(confirm=lambda _message: True)
+        )
+        is True
+    )
+    assert (
+        disc_reader._confirm_direct_mount(
+            iso, UserPrompts(confirm=lambda _message: False)
+        )
+        is False
+    )
+
+
+def test_try_direct_mount_uses_injected_prompts_without_stdin(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The scan path answers via hooks instead of reading stdin."""
+    iso_path = tmp_path / "movie.iso"
+    mountpoint = tmp_path / "mount"
+
+    def make_mountpoint(*_args: Any, **_kwargs: Any) -> str:
+        mountpoint.mkdir()
+        return str(mountpoint)
+
+    ran: list[tuple[Path, Path]] = []
+
+    def run_direct_mount(iso: Path, candidate: Path) -> SimpleNamespace:
+        ran.append((iso, candidate))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(disc_reader, "_IS_LINUX", True)
+    monkeypatch.setattr(disc_reader.tempfile, "mkdtemp", make_mountpoint)
+    monkeypatch.setattr(disc_reader, "_run_direct_mount", run_direct_mount)
+    monkeypatch.setattr(
+        builtins, "input", lambda _p: (_ for _ in ()).throw(AssertionError())
+    )
+
+    result = disc_reader._try_direct_mount(
+        iso_path,
+        direct_mounts=[],
+        prompts=UserPrompts(confirm=lambda _message: True),
+    )
+
+    assert result == mountpoint
+    assert ran == [(iso_path, mountpoint)]
 
 
 def test_parse_7z_listing_returns_all_regular_files() -> None:

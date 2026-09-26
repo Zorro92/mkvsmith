@@ -49,6 +49,7 @@ from vobsub import (
     _dvd_main_content_range,
     _extract_concat_range,
     _extract_dvd_vobsubs,
+    _scan_evo_video_stream_id,
     _vobsub_pts_offset,
 )
 from cc608 import (
@@ -754,7 +755,9 @@ def _dvd_vts_number(title: Title) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _source_id_for_stream(stream: Stream, title: Title) -> str | None:
+def _source_id_for_stream(
+    stream: Stream, title: Title, *, hddvd_video_id: int | None = None
+) -> str | None:
     """SOURCE_ID source-medium tag for a track, or None when it can't be known.
 
     Blu-ray is the file index plus PID hex (``001011`` for PID 0x1011),
@@ -762,8 +765,24 @@ def _source_id_for_stream(stream: Stream, title: Title) -> str | None:
     is unverified, so first-file ``00`` is assumed. DVD is the VTS number
     plus sub-stream plus pack stream id (``0100E0`` video, ``0180BD``
     AC-3, ``0120BD`` subpicture 0), decoded from a reference
-    DVD-sourced rip. Raw files and anything else yield None (no tag).
+    DVD-sourced rip. HD DVD shares the DVD shape (``0100E2`` video,
+    ``01C0BD`` DD+, decoded from a reference HD DVD rip): the ``01`` prefix
+    is the first-file index, audio/subs use XPL order (0xC0+/0x20+), and
+    the video pack id comes from an EVO packet scan since it is not always
+    0xE0. Raw files and anything else yield None (no tag).
     """
+    if title.hddvd_title_number is not None:
+        # Checked before pid: probed EVO streams carry mkvmerge's internal
+        # track numbers in pid/sub_id, which are not source medium ids.
+        if stream.stream_type == StreamType.VIDEO:
+            if hddvd_video_id is None:
+                return None
+            return f"0100{hddvd_video_id:02X}"
+        if stream.stream_type == StreamType.AUDIO:
+            sub_id = 0xC0 + stream.type_index
+        else:
+            sub_id = 0x20 + stream.type_index
+        return f"01{sub_id:02X}BD"
     if stream.pid is not None:
         return f"00{stream.pid:04X}"
     vts = _dvd_vts_number(title)
@@ -808,6 +827,7 @@ def _append_track_options(
     title: Title | None = None,
     cleanup: list[Path] | None = None,
     temp_files: list[Path] | None = None,
+    hddvd_video_id: int | None = None,
 ) -> None:
     for entry in mapped:
         stream = entry["stream"]
@@ -828,7 +848,9 @@ def _append_track_options(
             cmd += ["--track-name", f"{input_id}:{track_name}"]
 
         if title is not None and cleanup is not None and temp_files is not None:
-            source_id = _source_id_for_stream(stream, title)
+            source_id = _source_id_for_stream(
+                stream, title, hddvd_video_id=hddvd_video_id
+            )
             if source_id is not None:
                 tags_file = _create_source_id_tags_file(source_id, cleanup, temp_files)
                 cmd += ["--tags", f"{input_id}:{tags_file}"]
@@ -1109,8 +1131,18 @@ def _build_mkvmerge_command(
     track_filter_opts = _track_filter_options(ident_tracks, mapped, title)
     cmd += track_filter_opts
     need_positional_fallback = not (ident_tracks and mapped)
+    hddvd_video_id: int | None = None
+    if title.hddvd_title_number is not None and inputs:
+        # EVO video does not always ride 0xE0: read the pack id once for
+        # the SOURCE_ID tags (bounded prefix scan).
+        hddvd_video_id = _scan_evo_video_stream_id([inputs[0]])
     _append_track_options(
-        cmd, mapped, title=title, cleanup=cleanup, temp_files=temp_files
+        cmd,
+        mapped,
+        title=title,
+        cleanup=cleanup,
+        temp_files=temp_files,
+        hddvd_video_id=hddvd_video_id,
     )
     if need_positional_fallback:
         log_warn(
@@ -1132,6 +1164,7 @@ def _build_mkvmerge_command(
             title=title,
             cleanup=cleanup,
             temp_files=temp_files,
+            hddvd_video_id=hddvd_video_id,
         )
         cleanup.append(subtitle_fallback)
         cmd.append(str(subtitle_fallback))
@@ -1168,6 +1201,7 @@ def _dvd_subtitle_fallback_options_for_track(
     title: Title | None = None,
     cleanup: list[Path] | None = None,
     temp_files: list[Path] | None = None,
+    hddvd_video_id: int | None = None,
 ) -> list[str]:
     options: list[str] = []
     _append_track_state_options(options, track_id, ifo_stream)
@@ -1175,7 +1209,9 @@ def _dvd_subtitle_fallback_options_for_track(
     if track_name:
         options += ["--track-name", f"{track_id}:{track_name}"]
     if title is not None and cleanup is not None and temp_files is not None:
-        source_id = _source_id_for_stream(ifo_stream, title)
+        source_id = _source_id_for_stream(
+            ifo_stream, title, hddvd_video_id=hddvd_video_id
+        )
         if source_id is not None:
             tags_file = _create_source_id_tags_file(source_id, cleanup, temp_files)
             options += ["--tags", f"{track_id}:{tags_file}"]
@@ -1190,6 +1226,7 @@ def _dvd_subtitle_fallback_options(
     title: Title | None = None,
     cleanup: list[Path] | None = None,
     temp_files: list[Path] | None = None,
+    hddvd_video_id: int | None = None,
 ) -> list[str]:
     options: list[str] = []
     if not ident_tracks:
@@ -1216,6 +1253,7 @@ def _dvd_subtitle_fallback_options(
             title=title,
             cleanup=cleanup,
             temp_files=temp_files,
+            hddvd_video_id=hddvd_video_id,
         )
     return options
 

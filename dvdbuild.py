@@ -80,7 +80,7 @@ from cc608 import (
     _has_cc608_data,
 )
 from probe import _probe_with_mkvmerge, _parse_mkvmerge_streams
-from vobsub import _scan_vob_subpictures
+from vobsub import SubpictureScanCache, _scan_vob_subpictures
 from i18n import tr
 
 
@@ -198,6 +198,7 @@ def _append_default_dvd_title(
     layout: _DvdVtsLayout,
     metadata: _DvdDiscMetadata,
     config: Config | None = None,
+    scan_cache: SubpictureScanCache | None = None,
 ) -> Title | None:
     title = _build_title_from_ifo(
         titles,
@@ -207,6 +208,7 @@ def _append_default_dvd_title(
         layout.vts,
         title_name=layout.title_name,
         config=config,
+        scan_cache=scan_cache,
     )
     if title is None:
         title = _create_title(
@@ -240,6 +242,7 @@ def _build_dvd_pgc_title(
     pgc_number: int,
     title_name: str,
     config: Config | None = None,
+    scan_cache: SubpictureScanCache | None = None,
 ) -> Title | None:
     title = _build_title_from_ifo(
         titles,
@@ -250,6 +253,7 @@ def _build_dvd_pgc_title(
         title_name=title_name,
         pgc_number=pgc_number,
         config=config,
+        scan_cache=scan_cache,
     )
     if title is None:
         return None
@@ -585,6 +589,7 @@ def _append_dvd_pgc_titles(
     metadata: _DvdDiscMetadata,
     ifo_bytes: bytes,
     config: Config | None = None,
+    scan_cache: SubpictureScanCache | None = None,
 ) -> None:
     # One shared classification drives every DVD source mode (extracted
     # VIDEO_TS folders and ISO images alike), so both label identical
@@ -595,7 +600,13 @@ def _append_dvd_pgc_titles(
 
     def build_title(pgc_number: int, name: str) -> Title | None:
         return _build_dvd_pgc_title(
-            titles, layout, metadata, pgc_number, name, config=config
+            titles,
+            layout,
+            metadata,
+            pgc_number,
+            name,
+            config=config,
+            scan_cache=scan_cache,
         )
 
     if plan.episode_pgcs:
@@ -876,7 +887,10 @@ def _extra_subpicture_attributes(
 
 
 def _undeclared_subpicture_ids(
-    title: Title, vob_parts: list[Path], debug: bool
+    title: Title,
+    vob_parts: list[Path],
+    debug: bool,
+    cache: SubpictureScanCache | None = None,
 ) -> list[int]:
     known_sub_ids = {
         stream.sub_id for stream in title.subtitle_streams if stream.sub_id is not None
@@ -885,6 +899,7 @@ def _undeclared_subpicture_ids(
         vob_parts,
         max_bytes=128 * 1024 * 1024,
         debug=debug,
+        cache=cache,
     )
     return sorted(
         stream_id
@@ -948,13 +963,16 @@ def _append_undeclared_dvd_subpictures(
     vob_parts: list[Path],
     duration: float,
     config: Config | None,
+    cache: SubpictureScanCache | None = None,
 ) -> None:
     effective_config = config or RUNTIME_STATE.config
     if duration < effective_config.min_duration or not vob_parts:
         return
 
     try:
-        extra_ids = _undeclared_subpicture_ids(title, vob_parts, effective_config.debug)
+        extra_ids = _undeclared_subpicture_ids(
+            title, vob_parts, effective_config.debug, cache
+        )
         base_index = max((stream.index for stream in title.streams), default=-1) + 1
         base_type_index = len(title.subtitle_streams)
         declared_count = _read_u16(ifo_data, _VTS_IFO_SUBP_COUNT)
@@ -1031,6 +1049,7 @@ def _build_title_from_ifo(
     title_name: str | None = None,
     pgc_number: int | None = None,
     config: Config | None = None,
+    scan_cache: SubpictureScanCache | None = None,
 ) -> Title | None:
     """Build a Title from authoritative VTS IFO data.
 
@@ -1072,7 +1091,9 @@ def _build_title_from_ifo(
         )
         return _create_title(titles, first_vob, name, config=config)
 
-    _append_undeclared_dvd_subpictures(title, ifo_data, vob_parts, duration, config)
+    _append_undeclared_dvd_subpictures(
+        title, ifo_data, vob_parts, duration, config, scan_cache
+    )
     _append_dvd_closed_captions(title, vob_parts, config)
     log_debug(f"Built from IFO: {ifo_path.name}, {len(chapters)} chapters, {duration}s")
     log_debug(
@@ -1183,14 +1204,19 @@ def _scan_dvd_source(
     base = source / "VIDEO_TS" if (source / "VIDEO_TS").is_dir() else source
     metadata = _read_dvd_disc_metadata(base)
     titles: list[Title] = []
+    # One subpicture-scan cache per run: multi-PGC VTSs rescan shared VOBs
+    # once per title without it (19 scans for 3 VOB sets on one series disc).
+    scan_cache: SubpictureScanCache = {}
 
     for layout in _dvd_vts_layouts(base, metadata.vts_to_title_num):
-        default_title = _append_default_dvd_title(titles, layout, metadata, config)
+        default_title = _append_default_dvd_title(
+            titles, layout, metadata, config, scan_cache
+        )
         if default_title is None:
             continue
         ifo_bytes = _read_vts_ifo_bytes(layout)
         _append_dvd_pgc_titles(
-            titles, default_title, layout, metadata, ifo_bytes, config
+            titles, default_title, layout, metadata, ifo_bytes, config, scan_cache
         )
 
     return titles, metadata.disc

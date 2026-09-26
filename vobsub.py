@@ -1029,12 +1029,24 @@ def _scan_evo_video_stream_id(
     return counts.most_common(1)[0][0]
 
 
+SubpictureScanResult = dict[int, list[tuple[int, bytes]]]
+"""Per-scan subpicture entries: {sub_stream_id: [(pts_90khz, spu_data), ...]}."""
+
+SubpictureScanCache = dict[tuple[tuple[str, ...], int], SubpictureScanResult]
+"""In-run memo of VOB scans, keyed by (input paths, max_bytes).
+
+Callers must treat cached results as read-only. One cache per scan run;
+never shared across runs (stale bytes) or concurrent scans.
+"""
+
+
 def _scan_vob_subpictures(
     inputs: list[Path],
     max_bytes: int = 0,
     *,
     debug: bool = False,
-) -> dict[int, list[tuple[int, bytes]]]:
+    cache: SubpictureScanCache | None = None,
+) -> SubpictureScanResult:
     """Scan VOB files for DVD subpicture SPU packets.
 
     Reads MPEG-PS private stream 1 (0xBD) PES packets and collects those
@@ -1051,11 +1063,21 @@ def _scan_vob_subpictures(
     subtitle timeline at the first clock reset.
 
     *max_bytes* limits per-file scanning (default 0 = scan entire file).
+
+    When *cache* is given, repeated scans of the same inputs (multi-PGC
+    discs scan shared VOBs once per title) return the memoised result.
     """
     if not inputs:
         return {}
 
-    result: dict[int, list[tuple[int, bytes]]] = {}
+    if cache is not None:
+        key = (tuple(str(path) for path in inputs), max_bytes)
+        hit = cache.get(key)
+        if hit is not None:
+            log_debug("  VOB scan: cache hit for %d file(s)" % len(inputs))
+            return hit
+
+    result: SubpictureScanResult = {}
     totals = _VobScanCounts()
     spu_accumulator = _SpuAccumulator()
     # One rebaser across every file and window: the input list is played in
@@ -1132,6 +1154,8 @@ def _scan_vob_subpictures(
                 "  sub_id=0x%02x: %d SPU packets (%.3fs first)"
                 % (sub_id, len(entries), first_pts)
             )
+    if cache is not None:
+        cache[(tuple(str(path) for path in inputs), max_bytes)] = result
     return result
 
 

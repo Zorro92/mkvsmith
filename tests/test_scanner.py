@@ -355,3 +355,33 @@ def test_authorial_main_feature_ignores_generated_names() -> None:
 
     # No HD DVD marker: no authorial boost, scan order breaks the tie.
     assert scan.pick_main_feature([first, second]) == 0
+
+
+def test_hddvd_secondary_experience_hidden() -> None:
+    def rich(index: int, **attrs) -> Title:
+        title = make_title(index, 8600.0, **attrs)
+        title.streams.append(
+            Stream(index=1, stream_type=StreamType.AUDIO, codec="eac3")
+        )
+        return title
+
+    hud = rich(0, hddvd_title_number=4)
+    hud.name = "Transformers HUD"
+    hud.hddvd_id = "HUD"
+    main = rich(1, hddvd_title_number=3)
+    main.name = "Main Movie"
+    main.hddvd_id = "MainMovie"
+
+    assert scan._is_notable_title(main) is True
+    assert scan._is_notable_title(hud) is False
+    visible, hidden = scan._get_notable_titles([hud, main], scan.Config())
+    assert visible == [main]
+    assert hidden == 1
+
+
+def test_secondary_experience_gate_needs_hddvd_marker() -> None:
+    plain = make_title(0, 8600.0)
+    plain.name = "Transformers HUD"
+    plain.streams.append(Stream(index=1, stream_type=StreamType.AUDIO, codec="eac3"))
+
+    assert scan._is_notable_title(plain) is True

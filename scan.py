@@ -2131,6 +2131,27 @@ class Scanner:
 # =============================================================================
 
 
+# XPL ids/names marking a secondary PiP viewing experience of the same
+# film (matched as whole words so "Pippa" never matches "pip"). Kept to
+# unambiguous experience markers: a "trivia" bonus has its own clips and
+# stays visible.
+_SECONDARY_EXPERIENCE_TOKENS = frozenset({"hud", "pip"})
+
+
+def _is_hddvd_secondary_experience(title: Title) -> bool:
+    """True for HD DVD PiP-experience duplicates (HUD/Trivia modes).
+
+    These share the feature's clips but exist for the overlay experience;
+    the muxer cannot reproduce the interactive app, so they hide behind
+    the plain feature. Gated to HD DVD titles.
+    """
+    if title.hddvd_title_number is None:
+        return False
+    words = set(re.split(r"[^a-z]+", (title.hddvd_id or "").lower()))
+    words |= set(re.split(r"[^a-z]+", title.name.lower()))
+    return bool(words & _SECONDARY_EXPERIENCE_TOKENS)
+
+
 def _is_notable_title(title: Title) -> bool:
     """Determine if a title is likely actual content vs. menu/trailer/junk.
 
@@ -2142,8 +2163,13 @@ def _is_notable_title(title: Title) -> bool:
       - Very short clips (<2 min) are almost always trailers / warnings / menus
       - Short clips (<5 min) with only 1 audio stream and no subs are likely junk
       - Titles with no audio streams are PiP / slideshow / interactive content
+      - HD DVD PiP-experience duplicates (HUD/Trivia modes) hide behind the
+        plain feature; --show-all reveals them
     """
     if not title.video_streams:
+        return False
+
+    if _is_hddvd_secondary_experience(title):
         return False
 
     dur = title.duration_seconds

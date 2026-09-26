@@ -735,7 +735,80 @@ def _track_name_for_stream(entry: MappedStream) -> str:
     return track_name
 
 
-def _append_track_options(cmd: list[str], mapped: list[MappedStream]) -> None:
+def _dvd_vts_number(title: Title) -> int | None:
+    """VTS number parsed from the title's source VOB, or None.
+
+    Only DVD titles (IFO/PGC evidence on the Title) qualify: a lone
+    ``VTS_01_1.VOB`` opened as a plain video file must not gain a fabricated
+    source id.
+    """
+    if (
+        title.dvd_ifo_data is None
+        and title.dvd_pgc_number is None
+        and title.dvd_title_id is None
+        and not title.dvd_subp_attrs
+        and not title.dvd_audio_attrs
+    ):
+        return None
+    match = re.search(r"VTS_(\d+)_", title.source_file.name, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _source_id_for_stream(stream: Stream, title: Title) -> str | None:
+    """SOURCE_ID source-medium tag for a track, or None when it can't be known.
+
+    Blu-ray is the file index plus PID hex (``001011`` for PID 0x1011),
+    decoded from a reference BD-sourced rip; the multi-clip prefix
+    is unverified, so first-file ``00`` is assumed. DVD is the VTS number
+    plus sub-stream plus pack stream id (``0100E0`` video, ``0180BD``
+    AC-3, ``0120BD`` subpicture 0), decoded from a reference
+    DVD-sourced rip. Raw files and anything else yield None (no tag).
+    """
+    if stream.pid is not None:
+        return f"00{stream.pid:04X}"
+    vts = _dvd_vts_number(title)
+    if vts is None:
+        return None
+    pack_id = 0xE0 if stream.stream_type == StreamType.VIDEO else 0xBD
+    if stream.stream_type == StreamType.VIDEO:
+        sub_id = 0x00
+    else:
+        sub_id = stream.sub_id if stream.sub_id is not None else 0x00
+    return f"{vts:02d}{sub_id:02X}{pack_id:02X}"
+
+
+def _create_source_id_tags_file(
+    source_id: str, cleanup: list[Path], temp_files: list[Path]
+) -> Path:
+    """Write a single-Simple ``SOURCE_ID`` tags XML for ``--tags TID:file``.
+
+    ``<Targets>`` is deliberately omitted: mkvmerge inserts the UID it
+    generates for the track named by the TID part of ``--tags`` itself
+    (verified against mkvmerge v96). ``TagLanguage eng`` matches the reference tag layout,
+    which sets it on every Simple (mkvmerge's own statistics tags omit it).
+    """
+    tags_file = Path(tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name)
+    temp_files.append(tags_file)
+    cleanup.append(tags_file)
+    root = ET.Element("Tags")
+    tag = ET.SubElement(root, "Tag")
+    simple = ET.SubElement(tag, "Simple")
+    ET.SubElement(simple, "Name").text = "SOURCE_ID"
+    ET.SubElement(simple, "TagLanguage").text = "eng"
+    ET.SubElement(simple, "String").text = source_id
+    ET.indent(root, space="  ")
+    tags_file.write_bytes(ET.tostring(root, encoding="utf-8", xml_declaration=True))
+    return tags_file
+
+
+def _append_track_options(
+    cmd: list[str],
+    mapped: list[MappedStream],
+    *,
+    title: Title | None = None,
+    cleanup: list[Path] | None = None,
+    temp_files: list[Path] | None = None,
+) -> None:
     for entry in mapped:
         stream = entry["stream"]
         input_id = entry["input_id"]
@@ -753,6 +826,12 @@ def _append_track_options(cmd: list[str], mapped: list[MappedStream]) -> None:
         track_name = _track_name_for_stream(entry)
         if track_name:
             cmd += ["--track-name", f"{input_id}:{track_name}"]
+
+        if title is not None and cleanup is not None and temp_files is not None:
+            source_id = _source_id_for_stream(stream, title)
+            if source_id is not None:
+                tags_file = _create_source_id_tags_file(source_id, cleanup, temp_files)
+                cmd += ["--tags", f"{input_id}:{tags_file}"]
 
 
 @dataclass
@@ -1030,7 +1109,9 @@ def _build_mkvmerge_command(
     track_filter_opts = _track_filter_options(ident_tracks, mapped, title)
     cmd += track_filter_opts
     need_positional_fallback = not (ident_tracks and mapped)
-    _append_track_options(cmd, mapped)
+    _append_track_options(
+        cmd, mapped, title=title, cleanup=cleanup, temp_files=temp_files
+    )
     if need_positional_fallback:
         log_warn(
             "mkvmerge track identification unavailable; "
@@ -1045,7 +1126,12 @@ def _build_mkvmerge_command(
 
     if subtitle_fallback is not None and fallback_tracks:
         cmd += _dvd_subtitle_fallback_options(
-            unmatched_ifo_subs, fallback_tracks, ident_tracks
+            unmatched_ifo_subs,
+            fallback_tracks,
+            ident_tracks,
+            title=title,
+            cleanup=cleanup,
+            temp_files=temp_files,
         )
         cleanup.append(subtitle_fallback)
         cmd.append(str(subtitle_fallback))
@@ -1076,13 +1162,23 @@ def _subtitle_fallback_track_name(ifo_stream: Stream) -> str:
 
 
 def _dvd_subtitle_fallback_options_for_track(
-    track_id: int, ifo_stream: Stream
+    track_id: int,
+    ifo_stream: Stream,
+    *,
+    title: Title | None = None,
+    cleanup: list[Path] | None = None,
+    temp_files: list[Path] | None = None,
 ) -> list[str]:
     options: list[str] = []
     _append_track_state_options(options, track_id, ifo_stream)
     track_name = _subtitle_fallback_track_name(ifo_stream)
     if track_name:
         options += ["--track-name", f"{track_id}:{track_name}"]
+    if title is not None and cleanup is not None and temp_files is not None:
+        source_id = _source_id_for_stream(ifo_stream, title)
+        if source_id is not None:
+            tags_file = _create_source_id_tags_file(source_id, cleanup, temp_files)
+            options += ["--tags", f"{track_id}:{tags_file}"]
     return options
 
 
@@ -1090,6 +1186,10 @@ def _dvd_subtitle_fallback_options(
     unmatched_ifo_subs: list[Stream],
     fallback_tracks: list[dict[str, Any]],
     ident_tracks: list[dict[str, Any]],
+    *,
+    title: Title | None = None,
+    cleanup: list[Path] | None = None,
+    temp_files: list[Path] | None = None,
 ) -> list[str]:
     options: list[str] = []
     if not ident_tracks:
@@ -1110,7 +1210,13 @@ def _dvd_subtitle_fallback_options(
             f"  Sub fallback: {ifo_stream.display_id} -> "
             f".idx track {track_id} ({ifo_stream.language})"
         )
-        options += _dvd_subtitle_fallback_options_for_track(track_id, ifo_stream)
+        options += _dvd_subtitle_fallback_options_for_track(
+            track_id,
+            ifo_stream,
+            title=title,
+            cleanup=cleanup,
+            temp_files=temp_files,
+        )
     return options
 
 
@@ -1407,9 +1513,11 @@ class MKVCreator:
             )
         mapped = _map_streams_to_ident_tracks(streams, ident_tracks)
 
-        # mkvmerge cannot detect sparse DVD subpictures from the first VOB.
-        # Scan the MPEG-PS bitstream directly and emit a VobSub fallback input.
-        if input_plan.is_dvd_vob:
+        # mkvmerge cannot detect sparse DVD subpictures from the first VOB,
+        # and misses HD DVD EVO subpictures the same way (0xBD private
+        # stream). Scan the MPEG-PS bitstream directly and emit a VobSub
+        # fallback input.
+        if input_plan.is_dvd_vob or title.hddvd_title_number is not None:
             fallback_path, fallback_tracks, unmatched_ifo_subs = (
                 _extract_dvd_subtitle_fallback(
                     title,

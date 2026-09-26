@@ -115,6 +115,14 @@ runtime dependencies to add. The canonical attributions live in the header of
 - **mpucoder.com** — DVD-Video spec reference pages (e.g.
   `mpucoder.com/DVD/cell-pbi.html`, `/DVD/pgc.html`); cited inline.
 
+### HD DVD (XPL / EVO)
+
+- **DVD Forum HD DVD playlist schema** (`ADV_OBJ/VPLST*.XPL`) — title/clip/
+  chapter/track structure, parsed directly in `hddvd.py`. EVO files are
+  MPEG-PS-based and read by mkvmerge natively; EVO subpictures reuse the
+  DVD VobSub fallback in `mkv.py`.
+- Encrypted HD DVDs need AACS handling at the OS level, same as Blu-ray.
+
 ### Codec / bitstream
 
 - **FFmpeg source** — e.g. `libavcodec/dvdsubdec.c` (`parse_ifo_palette`),

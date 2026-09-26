@@ -1437,3 +1437,108 @@ def test_validate_mux_result_notes_missing_warning_lines(
     )
 
     assert "no warning lines were captured" in capsys.readouterr().out
+
+
+def _source_id_title(source_name: str, **kwargs: Any) -> Title:
+    return Title(
+        index=0,
+        source_file=Path(source_name),
+        name="Title",
+        duration_seconds=100.0,
+        **kwargs,
+    )
+
+
+def test_source_id_for_stream_bluray_pid() -> None:
+    title = _source_id_title("00001.m2ts")
+    video = Stream(index=0, stream_type=StreamType.VIDEO, pid=0x1011)
+    audio = Stream(index=1, stream_type=StreamType.AUDIO, pid=0x1100)
+    sub = Stream(index=2, stream_type=StreamType.SUBTITLE, pid=0x1201)
+    assert mkv._source_id_for_stream(video, title) == "001011"
+    assert mkv._source_id_for_stream(audio, title) == "001100"
+    assert mkv._source_id_for_stream(sub, title) == "001201"
+
+
+def test_source_id_for_stream_dvd_source_id_format() -> None:
+    title = _source_id_title("VTS_01_1.VOB", dvd_title_id=1)
+    video = Stream(index=0, stream_type=StreamType.VIDEO, codec="mpeg2video")
+    audio = Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3", sub_id=0x80)
+    sub = Stream(
+        index=2, stream_type=StreamType.SUBTITLE, codec="dvd_subtitle", sub_id=0x20
+    )
+    assert mkv._source_id_for_stream(video, title) == "0100E0"
+    assert mkv._source_id_for_stream(audio, title) == "0180BD"
+    assert mkv._source_id_for_stream(sub, title) == "0120BD"
+
+
+def test_source_id_for_stream_needs_source_evidence() -> None:
+    plain = _source_id_title("movie.mkv")
+    assert (
+        mkv._source_id_for_stream(Stream(index=0, stream_type=StreamType.VIDEO), plain)
+        is None
+    )
+    # A VTS-named VOB opened as a plain file (no IFO/PGC evidence) stays untagged.
+    lone_vob = _source_id_title("VTS_01_1.VOB")
+    assert (
+        mkv._source_id_for_stream(
+            Stream(index=0, stream_type=StreamType.VIDEO), lone_vob
+        )
+        is None
+    )
+
+
+def test_append_track_options_adds_source_id_tags(tmp_path: Path) -> None:
+    title = _source_id_title("00001.m2ts")
+    mapped: list[MappedStream] = [
+        {
+            "input_id": 0,
+            "type": "video",
+            "stream": Stream(index=0, stream_type=StreamType.VIDEO, pid=0x1011),
+            "ident_channels": None,
+        },
+        {
+            "input_id": 1,
+            "type": "audio",
+            "stream": Stream(
+                index=1, stream_type=StreamType.AUDIO, language="en", pid=0x1100
+            ),
+            "ident_channels": 6,
+        },
+    ]
+    cleanup: list[Path] = []
+    temp_files: list[Path] = []
+    cmd: list[str] = []
+    mkv._append_track_options(
+        cmd, mapped, title=title, cleanup=cleanup, temp_files=temp_files
+    )
+
+    tags_args = [cmd[i + 1] for i, value in enumerate(cmd) if value == "--tags"]
+    assert tags_args == [f"0:{cleanup[0]}", f"1:{cleanup[1]}"]
+    assert temp_files == cleanup
+    root = ET.parse(cleanup[0]).getroot()
+    assert root.find("Tag/Targets") is None
+    simple = root.find("Tag/Simple")
+    assert simple is not None
+    assert simple.findtext("Name") == "SOURCE_ID"
+    assert simple.findtext("String") == "001011"
+    assert simple.findtext("TagLanguage") == "eng"
+
+
+def test_dvd_subtitle_fallback_options_add_source_id_tags(tmp_path: Path) -> None:
+    title = _source_id_title("VTS_01_1.VOB", dvd_title_id=1)
+    sub = Stream(
+        index=2,
+        stream_type=StreamType.SUBTITLE,
+        codec="dvd_subtitle",
+        language="en",
+        sub_id=0x20,
+    )
+    cleanup: list[Path] = []
+    temp_files: list[Path] = []
+    options = mkv._dvd_subtitle_fallback_options_for_track(
+        0, sub, title=title, cleanup=cleanup, temp_files=temp_files
+    )
+
+    assert options[options.index("--tags") + 1] == f"0:{cleanup[0]}"
+    root = ET.parse(cleanup[0]).getroot()
+    assert root.findtext("Tag/Simple/String") == "0120BD"

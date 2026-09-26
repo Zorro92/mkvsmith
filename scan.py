@@ -1417,6 +1417,11 @@ class Scanner:
             self.disc_metadata = replace(self.disc_metadata, name=disc)
         main_idx = pick_main_feature(self.titles, self.config)
         for t in self.titles:
+            if t.hddvd_title_number is not None:
+                # XPL display names ("Main Movie", "Trailer3") are already
+                # already meaningful per-title names used for segment
+                # titles and filenames — never overwrite them.
+                continue
             if t.dvd_episode_number is not None:
                 part = t.dvd_episode_part or ""
                 t.name = f"{self.disc_name} - Episode {t.dvd_episode_number}{part}"

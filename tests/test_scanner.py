@@ -314,3 +314,22 @@ def test_dedup_duplicate_playlists_preserves_first_seen_group_order() -> None:
     )
 
     assert result == [unique_first, best_duplicate, unique_middle]
+
+
+def test_apply_disc_name_keeps_hddvd_xpl_names(tmp_path: Path) -> None:
+    from models import RuntimeState
+
+    movie = make_title(0, 8600.0, hddvd_title_number=3)
+    movie.name = "Main Movie"
+    trailer = make_title(1, 74.0, hddvd_title_number=12)
+    trailer.name = "Trailer3"
+    plain = make_title(2, 50.0)
+    scanner = scan.Scanner(tmp_path, runtime_state=RuntimeState())
+    scanner.titles = [movie, trailer, plain]
+    scanner.disc_name = "Some Disc"
+
+    scanner._apply_disc_name()
+
+    assert movie.name == "Main Movie"
+    assert trailer.name == "Trailer3"
+    assert plain.name == "Some Disc"

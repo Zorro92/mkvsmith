@@ -2234,7 +2234,7 @@ def _get_notable_titles(
 
 def _main_feature_score(
     title: Title, config: Config | None = None
-) -> tuple[int, int, int, int, int, float]:
+) -> tuple[int, int, int, int, int, int, float]:
     """Rank titles for "main feature" detection.
 
     DVDs put the real film in the title set with the richest audio/subtitle
@@ -2262,6 +2262,12 @@ def _main_feature_score(
     Chapter count is the next tie-breaker. Main features normally carry a real
     chapter table, while similarly rich extras may expose only one chapter.
 
+    Then the lowest playlist number (negated, so it sorts first). Disney
+    designates xx0 as the primary playlist for localized editions — same
+    film, alternate sign-language segments — where duration cannot decide
+    (the variants differ by seconds). Non-numeric names score neutral zero;
+    within a scan either all titles carry numeric playlists or none do.
+
     Final tiebreak: duration.
 
     Titles shorter than ``config.min_duration`` (default 60s) are excluded
@@ -2269,7 +2275,7 @@ def _main_feature_score(
     or warning cards with unusually rich stream tables.
     """
     if title.duration_seconds < (config or RUNTIME_STATE.config).min_duration:
-        return (-1, 0, 0, 0, 0, 0.0)
+        return (-1, 0, 0, 0, 0, 0, 0.0)
     richness = len(title.audio_streams) + len(title.subtitle_streams)
     is_default_edition = 0 if title.dvd_pgc_number is not None else 1
     remote_main = 1 if title.discdb_is_main_movie else 0
@@ -2279,8 +2285,20 @@ def _main_feature_score(
         richness,
         is_default_edition,
         len(title.chapters),
+        _playlist_preference(title),
         title.duration_seconds,
     )
+
+
+def _playlist_preference(title: Title) -> int:
+    """Negated numeric playlist (Blu-ray ``00800``) for lowest-first ranking.
+
+    Returns 0 for non-numeric names (DVD/HD DVD/everything generated), which
+    is neutral: within one scan all titles share the same naming scheme.
+    """
+    if title.playlist_name and re.fullmatch(r"\d+", title.playlist_name):
+        return -int(title.playlist_name)
+    return 0
 
 
 def _is_authorial_main_feature(title: Title) -> int:

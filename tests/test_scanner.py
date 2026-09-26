@@ -420,3 +420,28 @@ def test_looped_playlist_covers_iso_paths() -> None:
     menu.streams.append(Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3"))
     menu.iso_internal_paths = ["BDMV/STREAM/00300.m2ts"] * 301
     assert scan._is_notable_title(menu) is False
+
+
+def _playlist_title(
+    index: int, playlist: str | None, duration: float, chapters: int = 5
+) -> Title:
+    title = make_title(index, duration)
+    title.streams.append(Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3"))
+    title.playlist_name = playlist
+    title.chapters = [float(c) for c in range(chapters)]
+    return title
+
+
+def test_playlist_preference_stars_xx0_over_longer_variant() -> None:
+    main = _playlist_title(0, "00800", 6228.0)
+    french = _playlist_title(1, "00801", 6258.0)
+
+    assert scan.pick_main_feature([french, main]) == 0
+    assert scan.pick_main_feature([main, french]) == 0
+
+
+def test_playlist_preference_neutral_without_numbers() -> None:
+    first = _playlist_title(0, None, 8600.0)
+    second = _playlist_title(1, None, 8600.0)
+
+    assert scan.pick_main_feature([first, second]) == 0

@@ -27,6 +27,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import re
+from collections import Counter
 import hashlib
 import subprocess
 import sys
@@ -2152,6 +2153,21 @@ def _is_hddvd_secondary_experience(title: Title) -> bool:
     return bool(words & _SECONDARY_EXPERIENCE_TOKENS)
 
 
+def _is_looped_playlist(title: Title) -> bool:
+    """True when one clip dominates the title's play items (menu loop).
+
+    Looped menu backgrounds sum their repetitions into multi-hour durations,
+    so duration heuristics cannot catch them — only clip repetition gives
+    them away. At least 5 play items with a 90%+ share keeps genuine
+    single-clip titles and short playlists untouched.
+    """
+    clips = _title_clip_keys(title)
+    if len(clips) < 5:
+        return False
+    top_share = Counter(clips).most_common(1)[0][1] / len(clips)
+    return top_share >= 0.9
+
+
 def _is_notable_title(title: Title) -> bool:
     """Determine if a title is likely actual content vs. menu/trailer/junk.
 
@@ -2165,11 +2181,16 @@ def _is_notable_title(title: Title) -> bool:
       - Titles with no audio streams are PiP / slideshow / interactive content
       - HD DVD PiP-experience duplicates (HUD/Trivia modes) hide behind the
         plain feature; --show-all reveals them
+      - Looped playlists replaying one clip across nearly all play items
+        (menu backgrounds) hide regardless of summed duration
     """
     if not title.video_streams:
         return False
 
     if _is_hddvd_secondary_experience(title):
+        return False
+
+    if _is_looped_playlist(title):
         return False
 
     dur = title.duration_seconds

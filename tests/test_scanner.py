@@ -385,3 +385,38 @@ def test_secondary_experience_gate_needs_hddvd_marker() -> None:
     plain.streams.append(Stream(index=1, stream_type=StreamType.AUDIO, codec="eac3"))
 
     assert scan._is_notable_title(plain) is True
+
+
+def _looped_title(index: int, clips: list[str]) -> Title:
+    title = make_title(index, 3600.0)
+    title.streams.append(Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3"))
+    title.source_file = Path(clips[0])
+    title.append_clips = [Path(clip) for clip in clips[1:]]
+    return title
+
+
+def test_looped_playlist_hidden() -> None:
+    menu = _looped_title(0, ["m.m2ts"] * 104)
+    assert scan._is_notable_title(menu) is False
+
+
+def test_looped_playlist_allows_intro_plus_loop() -> None:
+    menu = _looped_title(0, ["intro.m2ts"] + ["loop.m2ts"] * 301)
+    assert scan._is_notable_title(menu) is False
+
+
+def test_looped_playlist_ignores_short_playlists() -> None:
+    short = _looped_title(0, ["m.m2ts"] * 4)
+    assert scan._is_notable_title(short) is True
+
+
+def test_looped_playlist_ignores_varied_clips() -> None:
+    feature = _looped_title(0, [f"{n:05d}.m2ts" for n in range(133)])
+    assert scan._is_notable_title(feature) is True
+
+
+def test_looped_playlist_covers_iso_paths() -> None:
+    menu = make_title(0, 3600.0)
+    menu.streams.append(Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3"))
+    menu.iso_internal_paths = ["BDMV/STREAM/00300.m2ts"] * 301
+    assert scan._is_notable_title(menu) is False

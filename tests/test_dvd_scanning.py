@@ -35,6 +35,7 @@ def _patch_title_builder(monkeypatch: Any) -> list[tuple[int | None, str | None]
         title_name: str | None = None,
         pgc_number: int | None = None,
         config: object | None = None,
+        scan_cache: object | None = None,
     ) -> Title:
         calls.append((pgc_number, title_name))
         title = Title(len(titles), vob_parts[0], title_name or "", 100.0)
@@ -611,7 +612,7 @@ def test_build_title_from_ifo_recovers_undeclared_subpicture(
     monkeypatch.setattr(
         dvdbuild,
         "_scan_vob_subpictures",
-        lambda vobs, max_bytes, debug: (
+        lambda vobs, max_bytes, debug, **_: (
             scan_calls.append((vobs, max_bytes, debug)) or {0x21: [(0, b"spu")]}
         ),
     )

@@ -108,6 +108,36 @@ def test_scan_vob_subpictures_joins_generated_continuation_packets(
     assert result == {0x20: [(12345, payload)]}
 
 
+def test_scan_vob_subpictures_memoises_by_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[int] = []
+    real = vobsub._scan_vob_subpicture_file
+
+    def counting(
+        vob_file: Path,
+        file_limit: int,
+        spu_accumulator: vobsub._SpuAccumulator,
+        pts_rebaser: vobsub._PtsTimelineRebaser,
+    ) -> tuple[dict[int, list[tuple[int, bytes]]], vobsub._VobScanCounts]:
+        calls.append(1)
+        return real(vob_file, file_limit, spu_accumulator, pts_rebaser)
+
+    monkeypatch.setattr(vobsub, "_scan_vob_subpicture_file", counting)
+    vob = tmp_path / "a.VOB"
+    vob.write_bytes(bytes(2 * 1024 * 1024))
+    cache: vobsub.SubpictureScanCache = {}
+
+    first = vobsub._scan_vob_subpictures([vob], max_bytes=1024, cache=cache)
+    second = vobsub._scan_vob_subpictures([vob], max_bytes=1024, cache=cache)
+    assert first == second == {}
+    assert len(calls) == 1
+
+    # A different window is a different key and rescans.
+    vobsub._scan_vob_subpictures([vob], max_bytes=2048, cache=cache)
+    assert len(calls) == 2
+
+
 def test_scan_vob_subpictures_uses_raw_spu_fallback(tmp_path: Path) -> None:
     spu = b"\x00\x0a\x00\x04\x00\x08abcd"
     vob = tmp_path / "raw-spu.vob"

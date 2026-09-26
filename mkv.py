@@ -74,6 +74,7 @@ from models import (
     _kill_process_group,
     RuntimeState,
     RUNTIME_STATE,
+    UserPrompts,
 )
 from probe import _MKVMERGE_CODEC_MAP
 from i18n import tr
@@ -599,6 +600,7 @@ def _prepare_mux_tags(
     tag_opts: TagOptions | None,
     temp_files: list[Path],
     disc_metadata: DiscMetadata | None = None,
+    prompts: UserPrompts | None = None,
 ) -> tuple[MovieMetadata | None, list[ArtAttachment]]:
     if tag_opts is None or not tag_opts.enabled:
         return None, []
@@ -606,7 +608,7 @@ def _prepare_mux_tags(
     from tagger import _prepare_tagging
 
     try:
-        metadata, art = _prepare_tagging(title.name, tag_opts, temp_files)
+        metadata, art = _prepare_tagging(title.name, tag_opts, temp_files, prompts)
     except Exception as exc:
         log_warn(tr("Tagging failed (ripping without tags): {err}", err=exc))
         return None, []
@@ -792,20 +794,12 @@ class _PreparedMuxTracks:
     cc608_srt: Path | None
 
 
-def _confirm_overwrite(out_file: Path) -> bool:
+def _confirm_overwrite(out_file: Path, prompts: UserPrompts | None = None) -> bool:
     """Ask before overwriting an existing output file (default No)."""
-    try:
-        answer = (
-            input(
-                tr("'{name}' already exists. Overwrite? [y/N]:", name=out_file.name)
-                + " "
-            )
-            .strip()
-            .lower()
-        )
-    except (EOFError, KeyboardInterrupt):
-        return False
-    return answer in ("y", "yes")
+    hooks = prompts or RUNTIME_STATE.prompts
+    return hooks.confirm(
+        tr("'{name}' already exists. Overwrite? [y/N]:", name=out_file.name)
+    )
 
 
 def _output_file_for_title(output_dir: Path, title: Title) -> Path:
@@ -1330,6 +1324,7 @@ class MKVCreator:
         self.tag_opts = tag_opts
         self.disc_metadata = state.disc_metadata
         self.config = config or state.config
+        self.prompts = state.prompts
         state.logger.configure(self.config)
         self.logger = state.logger
         self.cleanup = state.cleanup
@@ -1516,7 +1511,7 @@ class MKVCreator:
         if self.config.force_overwrite:
             log_info(f"Overwriting existing output: {out_file.name}")
             return
-        if not _confirm_overwrite(out_file):
+        if not _confirm_overwrite(out_file, self.prompts):
             raise RipError(message=f"Output exists, not overwriting: {out_file.name}")
 
     def _finish_created_output(
@@ -1582,7 +1577,11 @@ class MKVCreator:
         input_plan = self._prepare_inputs(title, streams)
         prepared_tracks = self._prepare_tracks(title, streams, input_plan)
         tag_md, tag_art = _prepare_mux_tags(
-            title, self.tag_opts, self.cleanup.temp_files, self.disc_metadata
+            title,
+            self.tag_opts,
+            self.cleanup.temp_files,
+            self.disc_metadata,
+            self.prompts,
         )
 
         try:

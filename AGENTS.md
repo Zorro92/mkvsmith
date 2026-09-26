@@ -55,6 +55,31 @@ MakeMKV is closed-source. To compare behaviour, ask the user to run
 `makemkvcon --robot ...` (or describe the expected output) — don't guess at
 what MakeMKV does.
 
+## CLI, interactive prompt, and future GUI
+
+Every user-facing capability must be designed for three surfaces: the
+non-interactive CLI flags, the interactive prompt (the current TUI), and a
+future GUI that does not exist yet. Do not build the GUI — just keep it
+unblocked:
+
+- **Core logic lives in UI-agnostic modules** (`scan.py`, `mkv.py`,
+  `models.py`, `discdb.py`, `tagger.py`, ...). `cli.py` owns only argparse,
+  terminal display, `input()` prompts, and `sys.exit()` mapping. Never put
+  `input()`, `print()`, or `sys.exit()` in a core module; core returns data or
+  raises (`RipError`, `ValueError`) and the caller decides what to show.
+- **Every new capability needs all three surfaces**: a non-interactive path
+  wired through `_select_action` / `_run_action`, an interactive-prompt command
+  wired through `_InteractiveRipper._dispatch` + `_print_prompt`, and an
+  underlying helper callable with explicit parameters (titles, options,
+  `runtime_state`) that a GUI could invoke without argv or stdin. The existing
+  `_rip_title_batch` / `_run_main_feature_rip` / `_prepare_multi_edition`
+  helpers are the pattern.
+- **User-facing strings go through `tr()`** with a Spanish entry in `i18n.py`,
+  whichever surface shows them — `--help` text, prompt labels, and warnings
+  alike.
+- **Test at the helper/action level** (see `tests/test_cli_actions.py`), not
+  only through argv parsing, so the GUI-callable path is the tested path.
+
 ## Reference implementations & specs (read, don't depend on)
 
 When extending a parser (a new CLPI/IFO/MPLS field, a codec's channel layout,

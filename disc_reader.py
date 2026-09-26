@@ -25,6 +25,7 @@ from pathlib import Path
 from models import (
     Config,
     RUNTIME_STATE,
+    UserPrompts,
     log_debug,
     log_error,
     log_info,
@@ -816,23 +817,14 @@ def _extract_partial_7z(
 # =============================================================================
 
 
-def _confirm_direct_mount(iso_path: Path) -> bool:
-    try:
-        answer = (
-            input(
-                tr(
-                    "[INFO] Attempt to mount '{path}' via "
-                    "'sudo mount -o loop,ro'? [y/N]:",
-                    path=iso_path,
-                )
-                + " "
-            )
-            .strip()
-            .lower()
+def _confirm_direct_mount(iso_path: Path, prompts: UserPrompts | None = None) -> bool:
+    hooks = prompts or RUNTIME_STATE.prompts
+    return hooks.confirm(
+        tr(
+            "[INFO] Attempt to mount '{path}' via 'sudo mount -o loop,ro'? [y/N]:",
+            path=iso_path,
         )
-    except (EOFError, KeyboardInterrupt):
-        return False
-    return answer in ("y", "yes")
+    )
 
 
 def _run_direct_mount(
@@ -867,6 +859,7 @@ def _try_direct_mount(
     config: Config | None = None,
     *,
     direct_mounts: list[Path] | None = None,
+    prompts: UserPrompts | None = None,
 ) -> Path | None:
     """Attempt to mount *iso_path* via ``sudo mount -o loop,ro``.
 
@@ -881,7 +874,7 @@ def _try_direct_mount(
         # prompting for a sudo command that cannot work on this platform.
         log_debug("Skipping direct mount (Linux-only fallback)")
         return None
-    if not _confirm_direct_mount(iso_path):
+    if not _confirm_direct_mount(iso_path, prompts):
         return None
 
     log_info(tr("Attempting direct mount via 'sudo mount -o loop,ro'..."))

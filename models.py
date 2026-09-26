@@ -17,7 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -896,6 +896,46 @@ class ActiveProcesses:
         self.progress_active = False
 
 
+ConfirmFn = Callable[[str], bool]
+"""Yes/no question hook: receives the full (translated) message, returns True."""
+
+TextPromptFn = Callable[[str, str | None], str]
+"""Free-text hook: receives (prompt, default), returns the entered text."""
+
+
+def _stdin_confirm(message: str) -> bool:
+    """Default confirm hook: ask on stdin, treating close/interrupt as No."""
+    try:
+        answer = input(message + " ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in ("y", "yes")
+
+
+def _stdin_text(prompt: str, default: str | None = None) -> str:
+    """Default text hook: read a line from stdin, falling back to *default*."""
+    suffix = f" [{default}]" if default else ""
+    try:
+        ans = input(f"{prompt}{suffix}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return default or ""
+    return ans or (default or "")
+
+
+@dataclass
+class UserPrompts:
+    """Injectable user-interaction hooks (default: stdin).
+
+    Core modules must ask the user through these instead of calling
+    ``input()`` directly, so a future GUI can substitute dialog callbacks
+    and headless flows never block on stdin. The message strings stay at the
+    call site (translated via ``tr()``); only the transport is injected.
+    """
+
+    confirm: ConfirmFn = _stdin_confirm
+    text: TextPromptFn = _stdin_text
+
+
 @dataclass
 class RuntimeState:
     """Mutable process-wide state, grouped for staged dependency injection."""
@@ -907,6 +947,7 @@ class RuntimeState:
     logger: RuntimeLogger = field(default_factory=RuntimeLogger)
     cleanup: RuntimeCleanup = field(default_factory=RuntimeCleanup)
     active_processes: ActiveProcesses = field(default_factory=ActiveProcesses)
+    prompts: UserPrompts = field(default_factory=UserPrompts)
 
     def __post_init__(self) -> None:
         self.logger.configure(self.config)

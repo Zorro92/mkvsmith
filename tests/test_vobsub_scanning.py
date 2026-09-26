@@ -283,3 +283,31 @@ def test_main_content_range_refuses_to_drop_most_content(
     )
 
     assert _dvd_main_content_range([vob]) is None
+
+
+def _ps_pes(stream_id: int, payload_len: int = 64) -> bytes:
+    return (
+        b"\x00\x00\x01"
+        + bytes([stream_id])
+        + payload_len.to_bytes(2, "big")
+        + bytes(payload_len)
+    )
+
+
+def test_scan_evo_video_stream_id_reads_pack_id(tmp_path: Path) -> None:
+    evo = tmp_path / "FEATURE_1.EVO"
+    evo.write_bytes(
+        b"\x00\x00\x01\xba"
+        + bytes(10)
+        + _ps_pes(0xE2)
+        + _ps_pes(0xBD, 32)
+        + _ps_pes(0xE2)
+    )
+    assert vobsub._scan_evo_video_stream_id([evo]) == 0xE2
+
+
+def test_scan_evo_video_stream_id_empty_without_video(tmp_path: Path) -> None:
+    evo = tmp_path / "EMPTY.EVO"
+    evo.write_bytes(b"\x00\x00\x01\xba" + bytes(10) + _ps_pes(0xBD, 32))
+    assert vobsub._scan_evo_video_stream_id([evo]) is None
+    assert vobsub._scan_evo_video_stream_id([tmp_path / "missing.EVO"]) is None

@@ -1487,6 +1487,36 @@ def test_source_id_for_stream_needs_source_evidence() -> None:
     )
 
 
+def test_source_id_for_stream_hddvd_source_id_format() -> None:
+    title = _source_id_title("FEATURE_1.EVO", hddvd_title_number=3)
+    video = Stream(index=0, stream_type=StreamType.VIDEO, codec="h264")
+    audio = Stream(index=1, stream_type=StreamType.AUDIO, codec="eac3", type_index=0)
+    sub = Stream(
+        index=2, stream_type=StreamType.SUBTITLE, codec="dvd_subtitle", type_index=0
+    )
+    assert mkv._source_id_for_stream(video, title, hddvd_video_id=0xE2) == "0100E2"
+    assert mkv._source_id_for_stream(audio, title) == "01C0BD"
+    assert mkv._source_id_for_stream(sub, title) == "0120BD"
+    # Unknown video pack id: no tag rather than a fabricated one.
+    assert mkv._source_id_for_stream(video, title) is None
+
+
+def test_source_id_for_stream_hddvd_ignores_probed_numbers() -> None:
+    """Probed EVO streams carry mkvmerge's internal track numbers in pid;
+    those must not leak into SOURCE_ID (they produced '00C0000000BD')."""
+    title = _source_id_title("FEATURE_1.EVO", hddvd_title_number=3)
+    video = Stream(index=0, stream_type=StreamType.VIDEO, pid=226, sub_id=226)
+    audio = Stream(
+        index=1,
+        stream_type=StreamType.AUDIO,
+        pid=824633721021,
+        sub_id=824633721021,
+        type_index=0,
+    )
+    assert mkv._source_id_for_stream(video, title, hddvd_video_id=0xE2) == "0100E2"
+    assert mkv._source_id_for_stream(audio, title) == "01C0BD"
+
+
 def test_append_track_options_adds_source_id_tags(tmp_path: Path) -> None:
     title = _source_id_title("00001.m2ts")
     mapped: list[MappedStream] = [

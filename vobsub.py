@@ -15,6 +15,7 @@ import mmap
 import os
 import subprocess
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -974,6 +975,58 @@ def _scan_vob_subpicture_file(
             )
         )
     return result, counts
+
+
+def _scan_evo_video_stream_id(
+    inputs: list[Path], max_bytes: int = 64 * 1024 * 1024
+) -> int | None:
+    """Most common video PES stream id (0xE0-0xEF) in MPEG-PS/EVO inputs.
+
+    EVO video does not always ride 0xE0 (this disc uses 0xE2), so the id is
+    read from the packets for SOURCE_ID tags. Candidates are
+    validated with the PES length field — the same primitive the subpicture
+    walk uses — so payload coincidences cannot win against the true video
+    id, which outnumbers them by orders of magnitude. Only the first input
+    is scanned (appended clips share the layout); the bounded prefix keeps
+    it fast since video packs are dense from the start.
+    """
+    counts: Counter[int] = Counter()
+    for path in inputs[:1]:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        window = min(size, max_bytes) if max_bytes > 0 else size
+        if window <= 0:
+            continue
+        try:
+            descriptor = os.open(str(path), os.O_RDONLY | getattr(os, "O_LARGEFILE", 0))
+        except OSError:
+            continue
+        try:
+            try:
+                data = mmap.mmap(descriptor, window, access=mmap.ACCESS_READ, offset=0)
+            except (ValueError, OSError):
+                continue
+            try:
+                scan = 0
+                data_len = len(data)
+                while scan < data_len - 5:
+                    index = data.find(b"\x00\x00\x01", scan)
+                    if index < 0 or index + 5 >= data_len:
+                        break
+                    stream_id = data[index + 3]
+                    end = _vob_pes_skip(data, index)
+                    if 0xE0 <= stream_id <= 0xEF and end > index + 6:
+                        counts[stream_id] += 1
+                    scan = max(end, index + 4)
+            finally:
+                data.close()
+        finally:
+            os.close(descriptor)
+    if not counts:
+        return None
+    return counts.most_common(1)[0][0]
 
 
 def _scan_vob_subpictures(

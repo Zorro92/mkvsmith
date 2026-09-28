@@ -55,6 +55,11 @@ the reference ripper is closed-source. To compare behaviour, ask the user to pro
 reference output (or describe the expected output) — don't guess at
 what the reference ripper does.
 
+Reference means compare-only: never invoke its binaries, parse its output
+files, or depend on its rips, tags, or chapters in code, tests, scripts, or
+workflow. Ground truth may be eyeballed from its output during research, but
+nothing ships (or tests) that reads it.
+
 ## CLI, interactive prompt, and future GUI
 
 Every user-facing capability must be designed for three surfaces: the

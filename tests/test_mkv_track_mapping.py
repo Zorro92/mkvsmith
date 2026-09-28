@@ -1572,3 +1572,37 @@ def test_dvd_subtitle_fallback_options_add_source_id_tags(tmp_path: Path) -> Non
     assert options[options.index("--tags") + 1] == f"0:{cleanup[0]}"
     root = ET.parse(cleanup[0]).getroot()
     assert root.findtext("Tag/Simple/String") == "0120BD"
+
+
+def test_drop_incompatible_append_clips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "00000.m2ts"
+    second = tmp_path / "00018.m2ts"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+    ident = [
+        {"id": 0, "type": "video", "properties": {}},
+        {"id": 1, "type": "audio", "properties": {"audio_channels": 6}},
+        {"id": 2, "type": "audio", "properties": {"audio_channels": 6}},
+    ]
+    stereo = [
+        {"id": 0, "type": "video", "properties": {}},
+        {"id": 1, "type": "audio", "properties": {"audio_channels": 2}},
+        {"id": 2, "type": "audio", "properties": {"audio_channels": 2}},
+    ]
+    audio = Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3", type_index=0)
+    audio2 = Stream(index=2, stream_type=StreamType.AUDIO, codec="ac3", type_index=1)
+    mapped: list[MappedStream] = [
+        {"input_id": 0, "type": "video", "stream": audio, "ident_channels": None},
+        {"input_id": 1, "type": "audio", "stream": audio, "ident_channels": 6},
+        {"input_id": 2, "type": "audio", "stream": audio2, "ident_channels": 6},
+    ]
+    monkeypatch.setattr(
+        mkv, "_identify_input_tracks", lambda p: stereo if p == second else ident
+    )
+
+    kept, dropped = mkv._drop_incompatible_append_inputs([first, second], mapped, ident)
+
+    assert kept == [first]
+    assert dropped == [1]

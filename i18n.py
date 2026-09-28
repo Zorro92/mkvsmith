@@ -145,6 +145,7 @@ _ES: dict[str, str] = {
     "Mounted {path} but found neither BDMV nor VIDEO_TS at the top level.": "Se montó {path} pero no se encontró ni BDMV ni VIDEO_TS en el nivel superior.",
     # --- disc_reader (mount / 7z) ---------------------------------------------
     "Skipping direct mount (--no-sudo is set)": "Omitiendo montaje directo (--no-sudo está activado)",
+    "Skipping incompatible clip for append: {name} (audio layout differs)": "Omitiendo clip incompatible para anexar: {name} (el audio difiere)",
     "[INFO] Attempt to mount '{path}' via 'sudo mount -o loop,ro'? [y/N]:": "[INFO] ¿Intentar montar '{path}' con 'sudo mount -o loop,ro'? [s/N]:",
     "Attempting direct mount via 'sudo mount -o loop,ro'...": "Intentando montaje directo con 'sudo mount -o loop,ro'...",
     "mount failed (rc={rc}): {err}": "el montaje falló (rc={rc}): {err}",

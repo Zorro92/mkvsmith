@@ -820,6 +820,76 @@ def _create_source_id_tags_file(
     return tags_file
 
 
+def _audio_channels_by_track_id(
+    ident_tracks: list[dict[str, Any]],
+) -> dict[int, int | None]:
+    """Audio channel counts keyed by mkvmerge track id."""
+    channels: dict[int, int | None] = {}
+    for track in ident_tracks:
+        if track.get("type") != "audio":
+            continue
+        try:
+            track_id = int(track.get("id", -1))
+        except (TypeError, ValueError):
+            continue
+        props = track.get("properties", {})
+        value = props.get("audio_channels") if isinstance(props, dict) else None
+        channels[track_id] = int(value) if isinstance(value, int) else None
+    return channels
+
+
+def _drop_incompatible_append_inputs(
+    inputs: list[Path],
+    mapped: list[MappedStream],
+    ident_tracks: list[dict[str, Any]],
+) -> tuple[list[Path], list[int]]:
+    """Drop appended clips whose audio layouts differ from the first clip.
+
+    mkvmerge refuses to append when a mapped audio track's channel count
+    differs (e.g. a stereo credits clip after 5.1 episode clips). The first
+    clip always stays; incompatible followers are excluded with a warning.
+    Returns (kept_inputs, dropped_indices).
+    """
+    if len(inputs) < 2:
+        return inputs, []
+    expected = _audio_channels_by_track_id(ident_tracks)
+    wanted_ids = {
+        entry["input_id"]
+        for entry in mapped
+        if entry["type"] == "audio" and entry["input_id"] >= 0
+    }
+    if not wanted_ids:
+        return inputs, []
+    kept = [inputs[0]]
+    dropped: list[int] = []
+    for index in range(1, len(inputs)):
+        probed = _identify_input_tracks(inputs[index])
+        if not probed:
+            # Unprobable clip: keep it and let mkvmerge decide.
+            kept.append(inputs[index])
+            continue
+        actual = _audio_channels_by_track_id(probed)
+        mismatch = False
+        for track_id in wanted_ids:
+            want = expected.get(track_id)
+            got = actual.get(track_id)
+            if want is not None and got is not None and want != got:
+                mismatch = True
+                break
+        if mismatch:
+            dropped.append(index)
+            log_warn(
+                tr(
+                    "Skipping incompatible clip for append: {name} "
+                    "(audio layout differs)",
+                    name=inputs[index].name,
+                )
+            )
+        else:
+            kept.append(inputs[index])
+    return kept, dropped
+
+
 def _append_track_options(
     cmd: list[str],
     mapped: list[MappedStream],
@@ -1154,7 +1224,10 @@ def _build_mkvmerge_command(
     if tags_file is not None:
         cmd += ["--global-tags", str(tags_file)]
     _append_art_attachments(cmd, art_attachments)
-    _append_input_files(cmd, inputs, track_filter_opts)
+    kept_inputs, _dropped = _drop_incompatible_append_inputs(
+        inputs, mapped, ident_tracks
+    )
+    _append_input_files(cmd, kept_inputs, track_filter_opts)
 
     if subtitle_fallback is not None and fallback_tracks:
         cmd += _dvd_subtitle_fallback_options(

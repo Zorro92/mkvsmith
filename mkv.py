@@ -1117,14 +1117,30 @@ def _prepare_dvd_inputs(
     return _DvdTrimResult([output], None, None)
 
 
+def _is_bluray_clip_append(inputs: list[Path]) -> bool:
+    """True when every appended input is a Blu-ray clip (.m2ts).
+
+    ISO-extracted clips keep their on-disc filenames, so this holds for
+    folder/device and ISO sources alike.
+    """
+    return bool(inputs) and all(
+        input_path.suffix.lower() == ".m2ts" for input_path in inputs
+    )
+
+
 def _append_input_files(
     cmd: list[str], inputs: list[Path], track_filter_opts: list[str]
 ) -> None:
-    # ``--append-mode track`` gives each track its own timestamp offset. This
-    # avoids cumulative video gaps when audio extends slightly beyond video in
-    # seamless-branching segments. The filter is repeated before each appended
-    # input so clips carrying a later-starting PID remain valid append sources.
-    if len(inputs) > 1:
+    # Blu-ray clips use mkvmerge's default ``file`` append mode: each appended
+    # clip is offset by the previous file's end, so audio and video stay
+    # mutually synchronised. ``track`` mode instead offsets every track by its
+    # own end; when a clip's audio ends earlier than its video the audio creeps
+    # forward at every join and the error accumulates (Sgt Frog: ~0.6 s per
+    # join, ~3 s by 6 h). VOB/EVO inputs keep ``track`` mode per the mkvmerge
+    # manual (split parts of one recording, where per-track continuity wins).
+    # The filter is repeated before each appended input so clips carrying a
+    # later-starting PID remain valid append sources.
+    if len(inputs) > 1 and not _is_bluray_clip_append(inputs):
         cmd += ["--append-mode", "track"]
     cmd.append(str(inputs[0]))
     for clip in inputs[1:]:

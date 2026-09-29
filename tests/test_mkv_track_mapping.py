@@ -298,7 +298,7 @@ def test_is_dvd_vob_input_requires_mpeg2_vob() -> None:
 
 def test_append_input_files_repeats_track_filters() -> None:
     cmd = ["mkvmerge"]
-    inputs = [Path("a.m2ts"), Path("b.m2ts"), Path("c.m2ts")]
+    inputs = [Path("a.vob"), Path("b.vob"), Path("c.vob")]
     filters = ["--video-tracks", "0"]
 
     mkv._append_input_files(cmd, inputs, filters)
@@ -307,16 +307,40 @@ def test_append_input_files_repeats_track_filters() -> None:
         "mkvmerge",
         "--append-mode",
         "track",
-        "a.m2ts",
+        "a.vob",
         "+",
         "--video-tracks",
         "0",
-        "b.m2ts",
+        "b.vob",
         "+",
         "--video-tracks",
         "0",
-        "c.m2ts",
+        "c.vob",
     ]
+
+
+def test_append_input_files_bluray_clips_use_file_mode() -> None:
+    cmd = ["mkvmerge"]
+    inputs = [Path("00000.m2ts"), Path("00001.m2ts")]
+    filters = ["--video-tracks", "0"]
+
+    mkv._append_input_files(cmd, inputs, filters)
+
+    assert cmd == [
+        "mkvmerge",
+        "00000.m2ts",
+        "+",
+        "--video-tracks",
+        "0",
+        "00001.m2ts",
+    ]
+
+
+def test_is_bluray_clip_append_requires_all_m2ts() -> None:
+    assert mkv._is_bluray_clip_append([Path("a.m2ts"), Path("b.M2TS")])
+    assert not mkv._is_bluray_clip_append([Path("a.m2ts"), Path("b.vob")])
+    assert not mkv._is_bluray_clip_append([Path("a.vob"), Path("b.vob")])
+    assert not mkv._is_bluray_clip_append([])
 
 
 def test_dvd_subtitle_fallback_options_apply_idx_track_attributes() -> None:
@@ -430,14 +454,13 @@ def test_build_mkvmerge_command_orders_metadata_inputs_and_fallback(
         "Poster",
         str(art_path),
     ]
-    assert cmd[-6:] == [
-        "--append-mode",
-        "track",
+    assert cmd[-4:] == [
         str(source),
         "+",
         str(tmp_path / "append.m2ts"),
         str(subtitle_fallback),
     ]
+    assert "--append-mode" not in cmd
     assert cleanup == [cleanup[0], cleanup[1], subtitle_fallback]
     assert temp_files == cleanup[:2]
 

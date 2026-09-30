@@ -4,7 +4,7 @@
 
 Do NOT shell out to `ffmpeg` or `ffprobe` from the production code
 (`main.py`, `cli.py`, `probe.py`, `bluray.py`, `dvdbuild.py`, `scan.py`,
-`mkv.py`, `dvdifo.py`, `vobsub.py`, `disc_reader.py`, `tagger.py`,
+`mkv.py`, `m2ts.py`, `dvdifo.py`, `vobsub.py`, `disc_reader.py`, `tagger.py`,
 `models.py`, `settings.py`, `i18n.py`). This is a hard project constraint, not
 a preference. The project depends on **mkvtoolnix** (`mkvmerge`) as its only
 external media tool.

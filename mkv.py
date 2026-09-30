@@ -1187,9 +1187,12 @@ def _clone_or_copy(src: Path, dst: Path) -> None:
     try:
         import fcntl
 
+        ioctl = getattr(fcntl, "ioctl", None)
+        if ioctl is None:
+            raise OSError("FICLONE not available on this platform")
         ficlone = 0x40049409  # _IOW(0x94, 9, int), linux/fs.h
         with src.open("rb") as source, dst.open("wb") as target:
-            fcntl.ioctl(target.fileno(), ficlone, source.fileno())
+            ioctl(target.fileno(), ficlone, source.fileno())
         return
     except (ImportError, OSError):
         pass

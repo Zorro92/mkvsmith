@@ -279,3 +279,14 @@ def test_append_input_files_track_mode_for_trimmed_bluray_clips() -> None:
     cmd: list[str] = ["mkvmerge"]
     mkv._append_input_files(cmd, [Path("a.m2ts"), Path("b.m2ts")], [], track_mode=True)
     assert cmd == ["mkvmerge", "--append-mode", "track", "a.m2ts", "+", "b.m2ts"]
+
+
+def test_clone_or_copy_preserves_content(tmp_path: Path) -> None:
+    src = tmp_path / "clip.m2ts"
+    src.write_bytes(bytes(range(256)) * 1024)
+    dst = tmp_path / "copy.m2ts"
+
+    mkv._clone_or_copy(src, dst)
+
+    assert dst.read_bytes() == src.read_bytes()
+    assert src.read_bytes() == bytes(range(256)) * 1024

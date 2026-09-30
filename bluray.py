@@ -502,6 +502,46 @@ class MplsPlayItem(TypedDict):
     duration: float
     in_time: int
     out_time: int
+    # How this PlayItem joins the previous one (libbluray
+    # ``connection_condition``): 1 = non-seamless, 5 = seamless with an
+    # ATC/STC discontinuity, 6 = seamless on a continuous STC.
+    connection_condition: int
+
+
+class MplsSubPlayItem(TypedDict):
+    """One SubPlayItem within a SubPath (libbluray ``MPLS_SUB_PI``)."""
+
+    clip: str
+    connection_condition: int
+    in_time: int
+    out_time: int
+    sync_play_item_id: int
+    sync_pts: int
+
+
+class MplsSubPath(TypedDict):
+    """One SubPath entry (libbluray ``MPLS_SUB``).
+
+    ``clips`` holds every clip name in order, including the extra clips of
+    multi-clip SubPlayItems; ``items`` holds one entry per SubPlayItem with
+    the primary clip and its timing.
+    """
+
+    type: int
+    is_repeat: bool
+    clips: list[str]
+    items: list[MplsSubPlayItem]
+
+
+_SEAMLESS_CONNECTION_CONDITIONS = frozenset({5, 6})
+
+
+def has_seamless_connections(play_items: list[MplsPlayItem]) -> bool:
+    """True when any PlayItem joins its predecessor seamlessly (CC 5/6)."""
+    return any(
+        item.get("connection_condition") in _SEAMLESS_CONNECTION_CONDITIONS
+        for item in play_items[1:]
+    )
 
 
 def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
@@ -693,6 +733,90 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
     return result
 
 
+def _stn_signature(stn_bytes: bytes) -> list[tuple[object, ...]]:
+    """The listed-stream identity of one PlayItem's STN table."""
+    return [
+        (s["type"], s["codec"], s["lang"], s["pid"], s.get("subpath_id"))
+        for s in _parse_stn_table_streams(stn_bytes)
+    ]
+
+
+def _parse_subpath_entries(
+    data: bytes, pos: int, count: int
+) -> tuple[list[MplsSubPath], int]:
+    """Parse SubPath entries starting at *pos* (libbluray ``_parse_subpath``).
+
+    SubPath header (6 bytes after the 4-byte length): reserved(8),
+    type(8), reserved(15) + is_repeat(1), reserved(8), item count(8).
+    Each SubPlayItem: length(16), clip_id(5), codec_id(4), reserved(27) +
+    connection_condition(4) + is_multi_clip(1), stc_id(8), in_time(32),
+    out_time(32), sync_play_item_id(16), sync_pts(32), then clip_count(8)
+    plus 10 bytes per extra clip (clip_id + codec_id + stc_id) when
+    multi-clip. All big-endian.
+
+    Bounds-checked: truncated records stop parsing. Returns the entries
+    and the new position.
+    """
+    entries: list[MplsSubPath] = []
+    for _ in range(count):
+        if pos + 4 > len(data):
+            break
+        sp_len = _read_u32(data, pos)
+        pos += 4
+        if pos + sp_len > len(data):
+            break
+        sp = data[pos : pos + sp_len]
+        pos += sp_len
+        if len(sp) < 6:
+            continue
+        sp_type = sp[1]
+        is_repeat = bool(sp[3] & 0x01)
+        num_items = sp[5]
+        clips: list[str] = []
+        items: list[MplsSubPlayItem] = []
+        item_pos = 6
+        for _ in range(num_items):
+            if item_pos + 2 > len(sp):
+                break
+            item_len = (sp[item_pos] << 8) | sp[item_pos + 1]
+            if item_len < 28 or item_pos + 2 + item_len > len(sp):
+                break
+            base = item_pos + 2
+            clip = sp[base : base + 5].decode("ascii", "ignore")
+            cc_multi = sp[base + 12]
+            connection_condition = (cc_multi >> 1) & 0x0F
+            in_time = _read_u32(sp, base + 14)
+            out_time = _read_u32(sp, base + 18)
+            sync_play_item_id = (sp[base + 22] << 8) | sp[base + 23]
+            sync_pts = _read_u32(sp, base + 24)
+            clips.append(clip)
+            items.append(
+                {
+                    "clip": clip,
+                    "connection_condition": connection_condition,
+                    "in_time": in_time,
+                    "out_time": out_time,
+                    "sync_play_item_id": sync_play_item_id,
+                    "sync_pts": sync_pts,
+                }
+            )
+            if cc_multi & 0x01 and item_len >= 29:
+                clip_count = sp[base + 28]
+                extra_pos = base + 29
+                for _ in range(max(0, clip_count - 1)):
+                    if extra_pos + 10 > base + item_len:
+                        break
+                    clips.append(
+                        sp[extra_pos : extra_pos + 5].decode("ascii", "ignore")
+                    )
+                    extra_pos += 10
+            item_pos += 2 + item_len
+        entries.append(
+            {"type": sp_type, "is_repeat": is_repeat, "clips": clips, "items": items}
+        )
+    return entries, pos
+
+
 def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | None:
     """Parse a .mpls playlist file and return stream/chapter data.
 
@@ -729,7 +853,12 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
             clip_name = item[0:5].decode("ascii", "ignore")
             in_time, out_time = _read_u32(item, 12), _read_u32(item, 16)
             duration = max(0.0, (out_time - in_time) / 45000.0)
-            is_multi_angle = (_read_u16(item, 9) >> 4) & 1
+            # PlayItem bytes 9-10 (after the 16-bit length): reserved(11),
+            # is_multi_angle(1), connection_condition(4) — libbluray
+            # mpls_parse.c _parse_playitem().
+            flags = _read_u16(item, 9)
+            is_multi_angle = (flags >> 4) & 1
+            connection_condition = flags & 0x0F
             stn_off = 32
             if is_multi_angle:
                 stn_off = 32 + 2 + max(0, item[32] - 1) * 10
@@ -739,6 +868,7 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
                     "duration": duration,
                     "in_time": in_time,
                     "out_time": out_time,
+                    "connection_condition": connection_condition,
                 }
             )
             if i == 0:

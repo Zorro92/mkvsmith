@@ -644,7 +644,11 @@ class Title:
     # Per-clip on-disc byte sizes, aligned with clip_durations. Used to size
     # the union of unique clips when combining editions (a sum of the member
     # titles' estimated_size_bytes would double-count shared clips).
-    clip_sizes: list[int] = field(default_factory=list)
+    clip_sizes: list[int] = field(default_factory=list[int])
+    # True when the MPLS joins any clip to its predecessor seamlessly
+    # (connection_condition 5/6). The muxer then trims each clip's trailing
+    # audio frames so every track stays locked to the video across joins.
+    seamless_connections: bool = False
     # MPLS playlist stem (e.g. "00800") this title was built from, for
     # edition labelling on seamless-branching discs. None for non-BD titles.
     playlist_name: str | None = None

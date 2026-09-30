@@ -219,6 +219,13 @@ mv tests/fixtures/VTS_09_0.IFO tests/fixtures/treasure_vts_09_0.ifo
 
 # Beauty and the Beast (1991) multi-angle DVD — see
 # tests/test_parser_fixtures.py for the files it expects.
+
+# Monsters University (2013) Blu-ray — seamless-connection trimming
+# (tests/test_m2ts.py). Header-only carvings of two clip tails; no essence:
+7z e disc.iso "BDMV/STREAM/00875.m2ts" "BDMV/STREAM/00876.m2ts" -o/tmp/mu -y
+for c in 00875 00876; do
+  uv run python scripts/carve_m2ts_tail_fixture.py /tmp/mu/$c.m2ts tests/fixtures/${c}_tail_headers.m2ts
+done
 ```
 
 `scripts/inspect_fixtures.py` re-parses whatever is in `tests/fixtures/` and

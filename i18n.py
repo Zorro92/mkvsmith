@@ -146,6 +146,7 @@ _ES: dict[str, str] = {
     # --- disc_reader (mount / 7z) ---------------------------------------------
     "Skipping direct mount (--no-sudo is set)": "Omitiendo montaje directo (--no-sudo está activado)",
     "Skipping incompatible clip for append: {name} (audio layout differs)": "Omitiendo clip incompatible para anexar: {name} (el audio difiere)",
+    "Could not read clip offsets from {name}; edition chapters may be misaligned at branch points": "No se pudieron leer los desfases de clips de {name}; los capítulos de las ediciones pueden quedar desalineados en los puntos de bifurcación",
     "[INFO] Attempt to mount '{path}' via 'sudo mount -o loop,ro'? [y/N]:": "[INFO] ¿Intentar montar '{path}' con 'sudo mount -o loop,ro'? [s/N]:",
     "Attempting direct mount via 'sudo mount -o loop,ro'...": "Intentando montaje directo con 'sudo mount -o loop,ro'...",
     "mount failed (rc={rc}): {err}": "el montaje falló (rc={rc}): {err}",

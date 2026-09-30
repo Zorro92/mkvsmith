@@ -26,8 +26,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from __future__ import annotations
 
+import bisect
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,6 +63,7 @@ from cc608 import (
 from models import (
     Config,
     DiscMetadata,
+    EditionAtom,
     EditionSpec,
     StreamType,
     Stream,
@@ -76,6 +79,12 @@ from models import (
     RuntimeState,
     RUNTIME_STATE,
     UserPrompts,
+)
+from m2ts import (
+    is_bluray_audio_pid,
+    null_packets_from,
+    plan_seamless_trim,
+    scan_clip_tail,
 )
 from probe import _MKVMERGE_CODEC_MAP
 from i18n import tr
@@ -1128,8 +1137,126 @@ def _is_bluray_clip_append(inputs: list[Path]) -> bool:
     )
 
 
+def _seamless_audio_pids(mapped: list[MappedStream]) -> set[int] | None:
+    """Blu-ray PIDs of the muxed audio tracks, or None if they're ambiguous.
+
+    Each muxed audio track must map to its own BD audio PID; a PID shared by
+    two muxed tracks (a TrueHD stream and its embedded AC-3 core) can't be
+    trimmed per track.
+    """
+    pids: list[int] = []
+    for entry in mapped:
+        if entry["type"] != "audio" or entry["input_id"] < 0:
+            continue
+        pid = entry["stream"].pid
+        if pid is None or not is_bluray_audio_pid(pid):
+            return None
+        pids.append(pid)
+    if not pids or len(set(pids)) != len(pids):
+        return None
+    return set(pids)
+
+
+def _clone_or_copy(src: Path, dst: Path) -> None:
+    """Copy *src* to *dst*, as a copy-on-write clone where supported.
+
+    FICLONE (btrfs, XFS, ...) shares the data blocks, so only the trimmed
+    tail is ever duplicated; any failure (other filesystems, cross-device,
+    non-Linux) falls back to a regular copy.
+    """
+    try:
+        import fcntl
+
+        ficlone = 0x40049409  # _IOW(0x94, 9, int), linux/fs.h
+        with src.open("rb") as source, dst.open("wb") as target:
+            fcntl.ioctl(target.fileno(), ficlone, source.fileno())
+        return
+    except (ImportError, OSError):
+        pass
+    shutil.copyfile(src, dst)
+
+
+def _prepare_seamless_append(
+    title: Title,
+    inputs: list[Path],
+    mapped: list[MappedStream],
+    owned: set[Path],
+    cleanup: list[Path],
+    temp_dirs: list[Path],
+    config: Config | None = None,
+) -> list[Path] | None:
+    """Trim clip tails so a seamless title can be appended in track mode.
+
+    Returns the inputs to mux (trimmed private copies substituted where a
+    clip needed trimming), or None to append in the default file mode. Clips
+    in *owned* are already private copies (extracted from an ISO) and are
+    trimmed in place; others are copied into a temp dir first so source
+    files are never modified. Folder, drive, and ISO sources therefore mux
+    identically.
+    """
+    if not title.seamless_connections or len(inputs) < 2:
+        return None
+    if not _is_bluray_clip_append(inputs):
+        return None
+    pids = _seamless_audio_pids(mapped)
+    if pids is None:
+        log_debug("Seamless append: muxed audio tracks lack unique BD PIDs")
+        return None
+    try:
+        tails = [scan_clip_tail(path, pids) for path in inputs]
+    except OSError as exc:
+        log_debug(f"Seamless append: clip scan failed: {exc}")
+        return None
+    plan = plan_seamless_trim(tails, pids)
+    if plan is None:
+        log_debug(
+            "Seamless append: audio can't be kept within half a frame of the "
+            "video; using file append mode"
+        )
+        return None
+
+    from disc_reader import temp_base_for_title
+
+    copy_bytes = sum(
+        path.stat().st_size
+        for path, cuts in zip(inputs, plan)
+        if cuts and path not in owned
+    )
+    copy_dir: Path | None = None
+    result: list[Path] = []
+    nulled = 0
+    for path, cuts in zip(inputs, plan):
+        if not cuts:
+            result.append(path)
+            continue
+        target = path
+        if path not in owned:
+            if copy_dir is None:
+                base = temp_base_for_title(copy_bytes, config)
+                copy_dir = Path(
+                    tempfile.mkdtemp(
+                        prefix="mkv_seamless_", dir=str(base) if base else None
+                    )
+                )
+                temp_dirs.append(copy_dir)
+            target = copy_dir / path.name
+            _clone_or_copy(path, target)
+            cleanup.append(target)
+        nulled += null_packets_from(target, cuts)
+        result.append(target)
+    trimmed = sum(1 for cuts in plan if cuts)
+    log_debug(
+        f"Seamless append: trimmed {trimmed}/{len(inputs)} clip tails "
+        f"({nulled} audio packets nulled, {len(pids)} track(s)); track mode"
+    )
+    return result
+
+
 def _append_input_files(
-    cmd: list[str], inputs: list[Path], track_filter_opts: list[str]
+    cmd: list[str],
+    inputs: list[Path],
+    track_filter_opts: list[str],
+    track_mode: bool = False,
 ) -> None:
     # Blu-ray clips use mkvmerge's default ``file`` append mode: each appended
     # clip is offset by the previous file's end, so audio and video stay
@@ -1138,9 +1265,11 @@ def _append_input_files(
     # forward at every join and the error accumulates (Sgt Frog: ~0.6 s per
     # join, ~3 s by 6 h). VOB/EVO inputs keep ``track`` mode per the mkvmerge
     # manual (split parts of one recording, where per-track continuity wins).
+    # *track_mode* forces ``track`` mode for Blu-ray clips whose tails were
+    # trimmed by _prepare_seamless_append, which bounds that creep.
     # The filter is repeated before each appended input so clips carrying a
     # later-starting PID remain valid append sources.
-    if len(inputs) > 1 and not _is_bluray_clip_append(inputs):
+    if len(inputs) > 1 and (track_mode or not _is_bluray_clip_append(inputs)):
         cmd += ["--append-mode", "track"]
     cmd.append(str(inputs[0]))
     for clip in inputs[1:]:
@@ -1194,6 +1323,7 @@ def _build_mkvmerge_command(
     cleanup: list[Path],
     temp_files: list[Path],
     verbose: bool = False,
+    track_append: bool = False,
 ) -> list[str]:
     cmd: list[str] = (
         ["mkvmerge"]
@@ -1210,9 +1340,15 @@ def _build_mkvmerge_command(
     )
     cmd += ["--title", container_title]
 
-    chapters_file = _create_chapters_file(title, cleanup, temp_files)
-    if chapters_file is not None:
-        cmd += ["--chapters", str(chapters_file)]
+    if _uses_retimed_edition_chapters(title, inputs):
+        # Placeholder chapters mark where mkvmerge actually put each appended
+        # clip; the real edition chapters are written after the mux (see
+        # _apply_retimed_edition_chapters).
+        cmd += ["--generate-chapters", "when-appending"]
+    else:
+        chapters_file = _create_chapters_file(title, cleanup, temp_files)
+        if chapters_file is not None:
+            cmd += ["--chapters", str(chapters_file)]
 
     track_filter_opts = _track_filter_options(ident_tracks, mapped, title)
     cmd += track_filter_opts
@@ -1240,10 +1376,7 @@ def _build_mkvmerge_command(
     if tags_file is not None:
         cmd += ["--global-tags", str(tags_file)]
     _append_art_attachments(cmd, art_attachments)
-    kept_inputs, _dropped = _drop_incompatible_append_inputs(
-        inputs, mapped, ident_tracks
-    )
-    _append_input_files(cmd, kept_inputs, track_filter_opts)
+    _append_input_files(cmd, inputs, track_filter_opts, track_mode=track_append)
 
     if subtitle_fallback is not None and fallback_tracks:
         cmd += _dvd_subtitle_fallback_options(
@@ -1465,7 +1598,10 @@ def _create_chapters_file(
         )
         temp_files.append(chapters_file)
         cleanup.append(chapters_file)
-        _write_multi_edition_chapters_xml(title.editions, chapters_file)
+        _write_multi_edition_chapters_xml(
+            _pull_back_jump_atom_ends(title.editions, sum(title.clip_durations)),
+            chapters_file,
+        )
         for edition in title.editions:
             log_debug(
                 f"  Edition {edition.uid} '{edition.name}'"
@@ -1491,6 +1627,284 @@ def _create_chapters_file(
     _write_chapters_xml(chapters, chapters_file)
     log_debug(f"Loaded {len(chapters)} chapters")
     return chapters_file
+
+
+# Multi-edition atoms are planned on a timeline built from MPLS play-item
+# durations, but mkvmerge's file append mode offsets each clip by the previous
+# clip's real end (its last audio/video frame), which runs a few ms past the
+# play item's OUT time. Over a 100+ clip seamless-branching disc the drift
+# reaches seconds (Monsters University: ~1.9 s over 132 clips), so an alternate
+# edition's jump into a later clip lands in the tail of the preceding one and
+# shows black. The mux therefore records the true append offsets as
+# placeholder chapters, and the edition atoms are remapped onto them.
+_RETIME_EPS = 1e-6
+
+
+def _uses_retimed_edition_chapters(title: Title, inputs: list[Path]) -> bool:
+    return (
+        bool(title.editions)
+        and len(inputs) > 1
+        and shutil.which("mkvextract") is not None
+        and shutil.which("mkvpropedit") is not None
+    )
+
+
+def _parse_chapter_timestamp(text: str) -> float:
+    hours, minutes, seconds = text.strip().split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def _read_chapter_starts(chapters_xml: Path) -> list[float]:
+    """Start times (seconds) of the first edition's atoms in file order."""
+    root = ET.parse(chapters_xml).getroot()
+    edition = root.find("EditionEntry")
+    if edition is None:
+        return []
+    return [
+        _parse_chapter_timestamp(start)
+        for atom in edition.findall("ChapterAtom")
+        if (start := atom.findtext("ChapterTimeStart"))
+    ]
+
+
+def _append_clip_bounds(
+    clip_count: int,
+    dropped: list[int],
+    append_starts: list[float],
+    total_end: float,
+) -> list[tuple[float, float]] | None:
+    """Real ``(start, end)`` of every union clip in the muxed file.
+
+    *append_starts* holds one start per muxed clip (``when-appending``
+    placeholder chapters). Dropped clips collapse to zero length at the start
+    of the next muxed clip. Returns None when the counts don't line up.
+    """
+    dropped_set = set(dropped)
+    kept = [index for index in range(clip_count) if index not in dropped_set]
+    if len(kept) != len(append_starts) or not kept:
+        return None
+    kept_bounds: dict[int, tuple[float, float]] = {}
+    for position, index in enumerate(kept):
+        end = (
+            append_starts[position + 1]
+            if position + 1 < len(append_starts)
+            else total_end
+        )
+        kept_bounds[index] = (append_starts[position], end)
+    bounds: list[tuple[float, float]] = []
+    for index in reversed(range(clip_count)):
+        if index in kept_bounds:
+            bounds.append(kept_bounds[index])
+        else:
+            anchor = bounds[-1][0] if bounds else total_end
+            bounds.append((anchor, anchor))
+    bounds.reverse()
+    return bounds
+
+
+def _retime_editions(
+    editions: list[EditionSpec],
+    planned_durations: list[float],
+    bounds: list[tuple[float, float]],
+) -> list[EditionSpec]:
+    """Map edition atoms from the planned clip timeline onto *bounds*.
+
+    Atoms never span a clip boundary, so each one is shifted by its clip's
+    real start; an atom ending at its clip's planned end ends at the clip's
+    real end, absorbing the per-clip overrun. Zero-length atoms (dropped
+    clips) are removed; a removed visible atom hands its name to the next
+    hidden one so chapter numbering stays intact.
+    """
+    planned_starts: list[float] = []
+    running = 0.0
+    for duration in planned_durations:
+        planned_starts.append(running)
+        running += duration
+
+    retimed: list[EditionSpec] = []
+    for edition in editions:
+        atoms: list[EditionAtom] = []
+        pending_name: str | None = None
+        for atom in edition.atoms:
+            clip = max(
+                0, bisect.bisect_right(planned_starts, atom.start + _RETIME_EPS) - 1
+            )
+            clip = min(clip, len(bounds) - 1)
+            real_start, real_end = bounds[clip]
+            real_len = real_end - real_start
+            planned_end = planned_starts[clip] + planned_durations[clip]
+            start = real_start + min(
+                max(atom.start - planned_starts[clip], 0.0), real_len
+            )
+            if atom.end >= planned_end - _RETIME_EPS:
+                end = real_end
+            else:
+                end = real_start + min(atom.end - planned_starts[clip], real_len)
+            hidden, name = atom.hidden, atom.name
+            if end - start <= _RETIME_EPS:
+                if not hidden and pending_name is None:
+                    pending_name = name
+                continue
+            if hidden and pending_name is not None:
+                hidden, name = False, pending_name
+            if not hidden:
+                pending_name = None
+            atoms.append(EditionAtom(start, end, hidden=hidden, name=name))
+        retimed.append(
+            EditionSpec(
+                uid=edition.uid,
+                name=edition.name,
+                is_default=edition.is_default,
+                atoms=atoms,
+            )
+        )
+    return retimed
+
+
+# How far a jump atom's end is pulled back from the next clip's first frame.
+# Matroska chapter ends are exclusive, but mpv's ordered-chapter timeline
+# stops a segment at the first keyframe with ``pts >= end`` and lets later
+# non-keyframes through (demux_timeline.c). An end sitting exactly on the
+# following clip's IDR can round either way in its timeline arithmetic, so
+# that frame and the next clip's following P/B frames may leak into the
+# seam before the jump. 1 ms also clears players that compare whole ms,
+# and stays far below the clip's own last frame (one frame duration back).
+_JUMP_ATOM_END_MARGIN = 0.001
+
+
+def _pull_back_jump_atom_ends(
+    editions: list[EditionSpec], file_end: float
+) -> list[EditionSpec]:
+    """Pull back atom ends that are followed by a jump (or end the edition).
+
+    Only atoms whose successor doesn't start exactly where they end are
+    changed; contiguous atoms play straight through and stay exact. An
+    edition's final atom is left alone when it runs to the end of the file.
+    """
+    adjusted: list[EditionSpec] = []
+    for edition in editions:
+        atoms: list[EditionAtom] = []
+        for index, atom in enumerate(edition.atoms):
+            following = (
+                edition.atoms[index + 1] if index + 1 < len(edition.atoms) else None
+            )
+            end = atom.end
+            contiguous = (
+                following is not None and abs(following.start - atom.end) <= _RETIME_EPS
+            )
+            at_file_end = following is None and atom.end >= file_end - _RETIME_EPS
+            if (
+                not contiguous
+                and not at_file_end
+                and atom.end - atom.start > 2 * _JUMP_ATOM_END_MARGIN
+            ):
+                end = atom.end - _JUMP_ATOM_END_MARGIN
+            atoms.append(EditionAtom(atom.start, end, atom.hidden, atom.name))
+        adjusted.append(
+            EditionSpec(
+                uid=edition.uid,
+                name=edition.name,
+                is_default=edition.is_default,
+                atoms=atoms,
+            )
+        )
+    return adjusted
+
+
+def _run_mkvtoolnix(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+    )
+
+
+def _muxed_duration_seconds(out_file: Path) -> float | None:
+    try:
+        proc = _run_mkvtoolnix(["mkvmerge", "-J", str(out_file)])
+        duration = json.loads(proc.stdout)["container"]["properties"]["duration"]
+        return int(duration) / 1_000_000_000
+    except (
+        subprocess.TimeoutExpired,
+        OSError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
+def _apply_retimed_edition_chapters(
+    out_file: Path, title: Title, dropped: list[int], temp_files: list[Path]
+) -> None:
+    """Replace the mux's placeholder chapters with retimed edition chapters.
+
+    Reads the ``when-appending`` chapters (the true clip offsets) back with
+    mkvextract, remaps the edition atoms onto them, and writes the result
+    with mkvpropedit. Falls back to the planned atoms if the offsets can't be
+    matched to the clip list. Raises RipError if the chapters can't be written,
+    since the file would otherwise carry only the placeholders.
+    """
+    extracted = Path(tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name)
+    chapters_file = Path(tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name)
+    temp_files += [extracted, chapters_file]
+
+    bounds: list[tuple[float, float]] | None = None
+    try:
+        proc = _run_mkvtoolnix(
+            ["mkvextract", str(out_file), "chapters", str(extracted)]
+        )
+        total_end = _muxed_duration_seconds(out_file)
+        if proc.returncode == 0 and total_end is not None:
+            bounds = _append_clip_bounds(
+                len(title.clip_durations),
+                dropped,
+                _read_chapter_starts(extracted),
+                total_end,
+            )
+    except (subprocess.TimeoutExpired, OSError, ET.ParseError, ValueError) as exc:
+        log_debug(f"Reading append offsets failed: {exc}")
+
+    if bounds is None:
+        log_warn(
+            tr(
+                "Could not read clip offsets from {name}; edition chapters "
+                "may be misaligned at branch points",
+                name=out_file.name,
+            )
+        )
+        editions = _pull_back_jump_atom_ends(title.editions, sum(title.clip_durations))
+    else:
+        editions = _pull_back_jump_atom_ends(
+            _retime_editions(title.editions, title.clip_durations, bounds),
+            bounds[-1][1],
+        )
+        drift = bounds[-1][1] - sum(title.clip_durations)
+        log_debug(f"Retimed edition chapters onto mux offsets (drift {drift:+.3f}s)")
+    for edition in editions:
+        log_debug(
+            f"  Edition {edition.uid} '{edition.name}'"
+            f"{' (default)' if edition.is_default else ''}: "
+            f"{len(edition.atoms)} atoms, {edition.duration:.0f}s"
+        )
+
+    _write_multi_edition_chapters_xml(editions, chapters_file)
+    try:
+        proc = _run_mkvtoolnix(
+            ["mkvpropedit", str(out_file), "--chapters", str(chapters_file)]
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise RipError(message=f"mkvpropedit failed: {exc}", title=title) from exc
+    if proc.returncode not in (0, 1):
+        raise RipError(
+            message=f"mkvpropedit failed ({proc.returncode})",
+            stderr=(proc.stdout or "") + (proc.stderr or ""),
+            title=title,
+        )
 
 
 @dataclass
@@ -1781,7 +2195,15 @@ class MKVCreator:
         out_file: Path,
         metadata: MovieMetadata | None,
         art_attachments: list[ArtAttachment],
+        retime_dropped_inputs: list[int] | None = None,
     ) -> Path:
+        """Run the mux and finalise the output.
+
+        *retime_dropped_inputs* is set (possibly empty) when the command used
+        ``--generate-chapters when-appending`` for a multi-edition title; the
+        placeholder chapters are then replaced by the retimed editions. It
+        lists the union clip indices that were not muxed.
+        """
         log_info(tr("Muxing: {name}...", name=out_file.name))
         # Track the in-progress output so Ctrl+C deletes the partial file
         # instead of leaving a truncated mkv next to completed rips.
@@ -1798,6 +2220,10 @@ class MKVCreator:
             output_text,
             timed_out,
         )
+        if retime_dropped_inputs is not None:
+            _apply_retimed_edition_chapters(
+                out_file, title, retime_dropped_inputs, self.cleanup.temp_files
+            )
         self._finish_created_output(out_file, metadata, art_attachments)
         return out_file
 
@@ -1819,11 +2245,25 @@ class MKVCreator:
             self.prompts,
         )
 
+        kept_inputs, dropped_inputs = _drop_incompatible_append_inputs(
+            input_plan.inputs, prepared_tracks.mapped, prepared_tracks.ident_tracks
+        )
         try:
+            seamless_inputs = _prepare_seamless_append(
+                title,
+                kept_inputs,
+                prepared_tracks.mapped,
+                owned=set(input_plan.cleanup),
+                cleanup=input_plan.cleanup,
+                temp_dirs=self.cleanup.temp_dirs,
+                config=self.config,
+            )
+            if seamless_inputs is not None:
+                kept_inputs = seamless_inputs
             command = _build_mkvmerge_command(
                 title,
                 out_file,
-                input_plan.inputs,
+                kept_inputs,
                 prepared_tracks.mapped,
                 prepared_tracks.ident_tracks,
                 tag_md,
@@ -1835,8 +2275,21 @@ class MKVCreator:
                 input_plan.cleanup,
                 self.cleanup.temp_files,
                 verbose=self.config.debug,
+                track_append=seamless_inputs is not None,
             )
-            return self._execute_mux(title, streams, command, out_file, tag_md, tag_art)
+            return self._execute_mux(
+                title,
+                streams,
+                command,
+                out_file,
+                tag_md,
+                tag_art,
+                retime_dropped_inputs=(
+                    dropped_inputs
+                    if _uses_retimed_edition_chapters(title, kept_inputs)
+                    else None
+                ),
+            )
         finally:
             self.active_processes.unregister_output(out_file)
             for path in input_plan.cleanup:

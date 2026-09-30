@@ -20,7 +20,15 @@ from pathlib import Path
 
 import pytest
 
-from mkv import _write_multi_edition_chapters_xml, _write_tags_xml_mkvmerge
+from mkv import (
+    _append_clip_bounds,
+    _apply_retimed_edition_chapters,
+    _pull_back_jump_atom_ends,
+    _retime_editions,
+    _uses_retimed_edition_chapters,
+    _write_multi_edition_chapters_xml,
+    _write_tags_xml_mkvmerge,
+)
 from models import EditionAtom, EditionSpec, Stream, StreamType, Title
 from scan import (
     _build_edition_specs,
@@ -176,11 +184,6 @@ def test_build_iso_source_union() -> None:
     t2 = _mk_title(1, ["B", "C"], [5.0, 5.0], [0.0], playlist="00801")
     for t in (t1, t2):
         t.source_file = Path("/disc/disc.iso")
-        t.iso_internal_paths = [
-            f"BDMV/STREAM/{Path(p).stem}.m2ts"
-            for p in ([t.source_file] if False else [])
-        ]
-    # Redo internal paths from clip keys.
     t1.iso_internal_paths = ["BDMV/STREAM/A.m2ts", "BDMV/STREAM/B.m2ts"]
     t2.iso_internal_paths = ["BDMV/STREAM/B.m2ts", "BDMV/STREAM/C.m2ts"]
     combined = build_multi_edition_title([t1, t2])
@@ -414,3 +417,196 @@ def test_build_edition_specs_rejects_name_count_mismatch() -> None:
 
     with pytest.raises(ValueError, match="edition name count"):
         _build_edition_specs([first, second], first, clip_union, ["Only One"])
+
+
+# --- retiming onto mkvmerge's real append offsets -----------------------------
+
+
+def test_append_clip_bounds_uses_real_offsets() -> None:
+    bounds = _append_clip_bounds(3, [], [0.0, 6.02, 12.05], 18.1)
+    assert bounds == [(0.0, 6.02), (6.02, 12.05), (12.05, 18.1)]
+
+
+def test_append_clip_bounds_collapses_dropped_clips() -> None:
+    bounds = _append_clip_bounds(3, [1], [0.0, 6.02], 12.0)
+    assert bounds == [(0.0, 6.02), (6.02, 6.02), (6.02, 12.0)]
+
+
+def test_append_clip_bounds_rejects_count_mismatch() -> None:
+    assert _append_clip_bounds(3, [], [0.0, 6.0], 12.0) is None
+
+
+def test_retime_editions_follows_real_clip_starts() -> None:
+    # Planned: A=[0,6) B=[6,12) C=[12,18); mkvmerge overran each clip.
+    bounds = [(0.0, 6.02), (6.02, 12.05), (12.05, 18.1)]
+    main = EditionSpec(
+        uid=1,
+        name="Main",
+        is_default=True,
+        atoms=[
+            EditionAtom(0.0, 6.0, False, "Chapter 01"),
+            EditionAtom(6.0, 10.0, True),
+            EditionAtom(10.0, 12.0, False, "Chapter 02"),
+        ],
+    )
+    # Alternate cut jumps from A straight to C.
+    alt = EditionSpec(
+        uid=2,
+        name="Alt",
+        is_default=False,
+        atoms=[
+            EditionAtom(0.0, 6.0, False, "Chapter 01"),
+            EditionAtom(12.0, 18.0, True),
+        ],
+    )
+
+    main_rt, alt_rt = _retime_editions([main, alt], [6.0, 6.0, 6.0], bounds)
+
+    assert [(a.start, a.end) for a in main_rt.atoms] == [
+        (0.0, 6.02),
+        (6.02, 10.02),
+        (10.02, 12.05),
+    ]
+    assert [a.hidden for a in main_rt.atoms] == [False, True, False]
+    assert [(a.start, a.end) for a in alt_rt.atoms] == [(0.0, 6.02), (12.05, 18.1)]
+    assert (alt_rt.uid, alt_rt.name, alt_rt.is_default) == (2, "Alt", False)
+
+
+def test_retime_editions_promotes_hidden_atom_after_dropped_clip() -> None:
+    bounds = [(0.0, 6.0), (6.0, 6.0), (6.0, 12.0)]
+    edition = EditionSpec(
+        uid=1,
+        name="Main",
+        is_default=True,
+        atoms=[
+            EditionAtom(0.0, 6.0, False, "Chapter 01"),
+            EditionAtom(6.0, 12.0, False, "Chapter 02"),
+            EditionAtom(12.0, 18.0, True),
+        ],
+    )
+
+    (retimed,) = _retime_editions([edition], [6.0, 6.0, 6.0], bounds)
+
+    assert [(a.start, a.end, a.hidden, a.name) for a in retimed.atoms] == [
+        (0.0, 6.0, False, "Chapter 01"),
+        (6.0, 12.0, False, "Chapter 02"),
+    ]
+
+
+@pytest.mark.skipif(
+    not (
+        HAS_MKVMERGE
+        and shutil.which("mkvextract") is not None
+        and shutil.which("mkvpropedit") is not None
+    ),
+    reason="mkvtoolnix not installed",
+)
+def test_edition_chapters_retimed_onto_append_offsets(tmp_path: Path) -> None:
+    """Planned clip durations shorter than the real clips must not leave gaps.
+
+    Simulates MPLS play-item durations (0.9 s) that undershoot what mkvmerge
+    actually appends (1.0 s per clip): the alternate edition's jump to the
+    second clip has to land on its real 1.0 s start.
+    """
+    import wave
+
+    wav_paths: list[Path] = []
+    for i in range(2):
+        wv = tmp_path / f"seg{i}.wav"
+        with wave.open(str(wv), "w") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\x00\x00" * 8000)
+        wav_paths.append(wv)
+
+    title = Title(0, wav_paths[0], "T", 1.8)
+    title.clip_durations = [0.9, 0.9]
+    title.editions = [
+        EditionSpec(1, "Main", True, [EditionAtom(0.0, 0.9, False, "Chapter 01")]),
+        EditionSpec(2, "Alt", False, [EditionAtom(0.9, 1.8, False, "Chapter 01")]),
+    ]
+    assert _uses_retimed_edition_chapters(title, wav_paths)
+
+    out = tmp_path / "out.mkv"
+    res = subprocess.run(
+        [
+            "mkvmerge",
+            "-o",
+            str(out),
+            "--generate-chapters",
+            "when-appending",
+            str(wav_paths[0]),
+            "+",
+            str(wav_paths[1]),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+
+    temp_files: list[Path] = []
+    _apply_retimed_edition_chapters(out, title, [], temp_files)
+
+    chap = subprocess.run(
+        ["mkvextract", str(out), "chapters"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert chap.returncode == 0, chap.stderr
+    eds = ET.fromstring(chap.stdout).findall("EditionEntry")
+    assert [e.findtext("EditionUID") for e in eds] == ["1", "2"]
+    main_atom = _child(eds[0], "ChapterAtom")
+    alt_atom = _child(eds[1], "ChapterAtom")
+    seam = alt_atom.findtext("ChapterTimeStart")
+    # The seam sits on mkvmerge's real append offset, not the planned 0.9 s.
+    assert seam is not None and seam.startswith("00:00:00.9999")
+    # Main ends mid-file, so its end is pulled 1 ms clear of the next clip.
+    main_end = main_atom.findtext("ChapterTimeEnd")
+    assert main_end is not None and main_end.startswith("00:00:00.9989")
+    # Alt runs to the end of the file and stays exact.
+    alt_end = alt_atom.findtext("ChapterTimeEnd")
+    assert alt_end is not None and alt_end.startswith("00:00:01.9999")
+    for path in temp_files:
+        path.unlink(missing_ok=True)
+
+
+def test_pull_back_jump_atom_ends_only_touches_jumps() -> None:
+    edition = EditionSpec(
+        uid=2,
+        name="Alt",
+        is_default=False,
+        atoms=[
+            EditionAtom(0.0, 10.0, False, "Chapter 01"),  # contiguous with next
+            EditionAtom(10.0, 20.0, True),  # jumps to 50
+            EditionAtom(50.0, 60.0, True),  # jumps back to 20
+            EditionAtom(20.0, 30.0, False, "Chapter 02"),  # ends mid-file
+        ],
+    )
+
+    (adjusted,) = _pull_back_jump_atom_ends([edition], file_end=60.0)
+
+    assert [(a.start, a.end) for a in adjusted.atoms] == [
+        (0.0, 10.0),
+        (10.0, pytest.approx(19.999)),
+        (50.0, pytest.approx(59.999)),
+        (20.0, pytest.approx(29.999)),
+    ]
+    assert [(a.hidden, a.name) for a in adjusted.atoms] == [
+        (False, "Chapter 01"),
+        (True, None),
+        (True, None),
+        (False, "Chapter 02"),
+    ]
+    # The input spec is not mutated.
+    assert edition.atoms[1].end == 20.0
+
+
+def test_pull_back_jump_atom_ends_keeps_final_atom_at_file_end() -> None:
+    edition = EditionSpec(
+        1, "Main", True, [EditionAtom(0.0, 60.0, False, "Chapter 01")]
+    )
+    (adjusted,) = _pull_back_jump_atom_ends([edition], file_end=60.0)
+    assert adjusted.atoms[0].end == 60.0

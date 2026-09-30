@@ -44,6 +44,7 @@ from bluray import (
     _parse_bdmv_disc_name,
     _parse_mpls,
     _set_video_color_from_info,
+    has_seamless_connections,
 )
 
 from dvdifo import (
@@ -676,7 +677,9 @@ def build_multi_edition_title(
     first, is_iso = _validate_edition_titles(edition_titles)
     clip_union = _union_edition_clips(edition_titles)
     editions = _build_edition_specs(edition_titles, first, clip_union, edition_names)
-    return _build_combined_edition_title(first, clip_union, is_iso, editions)
+    combined = _build_combined_edition_title(first, clip_union, is_iso, editions)
+    combined.seamless_connections = any(t.seamless_connections for t in edition_titles)
+    return combined
 
 
 def _detect_edition_groups(titles: list[Title]) -> list[list[Title]]:
@@ -747,6 +750,7 @@ def _build_bluray_title_from_mpls(
     title.disc_name = disc_name
     title.playlist_name = mpls.stem
     title.clip_durations = [play_item["duration"] for play_item in info["play_items"]]
+    title.seamless_connections = has_seamless_connections(info["play_items"])
     try:
         title.clip_sizes = [clip_path.stat().st_size for clip_path in clip_paths]
     except OSError:
@@ -1229,6 +1233,7 @@ def _build_iso_bluray_playlist_title(
     title.playlist_name = playlist_path.stem
     title.clip_durations = [play_item["duration"] for play_item in play_items]
     title.clip_sizes = [sizes.get(internal_path, 0) for internal_path in clip_internals]
+    title.seamless_connections = has_seamless_connections(play_items)
     return title
 
 

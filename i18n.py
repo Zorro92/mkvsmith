@@ -128,7 +128,7 @@ _ES: dict[str, str] = {
     "Source type: {type}": "Tipo de origen: {type}",
     "Using ISO file in directory: {name}": "Usando archivo ISO del directorio: {name}",
     "No ISO file found in {path}": "No se encontró ningún archivo ISO en {path}",
-    "{path} is not a valid ISO image (missing ISO9660 PVD)": "{path} no es una imagen ISO válida (falta la PVD ISO9660)",
+    "{path} is not a valid disc image (no ISO9660 or UDF filesystem found)": "{path} no es una imagen de disco válida (no se encontró sistema de archivos ISO9660 o UDF)",
     "Scanning ISO with 7z...": "Escaneando ISO con 7z...",
     "7z could not find any .mpls, .m2ts, or .vob files inside the ISO.": "7z no pudo encontrar ningún archivo .mpls, .m2ts o .vob dentro de la ISO.",
     "7z could not find any .mpls, .m2ts, .vob, or .evo files inside the ISO.": "7z no pudo encontrar ningún archivo .mpls, .m2ts, .vob o .evo dentro de la ISO.",

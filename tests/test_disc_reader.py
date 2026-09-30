@@ -625,3 +625,28 @@ def test_safe_7z_path_falls_back_when_no_temp(
     iso.write_bytes(b"fake")
 
     assert disc_reader._get_safe_7z_path(iso, []) == (iso, None)
+
+
+def _write_sector16(path: Path, ident: bytes) -> None:
+    data = bytearray(17 * 2048)
+    data[16 * 2048] = 1
+    data[16 * 2048 + 1 : 16 * 2048 + 6] = ident
+    path.write_bytes(data)
+
+
+@pytest.mark.parametrize("ident", [b"CD001", b"BEA01", b"NSR02", b"NSR03", b"TEA01"])
+def test_probe_accepts_iso9660_and_udf_images(tmp_path: Path, ident: bytes) -> None:
+    # Blu-ray images are often UDF-only (BEA01 at sector 16, no ISO9660
+    # bridge); the probe must accept them, not just CD001 discs.
+    iso = tmp_path / "disc.iso"
+    _write_sector16(iso, ident)
+
+    assert disc_reader._probe_has_disc_image_fs(iso) is True
+
+
+def test_probe_rejects_garbage_and_missing_files(tmp_path: Path) -> None:
+    iso = tmp_path / "disc.iso"
+    _write_sector16(iso, b"XXXXX")
+
+    assert disc_reader._probe_has_disc_image_fs(iso) is False
+    assert disc_reader._probe_has_disc_image_fs(tmp_path / "absent.iso") is False

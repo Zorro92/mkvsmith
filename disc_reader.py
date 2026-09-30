@@ -58,12 +58,26 @@ class SourceType(Enum):
     UNKNOWN = "unknown"
 
 
-def _probe_has_iso9660_pvd(iso_path: Path) -> bool:
+# UDF volume-recognition-sequence identifiers (ECMA-167). Blu-ray images
+# are often UDF-only with no ISO9660 bridge, so sector 16 holds BEA01
+# instead of an ISO9660 PVD.
+_UDF_VRS_IDENTIFIERS = frozenset({b"BEA01", b"NSR02", b"NSR03", b"TEA01"})
+
+
+def _probe_has_disc_image_fs(iso_path: Path) -> bool:
+    """True when *iso_path* looks like an ISO9660 or UDF disc image.
+
+    Accepts either the ISO9660 primary volume descriptor (``CD001`` at
+    sector 16) or a UDF volume-recognition identifier in sectors 16-31.
+    """
     try:
         with open(iso_path, "rb") as f:
-            f.seek(16 * 2048)
-            ident = f.read(2048)[1:6]
-            return ident == b"CD001"
+            for sector in range(16, 32):
+                f.seek(sector * 2048)
+                ident = f.read(2048)[1:6]
+                if ident == b"CD001" or ident in _UDF_VRS_IDENTIFIERS:
+                    return True
+            return False
     except OSError:
         return False
 

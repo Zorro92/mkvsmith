@@ -1450,12 +1450,12 @@ class Scanner:
                 t.name = self.disc_name
 
     def _scan_iso(self) -> None:
-        from disc_reader import _probe_has_iso9660_pvd
+        from disc_reader import _probe_has_disc_image_fs
 
-        if not _probe_has_iso9660_pvd(self.source):
+        if not _probe_has_disc_image_fs(self.source):
             log_error(
                 tr(
-                    "{path} is not a valid ISO image (missing ISO9660 PVD)",
+                    "{path} is not a valid disc image (no ISO9660 or UDF filesystem found)",
                     path=self.source,
                 )
             )

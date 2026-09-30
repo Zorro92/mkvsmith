@@ -740,7 +740,7 @@ class _DvdFileFingerprint:
 
 
 def _dvd_crc64_lookup_table(polynomial: int) -> tuple[int, ...]:
-    table = []
+    table: list[int] = []
     for index in range(256):
         value = index
         for _ in range(8):

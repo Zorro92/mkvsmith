@@ -75,13 +75,25 @@ def test_scan_bluray_source_orders_filters_and_skips_incomplete(
         title.playlist_name = playlist.stem
         return title
 
-    monkeypatch.setattr(scan, "_parse_bdmv_disc_name", lambda _bdmv: "Test Disc")
-    monkeypatch.setattr(scan, "_parse_bdmv_catalog_number", lambda _bdmv: "12345")
+    def fake_disc_name(_bdmv: Path) -> str | None:
+        return "Test Disc"
+
+    def fake_catalog_number(_bdmv: Path) -> str | None:
+        return "12345"
+
+    def ignore_args(*_args: object) -> None:
+        return None
+
+    def keep_titles(titles: list[Title]) -> list[Title]:
+        return titles
+
+    monkeypatch.setattr(scan, "_parse_bdmv_disc_name", fake_disc_name)
+    monkeypatch.setattr(scan, "_parse_bdmv_catalog_number", fake_catalog_number)
     monkeypatch.setattr(scan, "_parse_mpls", parse_mpls)
     monkeypatch.setattr(scan, "_build_bluray_title_from_mpls", build_title)
-    monkeypatch.setattr(scan, "_log_bluray_subpaths", lambda *_args: None)
-    monkeypatch.setattr(scan, "_dedup_duplicate_playlists", lambda titles: titles)
-    monkeypatch.setattr(scan, "_scan_m2ts_dir", lambda *_args: None)
+    monkeypatch.setattr(scan, "_log_bluray_subpaths", ignore_args)
+    monkeypatch.setattr(scan, "_dedup_duplicate_playlists", keep_titles)
+    monkeypatch.setattr(scan, "_scan_m2ts_dir", ignore_args)
 
     titles, metadata = scan._scan_bluray_source(bluray_source, Config(min_duration=50))
 
@@ -107,10 +119,16 @@ def test_scan_bluray_source_falls_back_to_raw_m2ts(
         fallback_calls.append((directory, list(titles)))
         titles.append(make_title(0, directory / "raw.m2ts", "Raw", 100.0))
 
-    monkeypatch.setattr(scan, "_parse_bdmv_disc_name", lambda _bdmv: None)
-    monkeypatch.setattr(scan, "_parse_bdmv_catalog_number", lambda _bdmv: None)
+    def no_bdmv_value(_bdmv: Path) -> str | None:
+        return None
+
+    def keep_titles(titles: list[Title]) -> list[Title]:
+        return titles
+
+    monkeypatch.setattr(scan, "_parse_bdmv_disc_name", no_bdmv_value)
+    monkeypatch.setattr(scan, "_parse_bdmv_catalog_number", no_bdmv_value)
     monkeypatch.setattr(scan, "_scan_m2ts_dir", scan_m2ts)
-    monkeypatch.setattr(scan, "_dedup_duplicate_playlists", lambda titles: titles)
+    monkeypatch.setattr(scan, "_dedup_duplicate_playlists", keep_titles)
 
     titles, metadata = scan._scan_bluray_source(source)
 

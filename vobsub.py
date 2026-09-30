@@ -344,7 +344,9 @@ def _build_spu_palette(
             palette.append((0x82, 0x82, 0x82))
             continue
         palette_index = state.palette_indexes[palette_value]
-        color = grayscale_by_index.get(palette_index)
+        color = (
+            grayscale_by_index.get(palette_index) if palette_index is not None else None
+        )
         if color is not None:
             palette.append(color)
         elif state.alphas[palette_value] == 0:

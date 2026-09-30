@@ -35,7 +35,7 @@ import tempfile
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import final
+from typing import Any, cast, final
 
 import dvdifo
 from models import (
@@ -789,7 +789,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def _resolve_discdb_options(a: argparse.Namespace) -> DiscDbOptions:
     defaults = DiscDbOptions()
     stored = load_settings().get("discdb")
-    settings = stored if isinstance(stored, dict) else {}
+    settings: dict[str, Any] = (
+        cast(dict[str, Any], stored) if isinstance(stored, dict) else {}
+    )
 
     enabled = a.discdb
     if enabled is None:

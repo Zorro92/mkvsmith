@@ -219,10 +219,15 @@ def test_parse_pgc_stream_languages_offset_mode(
         + b"\x00" * 0
     )
 
+    def fake_find_main_pgc(
+        _data: bytes, _pgc_number: int | None
+    ) -> tuple[int, float, int]:
+        return (pgc_abs, 100.0, 1)
+
     monkeypatch.setattr(
         dvdifo,
         "_find_main_pgc",
-        lambda _data, _pgc_number: (pgc_abs, 100.0, 1),
+        fake_find_main_pgc,
     )
 
     assert _parse_pgc_stream_languages(bytes(data)) == (
@@ -241,13 +246,23 @@ def test_find_main_pgc_falls_back_to_longest_then_most_cells(
         (2, 0x180, 75.0, 3),
         (3, 0x200, 75.0, 4),
     ]
-    monkeypatch.setattr(dvdifo, "_vts_ttn1_pgc_abs", lambda _data: None)
-    monkeypatch.setattr(dvdifo, "_enumerate_vts_pgcs", lambda _data: pgcs)
+
+    def fake_vts_ttn1_pgc_abs(_data: bytes) -> int | None:
+        return None
+
+    def fake_enumerate_vts_pgcs(_data: bytes) -> list[tuple[int, int, float, int]]:
+        return pgcs
+
+    def fake_enumerate_no_pgcs(_data: bytes) -> list[tuple[int, int, float, int]]:
+        return []
+
+    monkeypatch.setattr(dvdifo, "_vts_ttn1_pgc_abs", fake_vts_ttn1_pgc_abs)
+    monkeypatch.setattr(dvdifo, "_enumerate_vts_pgcs", fake_enumerate_vts_pgcs)
 
     assert dvdifo._find_main_pgc(bytes(data)) == (0x200, 75.0, 4)
     assert dvdifo._find_main_pgc(bytes(data), 1) == (0x100, 50.0, 2)
 
-    monkeypatch.setattr(dvdifo, "_enumerate_vts_pgcs", lambda _data: [])
+    monkeypatch.setattr(dvdifo, "_enumerate_vts_pgcs", fake_enumerate_no_pgcs)
     assert dvdifo._find_main_pgc(bytes(data)) is None
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,19 @@ import pytest
 import cli
 import disc_reader
 from models import Config, RuntimeState
+
+
+def _always_ram_backed(_p: Path) -> bool:
+    return True
+
+
+def _fs_sizes_returning(
+    sizes: tuple[int, int] | None,
+) -> Callable[[Path], tuple[int, int] | None]:
+    def fake_fs_sizes(_p: Path) -> tuple[int, int] | None:
+        return sizes
+
+    return fake_fs_sizes
 
 
 def _fake_filesystem(
@@ -33,11 +47,18 @@ def _fake_filesystem(
         return real_is_dir(self)
 
     monkeypatch.setattr(Path, "is_dir", fake_is_dir)
-    monkeypatch.setattr(os, "access", lambda _p, _m: True)
+
+    def fake_access(_p: object, _m: int) -> bool:
+        return True
+
+    def fake_is_ram_backed_dir(p: Path) -> bool:
+        return str(p).replace("\\", "/") in ram_backed
+
+    monkeypatch.setattr(os, "access", fake_access)
     monkeypatch.setattr(
         disc_reader,
         "_is_ram_backed_dir",
-        lambda p: str(p).replace("\\", "/") in ram_backed,
+        fake_is_ram_backed_dir,
     )
 
 
@@ -93,9 +114,9 @@ def test_init_ram_budget_uses_tmpfs_size_when_smaller(
     work = tmp_path / "tmp"
     work.mkdir()
     config = Config(temp_dir=work, ram_limit=0.8)
-    monkeypatch.setattr(disc_reader, "_is_ram_backed_dir", lambda _p: True)
+    monkeypatch.setattr(disc_reader, "_is_ram_backed_dir", _always_ram_backed)
     monkeypatch.setattr(disc_reader, "_total_ram_bytes", lambda: 1000)
-    monkeypatch.setattr(disc_reader, "_fs_sizes", lambda _p: (100, 90))
+    monkeypatch.setattr(disc_reader, "_fs_sizes", _fs_sizes_returning((100, 90)))
 
     disc_reader.init_ram_budget(config)
 
@@ -108,9 +129,9 @@ def test_init_ram_budget_uses_ram_when_tmpfs_larger(
     work = tmp_path / "tmp"
     work.mkdir()
     config = Config(temp_dir=work, ram_limit=0.8)
-    monkeypatch.setattr(disc_reader, "_is_ram_backed_dir", lambda _p: True)
+    monkeypatch.setattr(disc_reader, "_is_ram_backed_dir", _always_ram_backed)
     monkeypatch.setattr(disc_reader, "_total_ram_bytes", lambda: 100)
-    monkeypatch.setattr(disc_reader, "_fs_sizes", lambda _p: (1000, 900))
+    monkeypatch.setattr(disc_reader, "_fs_sizes", _fs_sizes_returning((1000, 900)))
 
     disc_reader.init_ram_budget(config)
 
@@ -123,9 +144,9 @@ def test_init_ram_budget_falls_back_to_ram_without_fs_sizes(
     work = tmp_path / "tmp"
     work.mkdir()
     config = Config(temp_dir=work, ram_limit=0.5)
-    monkeypatch.setattr(disc_reader, "_is_ram_backed_dir", lambda _p: True)
+    monkeypatch.setattr(disc_reader, "_is_ram_backed_dir", _always_ram_backed)
     monkeypatch.setattr(disc_reader, "_total_ram_bytes", lambda: 1000)
-    monkeypatch.setattr(disc_reader, "_fs_sizes", lambda _p: None)
+    monkeypatch.setattr(disc_reader, "_fs_sizes", _fs_sizes_returning(None))
 
     disc_reader.init_ram_budget(config)
 
@@ -140,7 +161,7 @@ def test_spills_when_tmpfs_low_on_space(
     config = Config(temp_dir=work, ram_budget_bytes=10**12)
     monkeypatch.setattr(disc_reader, "_available_ram_bytes", lambda: 10**15)
     # Estimate fits the budget and free RAM but not the tmpfs free space.
-    monkeypatch.setattr(disc_reader, "_fs_sizes", lambda _p: (10**12, 100))
+    monkeypatch.setattr(disc_reader, "_fs_sizes", _fs_sizes_returning((10**12, 100)))
 
     assert disc_reader._should_spill_to_disk(200, config) == "space"
 
@@ -152,7 +173,7 @@ def test_no_spill_when_tmpfs_space_available(
     work.mkdir()
     config = Config(temp_dir=work, ram_budget_bytes=10**12)
     monkeypatch.setattr(disc_reader, "_available_ram_bytes", lambda: 10**15)
-    monkeypatch.setattr(disc_reader, "_fs_sizes", lambda _p: (10**12, 10**12))
+    monkeypatch.setattr(disc_reader, "_fs_sizes", _fs_sizes_returning((10**12, 10**12)))
 
     assert disc_reader._should_spill_to_disk(200, config) is None
 
@@ -163,8 +184,15 @@ def test_configure_runtime_defaults_tempdir_off_tmpfs(
     default = tmp_path / "vartmp"
     default.mkdir()
     monkeypatch.setattr("disc_reader.default_temp_dir", lambda: default)
-    monkeypatch.setattr("disc_reader.init_ram_budget", lambda _c: None)
-    monkeypatch.setattr(cli.dvdifo, "set_debug", lambda _v: None)
+
+    def skip_init_ram_budget(_c: Config | None = None) -> None:
+        return None
+
+    def skip_set_debug(_v: Callable[[str], None] | None) -> None:
+        return None
+
+    monkeypatch.setattr("disc_reader.init_ram_budget", skip_init_ram_budget)
+    monkeypatch.setattr(cli.dvdifo, "set_debug", skip_set_debug)
     old_tempdir = tempfile.tempdir
     try:
         cli._configure_runtime(RuntimeState(config=Config(debug=True)))

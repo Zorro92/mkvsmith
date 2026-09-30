@@ -35,9 +35,11 @@ def _odd(value: int) -> int:
     return value | 0x80 if bin(value).count("1") % 2 == 0 else value
 
 
-def _feed(decoder: _Cc608Decoder, pairs: list[tuple[int, int]], pts: int = 1000):
+def _feed(
+    decoder: _Cc608Decoder, pairs: list[tuple[int, int]], pts: int = 1000
+) -> list[CcCaptionEvent]:
     """Feed parity-stripped pairs; return the emitted events."""
-    events = []
+    events: list[CcCaptionEvent] = []
     for hi, lo in pairs:
         event = decoder.feed(hi, lo, pts)
         if event is not None:
@@ -198,7 +200,9 @@ def test_has_cc608_data_detects_prefix(tmp_path: Path) -> None:
     assert _has_cc608_data(plain, max_bytes=1024 * 1024) is False
 
 
-def test_extract_captions_rebases_cell_clock_resets(monkeypatch) -> None:
+def test_extract_captions_rebases_cell_clock_resets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Non-seamless cells restart the PTS clock mid-movie; each reset is
     snapped to the end of the previous timeline (the re-basing mkvmerge
     applies to appended program-stream segments)."""
@@ -214,9 +218,11 @@ def test_extract_captions_rebases_cell_clock_resets(monkeypatch) -> None:
         (90_000 * 2, (0x53, 0x54)),  # ST
         (90_000 * 3, (0x14, 0x2F)),
     ]
-    monkeypatch.setattr(
-        cc608, "_scan_vob_cc608_file", lambda _path: cell_one + cell_two
-    )
+
+    def fake_scan_vob_cc608_file(_path: Path) -> list[tuple[int, tuple[int, int]]]:
+        return cell_one + cell_two
+
+    monkeypatch.setattr(cc608, "_scan_vob_cc608_file", fake_scan_vob_cc608_file)
 
     events = extract_cc608_captions([Path("fake.vob")])
 

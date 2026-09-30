@@ -5,7 +5,9 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+import subprocess
+from collections.abc import Callable, Sequence
+from typing import IO, Any, cast
 
 import pytest
 
@@ -76,7 +78,7 @@ def test_unmatched_streams_use_positional_or_negative_ids() -> None:
         type_index=1,
         pid=9999,
     )
-    ident_tracks = [
+    ident_tracks: list[dict[str, Any]] = [
         {"id": 0, "type": "subtitles", "codec": "PGS", "properties": {}},
         {"id": 1, "type": "audio", "codec": "AC-3", "properties": {}},
     ]
@@ -101,14 +103,16 @@ def test_dvd_audio_fallback_omits_audio_filter() -> None:
         Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3"),
     ]
     title.dvd_ifo_data = b"IFO data"
-    ident_tracks = [{"id": 0, "type": "audio", "codec": "AC-3", "properties": {}}]
+    ident_tracks: list[dict[str, Any]] = [
+        {"id": 0, "type": "audio", "codec": "AC-3", "properties": {}}
+    ]
     mapped = _map_streams_to_ident_tracks(title.audio_streams[:1], ident_tracks)
 
     assert _track_filter_options(ident_tracks, mapped, title) == []
 
 
 def test_dvd_subtitle_fallback_passes_ifo_attributes(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     title = Title(
         index=0,
@@ -134,20 +138,20 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
             "ident_channels": None,
         }
     ]
-    calls = []
+    calls: list[tuple[object, ...]] = []
 
     def extract(
-        inputs,
-        language_by_id,
-        forced_by_id,
+        inputs: list[Path],
+        language_by_id: dict[int, str] | None,
+        forced_by_id: dict[int, bool] | None,
         *,
-        ifo_palette,
-        vobu_parts,
-        vobu_part_sizes,
-        total_duration,
-        temp_files,
-        debug,
-    ):
+        ifo_palette: list[tuple[int, int, int]] | None,
+        vobu_parts: list[Path] | None,
+        vobu_part_sizes: list[int] | None,
+        total_duration: float,
+        temp_files: list[Path],
+        debug: bool,
+    ) -> tuple[Path, list[dict[str, Any]]]:
         calls.append(
             (
                 inputs,
@@ -163,9 +167,10 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
         )
         return tmp_path / "subs.idx", [{"id": 0, "type": "subtitles"}]
 
-    monkeypatch.setattr(
-        mkv, "_extract_dvd_ifo_palette", lambda _data, _pgc: [(1, 2, 3)]
-    )
+    def fake_ifo_palette(_data: bytes, _pgc: int | None) -> list[tuple[int, int, int]]:
+        return [(1, 2, 3)]
+
+    monkeypatch.setattr(mkv, "_extract_dvd_ifo_palette", fake_ifo_palette)
     monkeypatch.setattr(mkv, "_extract_dvd_vobsubs", extract)
 
     temp_files: list[Path] = []
@@ -193,7 +198,7 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
 
 
 def test_create_chapters_file_filters_trailing_chapter(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     temp_files: list[Path] = []
@@ -216,7 +221,7 @@ def test_create_chapters_file_filters_trailing_chapter(
 
 
 def test_prepare_dvd_inputs_extracts_contiguous_range(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     temp_files: list[Path] = []
@@ -228,7 +233,11 @@ def test_prepare_dvd_inputs_extracts_contiguous_range(
         name="Source",
         duration_seconds=100.0,
     )
-    monkeypatch.setattr(mkv, "_dvd_main_content_range", lambda _inputs: (2, 8))
+
+    def fake_content_range(_inputs: list[Path]) -> tuple[int, int]:
+        return (2, 8)
+
+    monkeypatch.setattr(mkv, "_dvd_main_content_range", fake_content_range)
     calls: list[tuple[list[Path], int, int, Path]] = []
 
     def extract(inputs: list[Path], start: int, end: int, output: Path) -> Path:
@@ -249,7 +258,9 @@ def test_prepare_dvd_inputs_extracts_contiguous_range(
     assert temp_files == cleanup
 
 
-def test_prepare_dvd_inputs_concatenates_vobu_runs(monkeypatch, tmp_path: Path) -> None:
+def test_prepare_dvd_inputs_concatenates_vobu_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.chdir(tmp_path)
     temp_files: list[Path] = []
     source = tmp_path / "source.vob"
@@ -262,9 +273,19 @@ def test_prepare_dvd_inputs_concatenates_vobu_runs(monkeypatch, tmp_path: Path) 
     )
     title.dvd_ifo_data = b"IFO data"
     ranges = [(0, 2), (4, 6)]
-    monkeypatch.setattr(mkv, "_lookup_main_feature_range", lambda *_args: (0, 8))
-    monkeypatch.setattr(mkv, "_parse_vts_vobu_admap", lambda _data: [0, 2, 4, 6])
-    monkeypatch.setattr(mkv, "_build_main_edition_vobu_ranges", lambda *_args: ranges)
+
+    def fake_feature_range(*_args: object) -> tuple[int, int]:
+        return (0, 8)
+
+    def fake_vobu_admap(_data: bytes) -> list[int]:
+        return [0, 2, 4, 6]
+
+    def fake_vobu_ranges(*_args: object) -> list[tuple[int, int]]:
+        return ranges
+
+    monkeypatch.setattr(mkv, "_lookup_main_feature_range", fake_feature_range)
+    monkeypatch.setattr(mkv, "_parse_vts_vobu_admap", fake_vobu_admap)
+    monkeypatch.setattr(mkv, "_build_main_edition_vobu_ranges", fake_vobu_ranges)
     calls: list[tuple[int, int]] = []
 
     def extract(_inputs: list[Path], start: int, end: int, output: Path) -> Path:
@@ -384,7 +405,7 @@ def test_dvd_subtitle_fallback_options_require_ident_tracks() -> None:
 
 
 def test_build_mkvmerge_command_orders_metadata_inputs_and_fallback(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     temp_files: list[Path] = []
@@ -466,7 +487,7 @@ def test_build_mkvmerge_command_orders_metadata_inputs_and_fallback(
 
 
 def test_build_mkvmerge_command_appends_cc608_srt_track(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     temp_files: list[Path] = []
@@ -582,7 +603,7 @@ def test_prepare_inputs_preserves_folder_inputs(tmp_path: Path) -> None:
 
 
 def test_prepare_inputs_uses_iso_and_injected_registries(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     runtime_state = models.RuntimeState()
     creator = mkv.MKVCreator(tmp_path, runtime_state=runtime_state)
@@ -597,17 +618,25 @@ def test_prepare_inputs_uses_iso_and_injected_registries(
     title.iso_internal_paths = ["BDMV/STREAM/00000.m2ts"]
     video = Stream(index=0, stream_type=StreamType.VIDEO, codec="h264")
     extracted = tmp_path / "extracted.m2ts"
-    calls = {}
+    calls: dict[str, object] = {}
 
-    def extract_full(_source, internals, *, temp_base, temp_dirs, symlinks):
+    def extract_full(
+        _source: Path,
+        internals: Sequence[str],
+        *,
+        temp_base: Path | None,
+        temp_dirs: list[Path] | None,
+        symlinks: list[Path] | None,
+    ) -> list[Path]:
         calls["temp_base"] = temp_base
         calls["temp_dirs"] = temp_dirs
         calls["symlinks"] = symlinks
         return [extracted]
 
-    monkeypatch.setattr(
-        disc_reader, "temp_base_for_title", lambda _size, _config: tmp_path / "spill"
-    )
+    def fake_temp_base(_size: int, _config: models.Config | None) -> Path | None:
+        return tmp_path / "spill"
+
+    monkeypatch.setattr(disc_reader, "temp_base_for_title", fake_temp_base)
     monkeypatch.setattr(disc_reader, "_extract_full_for_muxing", extract_full)
 
     plan = creator._prepare_inputs(title, [video])
@@ -623,7 +652,7 @@ def test_prepare_inputs_uses_iso_and_injected_registries(
 
 
 def test_prepare_tracks_dispatches_dvd_subtitle_fallback(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     runtime_state = models.RuntimeState()
     creator = mkv.MKVCreator(tmp_path, runtime_state=runtime_state)
@@ -643,7 +672,7 @@ def test_prepare_tracks_dispatches_dvd_subtitle_fallback(
         }
     ]
     fallback = tmp_path / "subs.idx"
-    calls = []
+    calls: list[tuple[object, ...]] = []
     plan = mkv._MuxInputPlan(
         inputs=[title.source_file],
         cleanup=[],
@@ -651,20 +680,27 @@ def test_prepare_tracks_dispatches_dvd_subtitle_fallback(
         vobu_parts=[tmp_path / "part-0.vob"],
         vobu_part_sizes=[20],
     )
-    monkeypatch.setattr(mkv, "_identify_input_tracks", lambda _path: [])
-    monkeypatch.setattr(
-        mkv, "_map_streams_to_ident_tracks", lambda _streams, _tracks: mapped
-    )
+
+    def fake_identify(_path: Path) -> list[dict[str, Any]]:
+        return []
+
+    def fake_map(
+        _streams: list[Stream], _tracks: list[dict[str, Any]]
+    ) -> list[MappedStream]:
+        return mapped
+
+    monkeypatch.setattr(mkv, "_identify_input_tracks", fake_identify)
+    monkeypatch.setattr(mkv, "_map_streams_to_ident_tracks", fake_map)
 
     def extract_fallback(
-        _title,
-        _mapped,
-        inputs,
-        vobu_parts,
-        vobu_part_sizes,
-        temp_files,
-        debug,
-    ):
+        _title: Title,
+        _mapped: list[MappedStream],
+        inputs: list[Path],
+        vobu_parts: list[Path] | None,
+        vobu_part_sizes: list[int] | None,
+        temp_files: list[Path],
+        debug: bool,
+    ) -> tuple[Path | None, list[dict[str, Any]], list[Stream]]:
         calls.append((inputs, vobu_parts, vobu_part_sizes, temp_files, debug))
         return fallback, [{"id": 0}], [video]
 
@@ -723,7 +759,9 @@ def test_validate_mux_result_reports_timeout_and_failure(tmp_path: Path) -> None
         )
 
 
-def test_execute_mux_finalizes_output_and_metadata(monkeypatch, tmp_path: Path) -> None:
+def test_execute_mux_finalizes_output_and_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     runtime_state = models.RuntimeState()
     tag_options = models.TagOptions(save_xml=True)
     creator = mkv.MKVCreator(
@@ -748,9 +786,11 @@ def test_execute_mux_finalizes_output_and_metadata(monkeypatch, tmp_path: Path) 
             "label": "Poster",
         }
     ]
-    run_calls = []
+    run_calls: list[tuple[list[str], str, float, int]] = []
 
-    def run(command, label, duration, timeout=3600):
+    def run(
+        command: list[str], label: str, duration: float, timeout: int = 3600
+    ) -> tuple[int, str, bool]:
         run_calls.append((command, label, duration, timeout))
         out_file.write_bytes(b"matroska")
         return 1, "Warning: retained for tests", False
@@ -836,9 +876,11 @@ def test_append_track_options_apply_state_and_synthesized_audio_name(
         "stream": stream,
         "ident_channels": 6,
     }
-    monkeypatch.setattr(
-        mkv, "_audio_title", lambda _stream, channels: f"Audio {channels}"
-    )
+
+    def fake_audio_title(_stream: Stream, channels: int | None = None) -> str | None:
+        return f"Audio {channels}"
+
+    monkeypatch.setattr(mkv, "_audio_title", fake_audio_title)
 
     cmd: list[str] = []
     mkv._append_track_options(cmd, [entry])
@@ -874,14 +916,15 @@ def test_append_track_options_apply_video_color_and_siting(
         "stream": stream,
         "ident_channels": None,
     }
-    monkeypatch.setattr(
-        mkv,
-        "_resolve_video_color",
-        lambda _stream: ("bt709", "bt709", "bt709", "limited"),
-    )
-    monkeypatch.setattr(
-        mkv, "_chroma_siting_for_codec", lambda codec: f"{codec}-siting"
-    )
+
+    def fake_video_color(_stream: Stream) -> tuple[str, str, str, str] | None:
+        return ("bt709", "bt709", "bt709", "limited")
+
+    def fake_chroma_siting(codec: str) -> str | None:
+        return f"{codec}-siting"
+
+    monkeypatch.setattr(mkv, "_resolve_video_color", fake_video_color)
+    monkeypatch.setattr(mkv, "_chroma_siting_for_codec", fake_chroma_siting)
 
     cmd: list[str] = []
     mkv._append_track_options(cmd, [entry])
@@ -937,9 +980,7 @@ def test_parse_and_read_mkvmerge_progress_line_by_line() -> None:
     ]
     stdout = _FakeTextStdout(lines)
     progress: list[int] = []
-    stdout_for_reader: Any = stdout
-
-    output = mkv._read_mkvmerge_output(stdout_for_reader, progress.append)
+    output = mkv._read_mkvmerge_output(cast(IO[str], stdout), progress.append)
 
     assert output == "".join(lines)
     assert progress == [1, 42, 100]
@@ -951,8 +992,7 @@ def test_kill_mkvmerge_process_delegates_to_platform_kill(
     killed: list[int] = []
     monkeypatch.setattr(mkv, "_kill_process_group", killed.append)
 
-    process_for_kill: Any = SimpleNamespace(pid=123)
-    mkv._kill_mkvmerge_process(process_for_kill)
+    mkv._kill_mkvmerge_process(cast("subprocess.Popen[str]", SimpleNamespace(pid=123)))
 
     assert killed == [123]
 
@@ -965,7 +1005,7 @@ def test_mkvmerge_watchdog_records_timeout_and_kills_process(
     timers: list[_FakeTimer] = []
 
     class _FakeTimer:
-        def __init__(self, interval, function):
+        def __init__(self, interval: float, function: Callable[[], None]) -> None:
             self.interval = interval
             self.function = function
             self.daemon = False
@@ -980,16 +1020,21 @@ def test_mkvmerge_watchdog_records_timeout_and_kills_process(
             self.cancelled = True
 
     monkeypatch.setattr(mkv.threading, "Timer", _FakeTimer)
-    monkeypatch.setattr(
-        mkv, "_kill_mkvmerge_process", lambda process: kill_calls.append(process)
-    )
+
+    def fake_kill(process: object) -> None:
+        kill_calls.append(process)
+
+    monkeypatch.setattr(mkv, "_kill_mkvmerge_process", fake_kill)
     process = object()
 
-    process_for_watchdog: Any = process
-    watchdog: Any = mkv._start_mkvmerge_watchdog(
-        process_for_watchdog,
-        state,
-        timeout=17,
+    # threading.Timer is patched to _FakeTimer above.
+    watchdog = cast(
+        _FakeTimer,
+        mkv._start_mkvmerge_watchdog(
+            cast("subprocess.Popen[str]", process),
+            state,
+            timeout=17,
+        ),
     )
 
     assert watchdog.interval == 17
@@ -1041,19 +1086,32 @@ def test_run_mkvmerge_collects_output_and_unregisters_muxer(
     process = _FakeMuxProcess(_FakeTextStdout(["Progress: 42%\nwarning\n"]))
     progress: list[int] = []
     watchdog_timeouts: list[int] = []
-    monkeypatch.setattr(mkv.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    def fake_popen(*_args: object, **_kwargs: object) -> _FakeMuxProcess:
+        return process
+
+    monkeypatch.setattr(mkv.subprocess, "Popen", fake_popen)
+
+    def fake_watchdog(
+        _process: object, _state: object, timeout: int
+    ) -> SimpleNamespace:
+        return (
+            watchdog_timeouts.append(timeout),
+            SimpleNamespace(cancel=lambda: None),
+        )[1]
+
+    def fake_show_progress(_label: str, percentage: int) -> None:
+        return progress.append(percentage)
+
     monkeypatch.setattr(
         mkv,
         "_start_mkvmerge_watchdog",
-        lambda _process, _state, timeout: (
-            watchdog_timeouts.append(timeout),
-            SimpleNamespace(cancel=lambda: None),
-        )[1],
+        fake_watchdog,
     )
     monkeypatch.setattr(
         creator,
         "_show_progress",
-        lambda _label, percentage: progress.append(percentage),
+        fake_show_progress,
     )
 
     result = creator._run_mkvmerge(["mkvmerge"], "movie.mkv", 100.0, timeout=17)
@@ -1074,11 +1132,21 @@ def test_run_mkvmerge_interrupt_kills_waits_and_finishes_progress(
     creator = mkv.MKVCreator(tmp_path, runtime_state=runtime_state)
     process = _FakeMuxProcess(_FakeTextStdout(KeyboardInterrupt()))
     killed: list[object] = []
-    monkeypatch.setattr(mkv.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    def fake_popen(*_args: object, **_kwargs: object) -> _FakeMuxProcess:
+        return process
+
+    monkeypatch.setattr(mkv.subprocess, "Popen", fake_popen)
+
+    def fake_watchdog(
+        _process: object, _state: object, timeout: int
+    ) -> SimpleNamespace:
+        return SimpleNamespace(cancel=lambda: None)
+
     monkeypatch.setattr(
         mkv,
         "_start_mkvmerge_watchdog",
-        lambda _process, _state, timeout: SimpleNamespace(cancel=lambda: None),
+        fake_watchdog,
     )
     monkeypatch.setattr(mkv, "_kill_mkvmerge_process", killed.append)
     runtime_state.active_processes.set_progress_active(True)
@@ -1100,11 +1168,21 @@ def test_run_mkvmerge_kills_child_on_unexpected_reader_error(
     creator = mkv.MKVCreator(tmp_path, runtime_state=runtime_state)
     process = _FakeMuxProcess(_FakeTextStdout(RuntimeError("pipe closed")))
     killed: list[object] = []
-    monkeypatch.setattr(mkv.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    def fake_popen(*_args: object, **_kwargs: object) -> _FakeMuxProcess:
+        return process
+
+    monkeypatch.setattr(mkv.subprocess, "Popen", fake_popen)
+
+    def fake_watchdog(
+        _process: object, _state: object, timeout: int
+    ) -> SimpleNamespace:
+        return SimpleNamespace(cancel=lambda: None)
+
     monkeypatch.setattr(
         mkv,
         "_start_mkvmerge_watchdog",
-        lambda _process, _state, timeout: SimpleNamespace(cancel=lambda: None),
+        fake_watchdog,
     )
     monkeypatch.setattr(mkv, "_kill_mkvmerge_process", killed.append)
 
@@ -1604,12 +1682,12 @@ def test_drop_incompatible_append_clips(
     second = tmp_path / "00018.m2ts"
     first.write_bytes(b"a")
     second.write_bytes(b"b")
-    ident = [
+    ident: list[dict[str, Any]] = [
         {"id": 0, "type": "video", "properties": {}},
         {"id": 1, "type": "audio", "properties": {"audio_channels": 6}},
         {"id": 2, "type": "audio", "properties": {"audio_channels": 6}},
     ]
-    stereo = [
+    stereo: list[dict[str, Any]] = [
         {"id": 0, "type": "video", "properties": {}},
         {"id": 1, "type": "audio", "properties": {"audio_channels": 2}},
         {"id": 2, "type": "audio", "properties": {"audio_channels": 2}},
@@ -1621,9 +1699,11 @@ def test_drop_incompatible_append_clips(
         {"input_id": 1, "type": "audio", "stream": audio, "ident_channels": 6},
         {"input_id": 2, "type": "audio", "stream": audio2, "ident_channels": 6},
     ]
-    monkeypatch.setattr(
-        mkv, "_identify_input_tracks", lambda p: stereo if p == second else ident
-    )
+
+    def fake_identify(p: Path) -> list[dict[str, Any]]:
+        return stereo if p == second else ident
+
+    monkeypatch.setattr(mkv, "_identify_input_tracks", fake_identify)
 
     kept, dropped = mkv._drop_incompatible_append_inputs([first, second], mapped, ident)
 

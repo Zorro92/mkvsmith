@@ -39,9 +39,21 @@ def _streams() -> list[Stream]:
     return [Stream(index=0, stream_type=StreamType.VIDEO, codec="h264")]
 
 
+def _forbidden_input(_p: object) -> str:
+    raise AssertionError()
+
+
+def _decline_overwrite(_p: Path, *a: object, **k: object) -> bool:
+    return False
+
+
 def test_confirm_overwrite_accepts_yes(monkeypatch: pytest.MonkeyPatch) -> None:
     for answer in ("y", "Y", "yes", " YES "):
-        monkeypatch.setattr(builtins, "input", lambda _p: answer)
+
+        def fake_input(_p: object) -> str:
+            return answer
+
+        monkeypatch.setattr(builtins, "input", fake_input)
         assert mkv._confirm_overwrite(Path("out.mkv")) is True
 
 
@@ -49,7 +61,11 @@ def test_confirm_overwrite_declines_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for answer in ("n", "", "no"):
-        monkeypatch.setattr(builtins, "input", lambda _p: answer)
+
+        def fake_input(_p: object) -> str:
+            return answer
+
+        monkeypatch.setattr(builtins, "input", fake_input)
         assert mkv._confirm_overwrite(Path("out.mkv")) is False
 
 
@@ -76,9 +92,7 @@ def test_force_overwrite_skips_prompt(
     out.write_bytes(b"existing")
     config = Config(force_overwrite=True)
     creator = mkv.MKVCreator(tmp_path, config=config, runtime_state=RuntimeState())
-    monkeypatch.setattr(
-        builtins, "input", lambda _p: (_ for _ in ()).throw(AssertionError())
-    )
+    monkeypatch.setattr(builtins, "input", _forbidden_input)
     creator._ensure_overwrite_allowed(out)
 
 
@@ -88,7 +102,7 @@ def test_declined_overwrite_raises(
     out = tmp_path / "Movie_t00.mkv"
     out.write_bytes(b"existing")
     creator = mkv.MKVCreator(tmp_path, runtime_state=RuntimeState())
-    monkeypatch.setattr(mkv, "_confirm_overwrite", lambda _p, *a, **k: False)
+    monkeypatch.setattr(mkv, "_confirm_overwrite", _decline_overwrite)
 
     with pytest.raises(RipError, match="not overwriting"):
         creator._ensure_overwrite_allowed(out)
@@ -100,7 +114,7 @@ def test_create_mkv_checks_before_any_work(
     out = tmp_path / "Movie_t00.mkv"
     out.write_bytes(b"existing")
     creator = mkv.MKVCreator(tmp_path, runtime_state=RuntimeState())
-    monkeypatch.setattr(mkv, "_confirm_overwrite", lambda _p, *a, **k: False)
+    monkeypatch.setattr(mkv, "_confirm_overwrite", _decline_overwrite)
 
     with pytest.raises(RipError, match="not overwriting"):
         creator.create_mkv(_title(), _streams())
@@ -125,9 +139,7 @@ def test_injected_confirm_allows_overwrite_without_stdin(
     out.write_bytes(b"existing")
     prompts = UserPrompts(confirm=lambda _message: True)
     creator = mkv.MKVCreator(tmp_path, runtime_state=RuntimeState(prompts=prompts))
-    monkeypatch.setattr(
-        builtins, "input", lambda _p: (_ for _ in ()).throw(AssertionError())
-    )
+    monkeypatch.setattr(builtins, "input", _forbidden_input)
     creator._ensure_overwrite_allowed(out)
 
 
@@ -138,9 +150,7 @@ def test_injected_confirm_decline_raises_without_stdin(
     out.write_bytes(b"existing")
     prompts = UserPrompts(confirm=lambda _message: False)
     creator = mkv.MKVCreator(tmp_path, runtime_state=RuntimeState(prompts=prompts))
-    monkeypatch.setattr(
-        builtins, "input", lambda _p: (_ for _ in ()).throw(AssertionError())
-    )
+    monkeypatch.setattr(builtins, "input", _forbidden_input)
     with pytest.raises(RipError, match="not overwriting"):
         creator._ensure_overwrite_allowed(out)
 

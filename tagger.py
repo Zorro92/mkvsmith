@@ -23,7 +23,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, TypedDict, final
+from typing import Any, Callable, TypedDict, cast, final
 
 from models import (
     RipError,
@@ -79,7 +79,7 @@ class MovieMetadata:
     keywords: list[str] | None = None
     poster_path: str | None = None
     backdrop_path: str | None = None
-    custom_properties: dict[str, str] = field(default_factory=dict)
+    custom_properties: dict[str, str] = field(default_factory=dict[str, str])
 
 
 # MovieMetadata attribute -> (Matroska tag name, optional formatter). Falsy
@@ -279,7 +279,7 @@ def _apply_custom_metadata(
         if prop in ("Budget", "Revenue") and isinstance(value, (int, float)):
             value = f"${value:,.2f}"
         elif isinstance(value, list):
-            value = ", ".join(str(item) for item in value)
+            value = ", ".join(str(item) for item in cast(list[object], value))
         metadata.custom_properties[prop] = str(value)
 
 
@@ -554,7 +554,7 @@ def _write_tag_xml(md: MovieMetadata, out_path: Path) -> None:
         ET.SubElement(simple, "Name").text = name
         ET.SubElement(simple, "String").text = value
 
-    fields = [
+    fields: list[tuple[str, str, Callable[[Any], str] | None]] = [
         ("tmdb_id", "TMDB", None),
         ("imdb_id", "IMDb", None),
         ("title", "TITLE", None),

@@ -8,7 +8,7 @@ import io
 import json
 import urllib.error
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 import cli
@@ -99,7 +99,9 @@ def test_graphql_urls_use_separate_public_and_contribution_schemas():
 def test_lookup_sends_all_strong_identifiers(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, Any] = {}
 
-    def post(_self, _query, variables):
+    def post(
+        _self: DiscDbClient, _query: str, variables: dict[str, Any]
+    ) -> dict[str, Any]:
         captured.update(variables)
         return {"mediaItems": {"nodes": []}}
 
@@ -147,10 +149,10 @@ class _FakeResponse:
         self._body = body.encode("utf-8")
         self._url = url
 
-    def __enter__(self):
+    def __enter__(self) -> _FakeResponse:
         return self
 
-    def __exit__(self, *_args):
+    def __exit__(self, *_args: object) -> bool:
         return False
 
     def read(self) -> bytes:
@@ -162,11 +164,11 @@ class _FakeResponse:
 
 def test_graphql_errors_are_wrapped(monkeypatch: pytest.MonkeyPatch):
     body = json.dumps({"errors": [{"message": "field unavailable"}]})
-    monkeypatch.setattr(
-        discdb.urllib.request,
-        "urlopen",
-        lambda *_args, **_kwargs: _FakeResponse(body),
-    )
+
+    def fake_urlopen(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(discdb.urllib.request, "urlopen", fake_urlopen)
 
     with pytest.raises(discdb.DiscDbError, match="field unavailable"):
         DiscDbClient(options())._post_json("query {}", {})
@@ -180,33 +182,31 @@ def test_http_and_network_errors_are_wrapped(monkeypatch: pytest.MonkeyPatch):
         email.message.Message(),
         io.BytesIO(b"try later"),
     )
-    monkeypatch.setattr(
-        discdb.urllib.request,
-        "urlopen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
-    )
+
+    def raise_http_error(*_args: object, **_kwargs: object) -> NoReturn:
+        raise error
+
+    monkeypatch.setattr(discdb.urllib.request, "urlopen", raise_http_error)
 
     with pytest.raises(discdb.DiscDbError, match="HTTP 503"):
         DiscDbClient(options())._post_json("query {}", {})
 
-    monkeypatch.setattr(
-        discdb.urllib.request,
-        "urlopen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("timed out")),
-    )
+    def raise_timeout(*_args: object, **_kwargs: object) -> NoReturn:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(discdb.urllib.request, "urlopen", raise_timeout)
     with pytest.raises(discdb.DiscDbError, match="timed out"):
         DiscDbClient(options(timeout_seconds=0.01))._post_json("query {}", {})
 
 
 def test_authentication_redirect_is_reported_clearly(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        discdb.urllib.request,
-        "urlopen",
-        lambda *_args, **_kwargs: _FakeResponse(
+    def fake_urlopen(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(
             "<html>login</html>",
             "https://thediscdb.com/Account/Login?ReturnUrl=/graphql/contributions",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(discdb.urllib.request, "urlopen", fake_urlopen)
 
     with pytest.raises(discdb.DiscDbError, match="check or refresh your cookie"):
         DiscDbClient(options())._post_json(
@@ -218,11 +218,11 @@ def test_authentication_redirect_is_reported_clearly(monkeypatch: pytest.MonkeyP
 
 def test_strong_match_accepts_identical_recopies(monkeypatch: pytest.MonkeyPatch):
     item = remote_item(global_id="A" * 40, titles=[])
-    monkeypatch.setattr(
-        DiscDbClient,
-        "_post_json",
-        lambda *_args: {"mediaItems": {"nodes": [item]}},
-    )
+
+    def fake_post_json(*_args: object) -> dict[str, Any]:
+        return {"mediaItems": {"nodes": [item]}}
+
+    monkeypatch.setattr(DiscDbClient, "_post_json", fake_post_json)
     result = DiscDbClient(options()).lookup(DiscMetadata(aacs_disc_id="a" * 40))
 
     assert result.match is not None
@@ -232,11 +232,11 @@ def test_strong_match_accepts_identical_recopies(monkeypatch: pytest.MonkeyPatch
 
 def test_disc_hash_is_a_strong_match(monkeypatch: pytest.MonkeyPatch):
     item = remote_item(content_hash="C" * 32, titles=[])
-    monkeypatch.setattr(
-        DiscDbClient,
-        "_post_json",
-        lambda *_args: {"mediaItems": {"nodes": [item]}},
-    )
+
+    def fake_post_json(*_args: object) -> dict[str, Any]:
+        return {"mediaItems": {"nodes": [item]}}
+
+    monkeypatch.setattr(DiscDbClient, "_post_json", fake_post_json)
 
     result = DiscDbClient(options()).lookup(DiscMetadata(disc_hash="c" * 32))
 
@@ -253,11 +253,11 @@ def test_upc_ambiguity_is_not_auto_applied(monkeypatch: pytest.MonkeyPatch):
         upc="123",
         titles=[{"index": 0, "duration": "1:30:00", "sourceFile": "00801.mpls"}],
     )
-    monkeypatch.setattr(
-        DiscDbClient,
-        "_post_json",
-        lambda *_args: {"mediaItems": {"nodes": [first, second]}},
-    )
+
+    def fake_post_json(*_args: object) -> dict[str, Any]:
+        return {"mediaItems": {"nodes": [first, second]}}
+
+    monkeypatch.setattr(DiscDbClient, "_post_json", fake_post_json)
 
     result = DiscDbClient(options()).lookup(DiscMetadata(upc_ean="123"))
 
@@ -503,15 +503,16 @@ def test_iso_hash_files_preserve_7z_internal_timestamps(
 ):
     source = tmp_path / "movie.iso"
     source.write_bytes(b"iso")
-    monkeypatch.setattr(
-        "disc_reader._list_iso_file_metadata_7z",
-        lambda _source: [
+
+    def fake_list_metadata(_source: Path) -> list[disc_reader._IsoFileMetadata]:
+        return [
             disc_reader._IsoFileMetadata(
                 "BDMV/STREAM/01000.m2ts", 123, "2024-01-02 03:04:05"
             ),
             disc_reader._IsoFileMetadata("VIDEO_TS/VIDEO_TS.IFO", 456, None),
-        ],
-    )
+        ]
+
+    monkeypatch.setattr("disc_reader._list_iso_file_metadata_7z", fake_list_metadata)
 
     files = discdb.collect_hash_files(source)
 
@@ -564,13 +565,14 @@ def test_iso_fingerprint_files_include_every_iso_member(
 ):
     source = tmp_path / "movie.iso"
     source.write_bytes(b"iso")
-    monkeypatch.setattr(
-        "disc_reader._list_iso_files_7z",
-        lambda _source: (
+
+    def fake_list_files(_source: Path) -> tuple[list[str], dict[str, int]]:
+        return (
             ["BDMV/META/dl/bdmt_eng.xml", "BDMV/STREAM/01000.m2ts"],
             {"BDMV/META/dl/bdmt_eng.xml": 10, "BDMV/STREAM/01000.m2ts": 20},
-        ),
-    )
+        )
+
+    monkeypatch.setattr("disc_reader._list_iso_files_7z", fake_list_files)
 
     assert discdb.collect_fingerprint_files(source) == [
         {"path": "BDMV/META/dl/bdmt_eng.xml", "size": 10},
@@ -597,33 +599,46 @@ def test_direct_submission_uses_hash_create_upload_and_status(
             }
         ],
     }
+    # Mixed call records; the create call's payload dict is indexed below.
     calls: list[tuple[Any, ...]] = []
     client_class = discdb.DiscDbContributionClient
-    monkeypatch.setattr(
-        client_class,
-        "hash_disc",
-        lambda self, contribution_id, files, fingerprint_files: (
-            calls.append(("hash", contribution_id)) or ("CONTENT_HASH", "f" * 64)
-        ),
-    )
-    monkeypatch.setattr(
-        client_class,
-        "create_disc",
-        lambda self, *args, **kwargs: (
-            calls.append(("create", args, kwargs)) or "DISC_ID"
-        ),
-    )
-    monkeypatch.setattr(
-        client_class,
-        "upload_logs",
-        lambda self, contribution_id, disc_id, logs: calls.append(
-            ("upload", contribution_id, disc_id)
-        ),
-    )
-    monkeypatch.setattr(
-        client_class, "upload_status", lambda self, disc_id: (True, None)
-    )
-    monkeypatch.setattr(discdb.time, "sleep", lambda _seconds: None)
+
+    def fake_hash_disc(
+        self: discdb.DiscDbContributionClient,
+        contribution_id: str,
+        files: list[discdb.FileHashInfo],
+        fingerprint_files: list[discdb.DiscFingerprintFileInfo],
+    ) -> tuple[str, str | None]:
+        calls.append(("hash", contribution_id))
+        return "CONTENT_HASH", "f" * 64
+
+    def fake_create_disc(
+        self: discdb.DiscDbContributionClient, *args: object, **kwargs: object
+    ) -> str:
+        calls.append(("create", args, kwargs))
+        return "DISC_ID"
+
+    def fake_upload_logs(
+        self: discdb.DiscDbContributionClient,
+        contribution_id: str,
+        disc_id: str,
+        logs: str,
+    ) -> None:
+        calls.append(("upload", contribution_id, disc_id))
+
+    def fake_upload_status(
+        self: discdb.DiscDbContributionClient, disc_id: str
+    ) -> tuple[bool, str | None]:
+        return True, None
+
+    def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(client_class, "hash_disc", fake_hash_disc)
+    monkeypatch.setattr(client_class, "create_disc", fake_create_disc)
+    monkeypatch.setattr(client_class, "upload_logs", fake_upload_logs)
+    monkeypatch.setattr(client_class, "upload_status", fake_upload_status)
+    monkeypatch.setattr(discdb.time, "sleep", fake_sleep)
 
     disc_id, url = discdb.submit_contribution_bundle(
         manifest,
@@ -651,13 +666,7 @@ def test_direct_submission_uses_hash_create_upload_and_status(
 
     default_create = calls[1]
     calls.clear()
-    monkeypatch.setattr(
-        client_class,
-        "create_disc",
-        lambda self, *args, **kwargs: (
-            calls.append(("create", args, kwargs)) or "DISC_ID"
-        ),
-    )
+    monkeypatch.setattr(client_class, "create_disc", fake_create_disc)
 
     discdb.submit_contribution_bundle(
         manifest,
@@ -680,13 +689,13 @@ def test_contribution_mutations_use_authenticated_contribution_schema(
     captured: dict[str, Any] = {}
 
     def post(
-        _self,
-        _query,
-        _variables,
+        _self: DiscDbClient,
+        _query: str,
+        _variables: dict[str, Any],
         *,
-        cookie=None,
-        url=None,
-    ):
+        cookie: str | None = None,
+        url: str | None = None,
+    ) -> dict[str, Any]:
         captured.update(cookie=cookie, url=url, variables=_variables)
         return {
             "hashDisc": {
@@ -729,7 +738,11 @@ def test_discdb_cli_options_default_to_opt_in(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     state = RuntimeState()
-    monkeypatch.setattr(cli, "load_settings", lambda: {})
+
+    def fake_load_settings() -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(cli, "load_settings", fake_load_settings)
     args = cli._build_arg_parser().parse_args([str(tmp_path)])
 
     cli._apply_parsed_args(args, state)
@@ -818,11 +831,11 @@ def test_cli_lookup_failure_is_nonfatal(
 ):
     title = make_title(0, tmp_path / "00800.mpls", 3600, playlist="00800")
     state = RuntimeState(discdb_options=DiscDbOptions(enabled=True))
-    monkeypatch.setattr(
-        DiscDbClient,
-        "lookup",
-        lambda *_args: (_ for _ in ()).throw(discdb.DiscDbError("service unavailable")),
-    )
+
+    def failing_lookup(*_args: object) -> NoReturn:
+        raise discdb.DiscDbError("service unavailable")
+
+    monkeypatch.setattr(DiscDbClient, "lookup", failing_lookup)
 
     cli._apply_discdb_lookup([title], DiscMetadata(), state)
 
@@ -840,9 +853,13 @@ def test_cli_episode_actions_include_remote_episodes(
     remote_episode.discdb_episode_number = 2
     state = RuntimeState()
     ripped: list[list[Title]] = []
-    monkeypatch.setattr(
-        cli, "_rip_title_batch", lambda titles, _state: ripped.append(titles)
-    )
+
+    def fake_rip_title_batch(
+        titles: list[Title], _state: RuntimeState | None = None
+    ) -> None:
+        ripped.append(titles)
+
+    monkeypatch.setattr(cli, "_rip_title_batch", fake_rip_title_batch)
 
     cli._rip_episode_batch([remote_episode, local_episode], state)
 
@@ -862,16 +879,16 @@ def test_manual_contribution_preparation_does_not_open_browser(
         )
     )
     built: list[Path] = []
-    monkeypatch.setattr(
-        discdb,
-        "build_contribution_bundle",
-        lambda *_args: built.append(tmp_path / "bundle") or tmp_path / "bundle",
-    )
-    monkeypatch.setattr(
-        discdb,
-        "open_contribution_url",
-        lambda *_args: (_ for _ in ()).throw(AssertionError),
-    )
+
+    def fake_build_bundle(*_args: object) -> Path:
+        built.append(tmp_path / "bundle")
+        return tmp_path / "bundle"
+
+    def fail_open_url(*_args: object) -> NoReturn:
+        raise AssertionError
+
+    monkeypatch.setattr(discdb, "build_contribution_bundle", fake_build_bundle)
+    monkeypatch.setattr(discdb, "open_contribution_url", fail_open_url)
 
     cli._prepare_discdb_contribution(tmp_path, [title], DiscMetadata(), state)
 
@@ -890,23 +907,36 @@ def test_main_exits_after_contribution_without_rip(
     )
     prepared: list[Path] = []
     monkeypatch.setattr(cli, "RUNTIME_STATE", state)
-    monkeypatch.setattr(
-        cli,
-        "_initialize_cli",
-        lambda _state: (tmp_path, "interactive", None, None, None),
-    )
-    monkeypatch.setattr(cli, "_configure_runtime", lambda _state: None)
-    monkeypatch.setattr(
-        cli, "_scan_source", lambda _source, _state: ([], DiscMetadata())
-    )
-    monkeypatch.setattr(
-        cli,
-        "_prepare_discdb_contribution",
-        lambda source, _titles, _metadata, _runtime_state: prepared.append(source),
-    )
-    monkeypatch.setattr(
-        cli, "_run_action", lambda *_args: (_ for _ in ()).throw(AssertionError)
-    )
+
+    def fake_initialize_cli(
+        _state: RuntimeState | None = None,
+    ) -> tuple[Path | None, str, int | None, list[str] | None, list[int] | None]:
+        return tmp_path, "interactive", None, None, None
+
+    def fake_configure_runtime(_state: RuntimeState | None = None) -> None:
+        return None
+
+    def fake_scan_source(
+        _source: Path, _state: RuntimeState | None = None
+    ) -> tuple[list[Title], DiscMetadata | None]:
+        return [], DiscMetadata()
+
+    def fake_prepare_contribution(
+        source: Path,
+        _titles: list[Title],
+        _metadata: DiscMetadata | None,
+        _runtime_state: RuntimeState,
+    ) -> None:
+        prepared.append(source)
+
+    def fail_run_action(*_args: object) -> NoReturn:
+        raise AssertionError
+
+    monkeypatch.setattr(cli, "_initialize_cli", fake_initialize_cli)
+    monkeypatch.setattr(cli, "_configure_runtime", fake_configure_runtime)
+    monkeypatch.setattr(cli, "_scan_source", fake_scan_source)
+    monkeypatch.setattr(cli, "_prepare_discdb_contribution", fake_prepare_contribution)
+    monkeypatch.setattr(cli, "_run_action", fail_run_action)
 
     with pytest.raises(SystemExit) as exc_info:
         cli.main()
@@ -923,7 +953,7 @@ def test_iso_aacs_identifier_uses_bounded_extraction(
     unit_key.write_bytes(b"iso unit key")
     extracted: list[tuple[Path, str, dict[str, Any]]] = []
 
-    def extract(iso_path, internal_path, **kwargs):
+    def extract(iso_path: Path, internal_path: str, **kwargs: object) -> Path:
         extracted.append((iso_path, internal_path, kwargs))
         return unit_key
 
@@ -980,13 +1010,19 @@ def test_direct_mounted_bluray_receives_aacs_identifier(
     (mount / "AACS").mkdir()
     (mount / "AACS" / "Unit_Key_RO.inf").write_bytes(b"mounted unit key")
     scanner = scan.Scanner(source, scan.Config(no_sudo=False), RuntimeState())
-    monkeypatch.setattr(
-        "disc_reader._try_direct_mount", lambda *_args, **_kwargs: mount
-    )
-    monkeypatch.setattr(
-        scan, "_scan_bluray_source", lambda *_args: ([], DiscMetadata())
-    )
-    monkeypatch.setattr(scanner, "_add_matrix256_fingerprint", lambda *_args: None)
+
+    def fake_direct_mount(*_args: object, **_kwargs: object) -> Path:
+        return mount
+
+    def fake_scan_bluray_source(*_args: object) -> tuple[list[Title], DiscMetadata]:
+        return [], DiscMetadata()
+
+    def skip_fingerprint(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr("disc_reader._try_direct_mount", fake_direct_mount)
+    monkeypatch.setattr(scan, "_scan_bluray_source", fake_scan_bluray_source)
+    monkeypatch.setattr(scanner, "_add_matrix256_fingerprint", skip_fingerprint)
 
     scanner._scan_iso_mount()
 

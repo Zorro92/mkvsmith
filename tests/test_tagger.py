@@ -212,10 +212,14 @@ def test_display_preview_uses_rich_renderer(
 ) -> None:
     monkeypatch.setattr(models, "HAS_RICH", True)
     rendered: list[list[tuple[str, str]]] = []
+
+    def record_rows(rows: list[tuple[str, str]]) -> None:
+        rendered.append(rows)
+
     monkeypatch.setattr(
         tagger,
         "_print_rich_metadata_rows",
-        lambda rows: rendered.append(rows),
+        record_rows,
     )
     client = TmdbClient("test-key")
 
@@ -238,7 +242,10 @@ def test_tagging_search_title_respects_overrides(
         2020,
     )
 
-    monkeypatch.setattr(tagger, "sanitize_title", lambda _name: ("Clean Title", 2000))
+    def fake_sanitize_title(_name: str) -> tuple[str, int]:
+        return ("Clean Title", 2000)
+
+    monkeypatch.setattr(tagger, "sanitize_title", fake_sanitize_title)
     year_override = TagOptions(year_override=1999)
 
     assert tagger._tagging_search_title("movie.2000.mkv", year_override) == (
@@ -253,26 +260,40 @@ def test_fetch_and_confirm_metadata_uses_search_and_options(
     client = TmdbClient("test-key")
     metadata = MovieMetadata(title="Fetched")
     opts = TagOptions(region="CA", language="fr", confirm=False)
-    calls: list[Any] = []
+    calls: list[tuple[object, ...]] = []
+
+    def fake_get_movie_id(
+        title: str, year: int | None = None, *a: object, **k: object
+    ) -> int:
+        calls.append(("movie-id", title, year, "", None))
+        return 42
+
+    def fake_get_metadata(
+        movie_id: int,
+        props: list[str],
+        region: str = "US",
+        language: str | None = None,
+    ) -> MovieMetadata:
+        calls.append(("metadata", movie_id, None, region, language))
+        return metadata
+
+    def fake_display_preview(preview: MovieMetadata) -> None:
+        calls.append(("preview", preview.title, None, "", None))
 
     monkeypatch.setattr(
         client,
         "get_movie_id",
-        lambda title, year=None, *a, **k: (
-            calls.append(("movie-id", title, year, "", None)) or 42
-        ),
+        fake_get_movie_id,
     )
     monkeypatch.setattr(
         client,
         "get_metadata",
-        lambda movie_id, props, region="US", language=None: (
-            calls.append(("metadata", movie_id, None, region, language)) or metadata
-        ),
+        fake_get_metadata,
     )
     monkeypatch.setattr(
         client,
         "display_preview",
-        lambda preview: calls.append(("preview", preview.title, None, "", None)),
+        fake_display_preview,
     )
 
     result = tagger._fetch_and_confirm_metadata(client, "Search Title", 1984, opts)
@@ -292,10 +313,22 @@ def test_fetch_and_confirm_metadata_honours_user_cancellation(
     metadata = MovieMetadata(title="Cancelled")
     opts = TagOptions(confirm=True)
     previews: list[MovieMetadata] = []
-    monkeypatch.setattr(client, "get_movie_id", lambda _t, _y=None, *a, **k: 42)
-    monkeypatch.setattr(client, "get_metadata", lambda *_args, **_kwargs: metadata)
+
+    def fake_get_movie_id(
+        _t: str, _y: int | None = None, *a: object, **k: object
+    ) -> int:
+        return 42
+
+    def fake_get_metadata(*_args: object, **_kwargs: object) -> MovieMetadata:
+        return metadata
+
+    def fake_tag_confirm(_prompt: str, *a: object, **k: object) -> bool:
+        return False
+
+    monkeypatch.setattr(client, "get_movie_id", fake_get_movie_id)
+    monkeypatch.setattr(client, "get_metadata", fake_get_metadata)
     monkeypatch.setattr(client, "display_preview", previews.append)
-    monkeypatch.setattr(tagger, "_tag_confirm", lambda _prompt, *a, **k: False)
+    monkeypatch.setattr(tagger, "_tag_confirm", fake_tag_confirm)
 
     assert tagger._fetch_and_confirm_metadata(client, "Title", None, opts) is None
     assert previews == [metadata]
@@ -308,12 +341,25 @@ def test_fetch_and_confirm_metadata_uses_injected_prompts(
     client = TmdbClient("test-key")
     metadata = MovieMetadata(title="Hooked")
     opts = TagOptions(confirm=True)
-    monkeypatch.setattr(client, "get_movie_id", lambda _t, _y=None, *a, **k: 42)
-    monkeypatch.setattr(client, "get_metadata", lambda *_a, **_k: metadata)
-    monkeypatch.setattr(client, "display_preview", lambda _p: None)
-    monkeypatch.setattr(
-        builtins, "input", lambda _p: (_ for _ in ()).throw(AssertionError())
-    )
+
+    def fake_get_movie_id(
+        _t: str, _y: int | None = None, *a: object, **k: object
+    ) -> int:
+        return 42
+
+    def fake_get_metadata(*_a: object, **_k: object) -> MovieMetadata:
+        return metadata
+
+    def fake_display_preview(_p: MovieMetadata) -> None:
+        return None
+
+    def forbidden_input(_p: object) -> str:
+        raise AssertionError()
+
+    monkeypatch.setattr(client, "get_movie_id", fake_get_movie_id)
+    monkeypatch.setattr(client, "get_metadata", fake_get_metadata)
+    monkeypatch.setattr(client, "display_preview", fake_display_preview)
+    monkeypatch.setattr(builtins, "input", forbidden_input)
 
     approved = tagger._fetch_and_confirm_metadata(
         client, "Title", None, opts, models.UserPrompts(confirm=lambda _m: True)
@@ -369,11 +415,17 @@ def test_prepare_art_attachments_selects_and_downloads_requested_images(
 def test_prepare_tagging_skips_without_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tagger, "_resolve_tmdb_key", lambda _opts: None)
+    def no_tmdb_key(_opts: TagOptions) -> str | None:
+        return None
+
+    def forbidden_client(_key: str) -> TmdbClient:
+        raise AssertionError
+
+    monkeypatch.setattr(tagger, "_resolve_tmdb_key", no_tmdb_key)
     monkeypatch.setattr(
         tagger,
         "TmdbClient",
-        lambda _key: (_ for _ in ()).throw(AssertionError),
+        forbidden_client,
     )
 
     assert tagger._prepare_tagging("movie.mkv", TagOptions(), []) == (None, [])
@@ -429,7 +481,10 @@ def test_prepare_tagging_fetches_metadata_and_artwork(
             assert image_path == "/poster.jpg"
             return b"image"
 
-    monkeypatch.setattr(tagger, "_resolve_tmdb_key", lambda _opts: "test-key")
+    def fake_tmdb_key(_opts: TagOptions) -> str | None:
+        return "test-key"
+
+    monkeypatch.setattr(tagger, "_resolve_tmdb_key", fake_tmdb_key)
     monkeypatch.setattr(tagger, "TmdbClient", FakeTaggingClient)
 
     result_metadata, attachments = tagger._prepare_tagging(

@@ -18,6 +18,7 @@ import sys
 import tempfile
 from collections.abc import Sequence
 from collections.abc import Callable
+from typing import Protocol
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -525,19 +526,19 @@ def _register_safe_link(link: Path, symlinks: list[Path] | None) -> None:
         symlinks.append(link)
 
 
-_SAFE_LINK_DIR: Path | None = None
+_safe_link_dir_cache: Path | None = None
 
 
 def _safe_link_dir() -> Path | None:
     """Private per-process temp dir for 7z-safe symlinks (never raises)."""
-    global _SAFE_LINK_DIR
-    if _SAFE_LINK_DIR is None:
+    global _safe_link_dir_cache
+    if _safe_link_dir_cache is None:
         try:
-            _SAFE_LINK_DIR = Path(tempfile.mkdtemp(prefix="mkv_safepath_"))
-            RUNTIME_STATE.cleanup.register_temp_dir(_SAFE_LINK_DIR)
+            _safe_link_dir_cache = Path(tempfile.mkdtemp(prefix="mkv_safepath_"))
+            RUNTIME_STATE.cleanup.register_temp_dir(_safe_link_dir_cache)
         except OSError:
             return None
-    return _SAFE_LINK_DIR
+    return _safe_link_dir_cache
 
 
 # =============================================================================
@@ -781,7 +782,17 @@ def _stop_7z_process(process: subprocess.Popen[bytes]) -> None:
         pass
 
 
-def _copy_bounded_stdout(stdout, output_file, limit: int) -> None:
+class _ByteReader(Protocol):
+    def read(self, size: int, /) -> bytes: ...
+
+
+class _ByteWriter(Protocol):
+    def write(self, data: bytes, /) -> object: ...
+
+
+def _copy_bounded_stdout(
+    stdout: _ByteReader, output_file: _ByteWriter, limit: int
+) -> None:
     bytes_read = 0
     while True:
         chunk = stdout.read(1024 * 1024)

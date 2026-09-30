@@ -5,7 +5,8 @@ from __future__ import annotations
 import builtins
 import copy
 from pathlib import Path
-from typing import Any
+from collections.abc import Iterator
+from typing import NoReturn
 
 import pytest
 
@@ -18,7 +19,7 @@ from models import Config, DiscMetadata, RuntimeState, Stream, StreamType, Title
 
 
 @pytest.fixture
-def preserved_cli_state():
+def preserved_cli_state() -> Iterator[None]:
     runtime_state = models.RUNTIME_STATE
     config_state = copy.deepcopy(runtime_state.config.__dict__)
     tag_state = copy.deepcopy(runtime_state.tag_options.__dict__)
@@ -58,8 +59,13 @@ def make_ripper(tmp_path: Path) -> _InteractiveRipper:
 
 
 @pytest.mark.usefixtures("preserved_cli_state")
-def test_interactive_tag_state_resolves_availability(monkeypatch: Any) -> None:
-    monkeypatch.setattr(tagger, "_resolve_tmdb_key", lambda _opts: "tmdb-key")
+def test_interactive_tag_state_resolves_availability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_resolve_tmdb_key(_opts: models.TagOptions) -> str:
+        return "tmdb-key"
+
+    monkeypatch.setattr(tagger, "_resolve_tmdb_key", fake_resolve_tmdb_key)
     models.RUNTIME_STATE.tag_options.enabled = False
     models.RUNTIME_STATE.tag_options.no_tag = False
     models.RUNTIME_STATE.tag_options.art = None
@@ -70,9 +76,17 @@ def test_interactive_tag_state_resolves_availability(monkeypatch: Any) -> None:
 
 
 @pytest.mark.usefixtures("preserved_cli_state")
-def test_interactive_tag_prepare_prompts_when_available(monkeypatch: Any) -> None:
-    monkeypatch.setattr(tagger, "_tag_confirm", lambda _prompt, *a, **k: True)
-    monkeypatch.setattr(tagger, "_prompt_art_choice", lambda *a, **k: "poster")
+def test_interactive_tag_prepare_prompts_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def confirm_yes(_prompt: str, *_args: object, **_kwargs: object) -> bool:
+        return True
+
+    def choose_poster(*_args: object, **_kwargs: object) -> str:
+        return "poster"
+
+    monkeypatch.setattr(tagger, "_tag_confirm", confirm_yes)
+    monkeypatch.setattr(tagger, "_prompt_art_choice", choose_poster)
     models.RUNTIME_STATE.tag_options.enabled = False
     models.RUNTIME_STATE.tag_options.art = None
     state = _InteractiveTagState(False, True, None)
@@ -84,14 +98,19 @@ def test_interactive_tag_prepare_prompts_when_available(monkeypatch: Any) -> Non
 
 
 @pytest.mark.usefixtures("preserved_cli_state")
-def test_interactive_tag_flag_skips_prompts(monkeypatch: Any) -> None:
+def test_interactive_tag_flag_skips_prompts(monkeypatch: pytest.MonkeyPatch) -> None:
     prompts: list[str] = []
-    monkeypatch.setattr(
-        tagger, "_tag_confirm", lambda prompt, *a, **k: prompts.append(prompt) or False
-    )
-    monkeypatch.setattr(
-        tagger, "_prompt_art_choice", lambda *a, **k: prompts.append("art") or ""
-    )
+
+    def record_confirm(prompt: str, *_args: object, **_kwargs: object) -> bool:
+        prompts.append(prompt)
+        return False
+
+    def record_art_choice(*_args: object, **_kwargs: object) -> str:
+        prompts.append("art")
+        return ""
+
+    monkeypatch.setattr(tagger, "_tag_confirm", record_confirm)
+    monkeypatch.setattr(tagger, "_prompt_art_choice", record_art_choice)
     models.RUNTIME_STATE.tag_options.enabled = False
     models.RUNTIME_STATE.tag_options.art = "both"
     state = _InteractiveTagState(True, True, "both")
@@ -104,15 +123,16 @@ def test_interactive_tag_flag_skips_prompts(monkeypatch: Any) -> None:
 
 
 def test_interactive_edition_groups_only_detects_in_debug(
-    monkeypatch: Any, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     titles = [make_title(0), make_title(1)]
     calls: list[list[Title]] = []
-    monkeypatch.setattr(
-        scan,
-        "_detect_edition_groups",
-        lambda detected: calls.append(detected) or [titles],
-    )
+
+    def record_detect(detected: list[Title]) -> list[list[Title]]:
+        calls.append(detected)
+        return [titles]
+
+    monkeypatch.setattr(scan, "_detect_edition_groups", record_detect)
     assert cli._interactive_edition_groups(titles, debug=False) == []
     assert calls == []
 
@@ -136,15 +156,15 @@ def test_multi_edition_indices_parses_and_auto_selects(
 
 
 def test_rip_command_accepts_attached_and_separated_forms(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ripper = make_ripper(tmp_path)
     calls: list[tuple[int, list[str] | None]] = []
-    monkeypatch.setattr(
-        ripper,
-        "rip_index",
-        lambda idx, stream_ids=None: calls.append((idx, stream_ids)),
-    )
+
+    def record_rip(idx: int, stream_ids: list[str] | None = None) -> None:
+        calls.append((idx, stream_ids))
+
+    monkeypatch.setattr(ripper, "rip_index", record_rip)
 
     ripper._handle_rip_command("r", ["1", "v:0"])
     ripper._handle_rip_command("r2", ["a:0"])
@@ -154,21 +174,22 @@ def test_rip_command_accepts_attached_and_separated_forms(
 
 
 def test_dispatch_supports_details_rip_and_quit(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     titles = [make_title(0)]
     ripper = make_ripper(tmp_path)
     ripper.titles = titles
     details: list[Title] = []
     rip_calls: list[tuple[int, list[str] | None]] = []
-    monkeypatch.setattr(
-        cli, "display_title_details", lambda title: details.append(title)
-    )
-    monkeypatch.setattr(
-        ripper,
-        "rip_index",
-        lambda idx, stream_ids=None: rip_calls.append((idx, stream_ids)),
-    )
+
+    def record_details(title: Title) -> None:
+        details.append(title)
+
+    def record_rip(idx: int, stream_ids: list[str] | None = None) -> None:
+        rip_calls.append((idx, stream_ids))
+
+    monkeypatch.setattr(cli, "display_title_details", record_details)
+    monkeypatch.setattr(ripper, "rip_index", record_rip)
 
     assert ripper._dispatch("0", []) is True
     assert ripper._dispatch("r", ["0", "v:0"]) is True
@@ -179,22 +200,25 @@ def test_dispatch_supports_details_rip_and_quit(
 
 
 def test_interactive_run_dispatches_until_quit(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ripper = make_ripper(tmp_path)
     title = make_title(0)
     ripper.titles = [title]
     rip_calls: list[tuple[int, list[str] | None]] = []
-    monkeypatch.setattr(ripper, "_print_prompt", lambda _has_episodes: None)
-    monkeypatch.setattr(
-        ripper,
-        "rip_index",
-        lambda idx, stream_ids=None: rip_calls.append((idx, stream_ids)),
-    )
-    monkeypatch.setattr(
-        "builtins.input",
-        lambda _prompt: next(commands),
-    )
+
+    def skip_prompt(_has_episodes: bool) -> None:
+        return None
+
+    def record_rip(idx: int, stream_ids: list[str] | None = None) -> None:
+        rip_calls.append((idx, stream_ids))
+
+    def scripted_input(_prompt: str) -> str:
+        return next(commands)
+
+    monkeypatch.setattr(ripper, "_print_prompt", skip_prompt)
+    monkeypatch.setattr(ripper, "rip_index", record_rip)
+    monkeypatch.setattr("builtins.input", scripted_input)
 
     commands = iter(["r 0 v:0", "bogus", "quit"])
 
@@ -203,10 +227,19 @@ def test_interactive_run_dispatches_until_quit(
     assert rip_calls == [(0, ["v:0"])]
 
 
-def test_interactive_tag_state_uses_injected_options(monkeypatch: Any) -> None:
+def test_interactive_tag_state_uses_injected_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     options = models.TagOptions(enabled=False, art=None)
-    monkeypatch.setattr(tagger, "_tag_confirm", lambda _prompt, *a, **k: True)
-    monkeypatch.setattr(tagger, "_prompt_art_choice", lambda *a, **k: "poster")
+
+    def confirm_yes(_prompt: str, *_args: object, **_kwargs: object) -> bool:
+        return True
+
+    def choose_poster(*_args: object, **_kwargs: object) -> str:
+        return "poster"
+
+    monkeypatch.setattr(tagger, "_tag_confirm", confirm_yes)
+    monkeypatch.setattr(tagger, "_prompt_art_choice", choose_poster)
     state = _InteractiveTagState(False, True, None, options=options)
 
     state.prepare_for_rip()
@@ -218,7 +251,7 @@ def test_interactive_tag_state_uses_injected_options(monkeypatch: Any) -> None:
 
 @pytest.mark.usefixtures("preserved_cli_state")
 def test_interactive_tag_prepare_forwards_injected_prompts(
-    monkeypatch: Any, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Per-rip tagging answers via hooks instead of reading stdin."""
     options = models.TagOptions(enabled=False, art=None)
@@ -227,9 +260,11 @@ def test_interactive_tag_prepare_forwards_injected_prompts(
         confirm=lambda message: seen.append(message) or True,
         text=lambda _prompt, _default: "1",
     )
-    monkeypatch.setattr(
-        builtins, "input", lambda _p: (_ for _ in ()).throw(AssertionError())
-    )
+
+    def reject_input(_p: str) -> NoReturn:
+        raise AssertionError()
+
+    monkeypatch.setattr(builtins, "input", reject_input)
     state = _InteractiveTagState(False, True, None, options=options, prompts=injected)
 
     state.prepare_for_rip()
@@ -242,15 +277,15 @@ def test_interactive_tag_prepare_forwards_injected_prompts(
 
 @pytest.mark.usefixtures("preserved_cli_state")
 def test_interactive_mode_uses_injected_runtime_state(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     runtime_state = RuntimeState(
         config=Config(output_dir=tmp_path), tag_options=models.TagOptions()
     )
     title = make_title(0)
-    displayed: list[tuple[list[Title], str | None]] = []
+    displayed: list[tuple[list[Title], DiscMetadata | None]] = []
     creators: list[cli.MKVCreator] = []
-    rippers: list[Any] = []
+    rippers: list[_FakeRipper] = []
 
     class _FakeRipper:
         def __init__(
@@ -272,28 +307,34 @@ def test_interactive_mode_uses_injected_runtime_state(
         def run(self) -> None:
             self.completed = True
 
-    monkeypatch.setattr(
-        cli,
-        "display_titles",
-        lambda titles, disc_name=None, config=None: displayed.append(
-            (titles, disc_name)
-        ),
-    )
-    monkeypatch.setattr(
-        cli.MKVCreator,
-        "__init__",
-        lambda self, output, tag_opts=None, runtime_state=None: (
-            creators.append(self)
-            or object.__setattr__(self, "out", output)
-            or object.__setattr__(self, "tag_opts", tag_opts)
-            or object.__setattr__(
-                self,
-                "cleanup",
-                runtime_state.cleanup if runtime_state else None,
-            )
-        ),
-    )
-    monkeypatch.setattr(tagger, "_resolve_tmdb_key", lambda _options: None)
+    def record_display(
+        titles: list[Title],
+        disc_name: DiscMetadata | None = None,
+        config: Config | None = None,
+    ) -> None:
+        displayed.append((titles, disc_name))
+
+    def fake_creator_init(
+        self: cli.MKVCreator,
+        output: Path,
+        tag_opts: models.TagOptions | None = None,
+        runtime_state: RuntimeState | None = None,
+    ) -> None:
+        creators.append(self)
+        object.__setattr__(self, "out", output)
+        object.__setattr__(self, "tag_opts", tag_opts)
+        object.__setattr__(
+            self,
+            "cleanup",
+            runtime_state.cleanup if runtime_state else None,
+        )
+
+    def no_tmdb_key(_options: models.TagOptions) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "display_titles", record_display)
+    monkeypatch.setattr(cli.MKVCreator, "__init__", fake_creator_init)
+    monkeypatch.setattr(tagger, "_resolve_tmdb_key", no_tmdb_key)
     monkeypatch.setattr(cli, "_InteractiveRipper", _FakeRipper)
 
     metadata = DiscMetadata(name="Injected")
@@ -314,7 +355,7 @@ def test_interactive_mode_uses_injected_runtime_state(
 
 @pytest.mark.usefixtures("preserved_cli_state")
 def test_interactive_main_feature_falls_back_to_episodes(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """rm on a series disc rips the episodes instead of the star-scored
     title (which can be an unrelated bonus)."""

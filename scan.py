@@ -35,7 +35,10 @@ import tempfile
 from dataclasses import dataclass, replace
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, final
+from typing import TYPE_CHECKING, Any, final
+
+if TYPE_CHECKING:
+    from disc_reader import SourceType
 
 from bluray import (
     MplsStreamInfo,
@@ -1294,7 +1297,7 @@ class Scanner:
         self.disc_metadata = DiscMetadata()
         self.disc_name: str | None = None
 
-    def _scan_source_type(self, source_type) -> None:
+    def _scan_source_type(self, source_type: SourceType) -> None:
         from disc_reader import SourceType
 
         if source_type in (SourceType.DVD, SourceType.DVD_RAW):
@@ -1328,7 +1331,9 @@ class Scanner:
             self._add_discdb_identifiers(source_type)
             self._add_discdb_disc_hash(self.source)
 
-    def _add_discdb_identifiers(self, source_type, root: Path | None = None) -> None:
+    def _add_discdb_identifiers(
+        self, source_type: SourceType, root: Path | None = None
+    ) -> None:
         """Add format-specific identifiers used by TheDiscDB matching."""
         from disc_reader import SourceType
 

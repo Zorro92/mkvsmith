@@ -7,10 +7,10 @@ from pathlib import Path
 import disc_reader
 import dvdbuild
 import pytest
-from bluray import _parse_mpls
+from bluray import MplsStreamInfo, _parse_mpls
 import scan
 from dvdifo import VmgInfo
-from models import RuntimeState, Stream, StreamType, Title
+from models import Config, RuntimeState, Stream, StreamType, Title
 from scan import Scanner, _build_bluray_title_from_mpls
 
 
@@ -31,7 +31,9 @@ def test_dvd_iso_vob_maps_first_file_and_sorts_parts() -> None:
     }
 
 
-def test_scan_iso_7z_dispatches_bluray_by_playlist(monkeypatch, tmp_path: Path) -> None:
+def test_scan_iso_7z_dispatches_bluray_by_playlist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     scanner = Scanner(tmp_path / "movie.iso")
     calls: list[tuple[list[str], dict[str, int], list[str], list[str]]] = []
 
@@ -51,11 +53,13 @@ def test_scan_iso_7z_dispatches_bluray_by_playlist(monkeypatch, tmp_path: Path) 
         "BDMV/STREAM/00800.m2ts",
     ]
     sizes = {path: 1024 for path in paths}
-    monkeypatch.setattr(
-        disc_reader,
-        "_list_iso_files_7z",
-        lambda _source, symlinks=None: (paths, sizes),
-    )
+
+    def list_iso_files(
+        _source: Path, symlinks: list[Path] | None = None
+    ) -> tuple[list[str], dict[str, int]]:
+        return (paths, sizes)
+
+    monkeypatch.setattr(disc_reader, "_list_iso_files_7z", list_iso_files)
 
     scanner._scan_iso_7z()
 
@@ -77,12 +81,17 @@ def test_scan_iso_7z_omits_matrix256_when_size_is_missing(
 ) -> None:
     scanner = Scanner(tmp_path / "movie.iso")
     paths = ["BDMV/PLAYLIST/00800.mpls"]
-    monkeypatch.setattr(scanner, "_scan_iso_bluray", lambda *_args: None)
-    monkeypatch.setattr(
-        disc_reader,
-        "_list_iso_files_7z",
-        lambda _source, symlinks=None: (paths, {}),
-    )
+
+    def scan_bluray(*_args: object) -> None:
+        return None
+
+    def list_iso_files(
+        _source: Path, symlinks: list[Path] | None = None
+    ) -> tuple[list[str], dict[str, int]]:
+        return (paths, {})
+
+    monkeypatch.setattr(scanner, "_scan_iso_bluray", scan_bluray)
+    monkeypatch.setattr(disc_reader, "_list_iso_files_7z", list_iso_files)
 
     scanner._scan_iso_7z()
 
@@ -146,21 +155,27 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     build_calls: list[tuple[Path, Path, int, str]] = []
     alternate_calls: list[tuple[Title, Path, Path, str, int]] = []
 
-    monkeypatch.setattr(
-        disc_reader,
-        "_extract_with_7z",
-        lambda source, internal_paths, out_dir, symlinks=None: (
-            extraction_calls.append((source, internal_paths, out_dir)) or extracted_ifos
-        ),
-    )
-    monkeypatch.setattr(
-        disc_reader,
-        "_extract_partial_7z",
-        lambda source, internal_path, **_kwargs: (
-            partial_calls.append((source, internal_path)) or first_vob
-        ),
-    )
-    monkeypatch.setattr(scan, "_parse_vmg_ifo", lambda _path: vmg)
+    def extract_with_7z(
+        source: Path,
+        internal_paths: list[str],
+        out_dir: Path,
+        symlinks: list[Path] | None = None,
+    ) -> list[Path]:
+        extraction_calls.append((source, internal_paths, out_dir))
+        return extracted_ifos
+
+    def extract_partial_7z(
+        source: Path, internal_path: str, **_kwargs: object
+    ) -> Path | None:
+        partial_calls.append((source, internal_path))
+        return first_vob
+
+    def parse_vmg_ifo(_path: Path) -> VmgInfo:
+        return vmg
+
+    monkeypatch.setattr(disc_reader, "_extract_with_7z", extract_with_7z)
+    monkeypatch.setattr(disc_reader, "_extract_partial_7z", extract_partial_7z)
+    monkeypatch.setattr(scan, "_parse_vmg_ifo", parse_vmg_ifo)
 
     def build_title(
         titles: list[Title],
@@ -176,13 +191,18 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
         return Title(len(titles), source, title_name or "", 120.0)
 
     monkeypatch.setattr(scan, "_build_title_from_ifo", build_title)
-    monkeypatch.setattr(
-        scanner,
-        "_scan_iso_dvd_pgc_titles",
-        lambda default_title, ifo_path, source, title_name, vts, *_args: (
-            alternate_calls.append((default_title, ifo_path, source, title_name, vts))
-        ),
-    )
+
+    def scan_iso_dvd_pgc_titles(
+        default_title: Title,
+        ifo_path: Path,
+        source: Path,
+        title_name: str,
+        vts: int,
+        *_args: object,
+    ) -> None:
+        alternate_calls.append((default_title, ifo_path, source, title_name, vts))
+
+    monkeypatch.setattr(scanner, "_scan_iso_dvd_pgc_titles", scan_iso_dvd_pgc_titles)
 
     scanner._scan_iso_dvd(paths, sizes)
 
@@ -242,17 +262,25 @@ def test_scan_iso_dvd_exposes_episode_pgc_titles(
         extracted_ifo.write_bytes(b"mock IFO")
     first_vob = tmp_path / "probe.vob"
 
-    monkeypatch.setattr(
-        disc_reader,
-        "_extract_with_7z",
-        lambda _source, _internal_paths, _out_dir, symlinks=None: extracted_ifos,
-    )
-    monkeypatch.setattr(
-        disc_reader,
-        "_extract_partial_7z",
-        lambda _source, _internal_path, **_kwargs: first_vob,
-    )
-    monkeypatch.setattr(scan, "_parse_vmg_ifo", lambda _path: vmg)
+    def extract_with_7z(
+        _source: Path,
+        _internal_paths: list[str],
+        _out_dir: Path,
+        symlinks: list[Path] | None = None,
+    ) -> list[Path]:
+        return extracted_ifos
+
+    def extract_partial_7z(
+        _source: Path, _internal_path: str, **_kwargs: object
+    ) -> Path | None:
+        return first_vob
+
+    def parse_vmg_ifo(_path: Path) -> VmgInfo:
+        return vmg
+
+    monkeypatch.setattr(disc_reader, "_extract_with_7z", extract_with_7z)
+    monkeypatch.setattr(disc_reader, "_extract_partial_7z", extract_partial_7z)
+    monkeypatch.setattr(scan, "_parse_vmg_ifo", parse_vmg_ifo)
 
     def build_title(
         titles: list[Title],
@@ -276,9 +304,13 @@ def test_scan_iso_dvd_exposes_episode_pgc_titles(
         extras=[4],
         editions=[],
     )
-    monkeypatch.setattr(
-        scan, "_plan_dvd_pgc_titles", lambda _ifo_bytes, _config=None: plan
-    )
+
+    def plan_dvd_pgc_titles(
+        _ifo_bytes: bytes, _config: Config | None = None
+    ) -> dvdbuild._DvdPgcPlan:
+        return plan
+
+    monkeypatch.setattr(scan, "_plan_dvd_pgc_titles", plan_dvd_pgc_titles)
 
     scanner._scan_iso_dvd(paths, sizes)
 
@@ -302,8 +334,15 @@ def test_first_iso_playlist_clpi_reads_first_clip_name(
     playlist = tmp_path / "00800.mpls"
     playlist.write_bytes(b"MPLS" + bytes(8) + b"12345" + bytes(32))
     clpi = tmp_path / "12345.clpi"
-    monkeypatch.setattr(scan, "_read_u32", lambda _data, _offset: 0)
-    monkeypatch.setattr(scan, "_read_u16", lambda _data, _offset: 32)
+
+    def read_u32(_data: bytes, _offset: int) -> int:
+        return 0
+
+    def read_u16(_data: bytes, _offset: int) -> int:
+        return 32
+
+    monkeypatch.setattr(scan, "_read_u32", read_u32)
+    monkeypatch.setattr(scan, "_read_u16", read_u16)
 
     assert scan._first_iso_playlist_clpi(playlist, {"12345": clpi}) == clpi
     assert scan._first_iso_playlist_clpi(playlist, {}) is None
@@ -337,13 +376,17 @@ def test_build_iso_bluray_playlist_title_sets_source_metadata(
             "chapter_times": [0.0, 40.0, 120.0],
         }
 
-    monkeypatch.setattr(
-        scan,
-        "_first_iso_playlist_clpi",
-        lambda _playlist, _extracted: clpi_dir / "A.clpi",
-    )
+    def first_iso_playlist_clpi(
+        _playlist: Path, _extracted: dict[str, Path]
+    ) -> Path | None:
+        return clpi_dir / "A.clpi"
+
+    def streams_from_mpls(_streams: list[MplsStreamInfo]) -> list[Stream]:
+        return [stream]
+
+    monkeypatch.setattr(scan, "_first_iso_playlist_clpi", first_iso_playlist_clpi)
     monkeypatch.setattr(scan, "_parse_mpls", parse_mpls)
-    monkeypatch.setattr(scan, "_streams_from_mpls", lambda _streams: [stream])
+    monkeypatch.setattr(scan, "_streams_from_mpls", streams_from_mpls)
 
     title = scan._build_iso_bluray_playlist_title(
         playlist_path=playlist,
@@ -375,8 +418,12 @@ def test_build_iso_bluray_playlist_title_filters_short_and_streamless(
 ) -> None:
     playlist = tmp_path / "00800.mpls"
     playlist.write_bytes(b"MPLS")
-    info = {"play_items": [{"clip": "A", "duration": 10.0}]}
-    monkeypatch.setattr(scan, "_parse_mpls", lambda *_args, **_kwargs: info)
+    info: dict[str, object] = {"play_items": [{"clip": "A", "duration": 10.0}]}
+
+    def parse_mpls(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return info
+
+    monkeypatch.setattr(scan, "_parse_mpls", parse_mpls)
 
     assert (
         scan._build_iso_bluray_playlist_title(
@@ -391,7 +438,10 @@ def test_build_iso_bluray_playlist_title_filters_short_and_streamless(
         is None
     )
 
-    monkeypatch.setattr(scan, "_streams_from_mpls", lambda _streams: [])
+    def streams_from_mpls(_streams: list[MplsStreamInfo]) -> list[Stream]:
+        return []
+
+    monkeypatch.setattr(scan, "_streams_from_mpls", streams_from_mpls)
     assert (
         scan._build_iso_bluray_playlist_title(
             playlist_path=playlist,

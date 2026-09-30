@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import NoReturn
 
 import dvdifo
+import pytest
 import dvdbuild
 from cc608 import CC608_CODEC_SRT
 from dvdifo import VmgInfo
@@ -23,7 +24,9 @@ def _make_dvd_source(tmp_path: Path) -> Path:
     return source
 
 
-def _patch_title_builder(monkeypatch: Any) -> list[tuple[int | None, str | None]]:
+def _patch_title_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[int | None, str | None]]:
     calls: list[tuple[int | None, str | None]] = []
 
     def build_title(
@@ -46,23 +49,28 @@ def _patch_title_builder(monkeypatch: Any) -> list[tuple[int | None, str | None]
     return calls
 
 
-def test_plan_dvd_pgc_titles_episode_group(monkeypatch: Any) -> None:
-    monkeypatch.setattr(
-        dvdbuild, "_detect_episode_pgcs", lambda _data, _minimum: ([2, 3], 5)
-    )
-    monkeypatch.setattr(dvdbuild, "_default_pgc_number", lambda _data: 2)
-    monkeypatch.setattr(
-        dvdifo,
-        "_enumerate_vts_pgcs",
-        lambda _data: [
+def test_plan_dvd_pgc_titles_episode_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    def detect_episode_pgcs(
+        _data: bytes, _minimum: float
+    ) -> tuple[list[int], int | None]:
+        return ([2, 3], 5)
+
+    def default_pgc_number(_data: bytes) -> int | None:
+        return 2
+
+    def enumerate_vts_pgcs(_data: bytes) -> list[tuple[int, int, float, int]]:
+        return [
             (1, 0, 30.0, 1),
             (2, 0, 100.0, 1),
             (3, 0, 105.0, 1),
             (4, 0, 120.0, 1),
             (5, 0, 205.0, 1),
             (6, 0, 59.0, 1),
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(dvdbuild, "_detect_episode_pgcs", detect_episode_pgcs)
+    monkeypatch.setattr(dvdbuild, "_default_pgc_number", default_pgc_number)
+    monkeypatch.setattr(dvdifo, "_enumerate_vts_pgcs", enumerate_vts_pgcs)
 
     plan = dvdbuild._plan_dvd_pgc_titles(b"ifo")
 
@@ -75,15 +83,26 @@ def test_plan_dvd_pgc_titles_episode_group(monkeypatch: Any) -> None:
     assert plan.editions == []
 
 
-def test_plan_dvd_pgc_titles_alternate_editions(monkeypatch: Any) -> None:
+def test_plan_dvd_pgc_titles_alternate_editions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def detect_episode_pgcs(
+        _data: bytes, _minimum: float
+    ) -> tuple[list[int], int | None]:
+        return ([], None)
+
+    def default_pgc_number(_data: bytes) -> int | None:
+        return 1
+
+    def find_alternate_edition_pgcs(
+        _data: bytes, _minimum: float
+    ) -> list[tuple[int, bool]]:
+        return [(2, True), (3, False)]
+
+    monkeypatch.setattr(dvdbuild, "_detect_episode_pgcs", detect_episode_pgcs)
+    monkeypatch.setattr(dvdbuild, "_default_pgc_number", default_pgc_number)
     monkeypatch.setattr(
-        dvdbuild, "_detect_episode_pgcs", lambda _data, _minimum: ([], None)
-    )
-    monkeypatch.setattr(dvdbuild, "_default_pgc_number", lambda _data: 1)
-    monkeypatch.setattr(
-        dvdbuild,
-        "_find_alternate_edition_pgcs",
-        lambda _data, _minimum: [(2, True), (3, False)],
+        dvdbuild, "_find_alternate_edition_pgcs", find_alternate_edition_pgcs
     )
 
     plan = dvdbuild._plan_dvd_pgc_titles(b"ifo")
@@ -102,7 +121,7 @@ def test_plan_dvd_pgc_titles_empty_ifo() -> None:
 
 
 def test_scan_dvd_source_builds_episodes_play_all_and_extra(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = _make_dvd_source(tmp_path)
     vmg: VmgInfo = {
@@ -110,7 +129,11 @@ def test_scan_dvd_source_builds_episodes_play_all_and_extra(
         "barcode": "12345",
         "title_map": {7: (1, 1)},
     }
-    monkeypatch.setattr(dvdbuild, "_parse_vmg_ifo", lambda _path: vmg)
+
+    def parse_vmg_ifo(_path: Path) -> VmgInfo:
+        return vmg
+
+    monkeypatch.setattr(dvdbuild, "_parse_vmg_ifo", parse_vmg_ifo)
     calls = _patch_title_builder(monkeypatch)
     plan = dvdbuild._DvdPgcPlan(
         episode_pgcs=[1, 2],
@@ -119,9 +142,13 @@ def test_scan_dvd_source_builds_episodes_play_all_and_extra(
         extras=[4],
         editions=[],
     )
-    monkeypatch.setattr(
-        dvdbuild, "_plan_dvd_pgc_titles", lambda _ifo_bytes, _config=None: plan
-    )
+
+    def plan_dvd_pgc_titles(
+        _ifo_bytes: bytes, _config: Config | None = None
+    ) -> dvdbuild._DvdPgcPlan:
+        return plan
+
+    monkeypatch.setattr(dvdbuild, "_plan_dvd_pgc_titles", plan_dvd_pgc_titles)
 
     titles, metadata = dvdbuild._scan_dvd_source(source)
 
@@ -149,10 +176,14 @@ def test_scan_dvd_source_builds_episodes_play_all_and_extra(
 
 
 def test_scan_dvd_source_builds_alternate_editions(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = _make_dvd_source(tmp_path)
-    monkeypatch.setattr(dvdbuild, "_parse_vmg_ifo", lambda _path: VmgInfo())
+
+    def parse_vmg_ifo(_path: Path) -> VmgInfo:
+        return VmgInfo()
+
+    monkeypatch.setattr(dvdbuild, "_parse_vmg_ifo", parse_vmg_ifo)
     _patch_title_builder(monkeypatch)
     plan = dvdbuild._DvdPgcPlan(
         episode_pgcs=[],
@@ -161,9 +192,13 @@ def test_scan_dvd_source_builds_alternate_editions(
         extras=[],
         editions=[(2, True), (3, True)],
     )
-    monkeypatch.setattr(
-        dvdbuild, "_plan_dvd_pgc_titles", lambda _ifo_bytes, _config=None: plan
-    )
+
+    def plan_dvd_pgc_titles(
+        _ifo_bytes: bytes, _config: Config | None = None
+    ) -> dvdbuild._DvdPgcPlan:
+        return plan
+
+    monkeypatch.setattr(dvdbuild, "_plan_dvd_pgc_titles", plan_dvd_pgc_titles)
 
     titles, metadata = dvdbuild._scan_dvd_source(source)
 
@@ -186,18 +221,17 @@ def test_build_dvd_streams_rejects_invalid_ifo() -> None:
 
 
 def test_build_dvd_streams_uses_vts_attribute_table_and_pgc_languages(
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
-    monkeypatch.setattr(
-        dvdbuild,
-        "_get_active_pgc_streams",
-        lambda _data, _pgc_number: ({0x81}, {0x21}),
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_video_attrs",
-        lambda _data: dvdifo._IFOVideoAttrs(
+
+    def get_active_pgc_streams(
+        _data: bytes, _pgc_number: int | None
+    ) -> tuple[set[int], set[int]]:
+        return ({0x81}, {0x21})
+
+    def parse_vts_video_attrs(_data: bytes) -> dvdifo._IFOVideoAttrs | None:
+        return dvdifo._IFOVideoAttrs(
             mpeg_version="MPEG-2",
             standard="NTSC",
             aspect_ratio="16:9",
@@ -206,25 +240,23 @@ def test_build_dvd_streams_uses_vts_attribute_table_and_pgc_languages(
             film_mode=False,
             cc_field_1=False,
             cc_field_2=False,
-        ),
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_ifo_languages",
-        lambda _data: (
+        )
+
+    def parse_vts_ifo_languages(
+        _data: bytes,
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return (
             {0x80: "und", 0x81: "fra"},
             {0x20: "und", 0x21: "eng"},
-        ),
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_pgc_stream_languages",
-        lambda _data, _pgc_number: ({0x81: "eng"}, {0x21: "fre"}),
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_audio_attrs",
-        lambda _data: {
+        )
+
+    def parse_pgc_stream_languages(
+        _data: bytes, _pgc_number: int | None
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return ({0x81: "eng"}, {0x21: "fre"})
+
+    def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
+        return {
             0x81: dvdifo._IFOAudioAttrs(
                 codec="DTS",
                 channels=6,
@@ -235,25 +267,32 @@ def test_build_dvd_streams_uses_vts_attribute_table_and_pgc_languages(
                 code_extension=2,
                 lang_code="eng",
             )
-        },
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_ifo_audio_title",
-        lambda _attrs: "DTS 5.1",
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_subp_attrs",
-        lambda _data: {
+        }
+
+    def ifo_audio_title(_attrs: dvdifo._IFOAudioAttrs | None) -> str | None:
+        return "DTS 5.1"
+
+    def parse_vts_subp_attrs(
+        _data: bytes,
+    ) -> dict[int, dvdifo._IFOSubpictureAttrs]:
+        return {
             0x21: dvdifo._IFOSubpictureAttrs(
                 coding_mode="run-length",
                 code_extension=9,
                 lang_code="fre",
                 is_hearing_impaired=True,
             )
-        },
+        }
+
+    monkeypatch.setattr(dvdbuild, "_get_active_pgc_streams", get_active_pgc_streams)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
+    monkeypatch.setattr(
+        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
     )
+    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", parse_vts_audio_attrs)
+    monkeypatch.setattr(dvdbuild, "_ifo_audio_title", ifo_audio_title)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", parse_vts_subp_attrs)
 
     streams = dvdbuild._build_dvd_streams_from_ifo(ifo_data, 100.0, 2)
 
@@ -300,31 +339,49 @@ def test_build_dvd_streams_uses_vts_attribute_table_and_pgc_languages(
     assert forced_subtitle.type_index == 1
 
 
-def test_build_dvd_streams_uses_vts_language_ids(monkeypatch: Any) -> None:
+def test_build_dvd_streams_uses_vts_language_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
-    monkeypatch.setattr(
-        dvdbuild, "_get_active_pgc_streams", lambda _data, _pgc: (set(), set())
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_video_attrs",
-        lambda _data: None,
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_ifo_languages",
-        lambda _data: (
+
+    def get_active_pgc_streams(
+        _data: bytes, _pgc: int | None
+    ) -> tuple[set[int], set[int]]:
+        return (set(), set())
+
+    def parse_vts_video_attrs(_data: bytes) -> dvdifo._IFOVideoAttrs | None:
+        return None
+
+    def parse_vts_ifo_languages(
+        _data: bytes,
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return (
             {0x81: "eng", 0x80: "und"},
             {0x21: "fre", 0x20: "und"},
-        ),
-    )
+        )
+
+    def parse_pgc_stream_languages(
+        _data: bytes, _pgc: int | None
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return ({}, {})
+
+    monkeypatch.setattr(dvdbuild, "_get_active_pgc_streams", get_active_pgc_streams)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
     monkeypatch.setattr(
-        dvdbuild,
-        "_parse_pgc_stream_languages",
-        lambda _data, _pgc: ({}, {}),
+        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
     )
-    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", lambda _data: {})
-    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", lambda _data: {})
+
+    def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
+        return {}
+
+    def parse_vts_subp_attrs(
+        _data: bytes,
+    ) -> dict[int, dvdifo._IFOSubpictureAttrs]:
+        return {}
+
+    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", parse_vts_audio_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", parse_vts_subp_attrs)
 
     streams = dvdbuild._build_dvd_streams_from_ifo(ifo_data, 100.0)
 
@@ -345,29 +402,47 @@ def test_build_dvd_streams_uses_vts_language_ids(monkeypatch: Any) -> None:
     assert streams[1].channels == 2
 
 
-def test_build_dvd_streams_falls_back_to_pgc_active_ids(monkeypatch: Any) -> None:
+def test_build_dvd_streams_falls_back_to_pgc_active_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When the attribute tables yield no IDs, the PGC active set is used."""
     ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
+
+    def get_active_pgc_streams(
+        _data: bytes, _pgc: int | None
+    ) -> tuple[set[int], set[int]]:
+        return ({0x81}, {0x21})
+
+    def parse_vts_video_attrs(_data: bytes) -> dvdifo._IFOVideoAttrs | None:
+        return None
+
+    def parse_vts_ifo_languages(
+        _data: bytes,
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return ({}, {})
+
+    def parse_pgc_stream_languages(
+        _data: bytes, _pgc: int | None
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return ({}, {})
+
+    monkeypatch.setattr(dvdbuild, "_get_active_pgc_streams", get_active_pgc_streams)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
     monkeypatch.setattr(
-        dvdbuild, "_get_active_pgc_streams", lambda _data, _pgc: ({0x81}, {0x21})
+        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
     )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_video_attrs",
-        lambda _data: None,
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_ifo_languages",
-        lambda _data: ({}, {}),
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_pgc_stream_languages",
-        lambda _data, _pgc: ({}, {}),
-    )
-    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", lambda _data: {})
-    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", lambda _data: {})
+
+    def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
+        return {}
+
+    def parse_vts_subp_attrs(
+        _data: bytes,
+    ) -> dict[int, dvdifo._IFOSubpictureAttrs]:
+        return {}
+
+    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", parse_vts_audio_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", parse_vts_subp_attrs)
 
     streams = dvdbuild._build_dvd_streams_from_ifo(ifo_data, 100.0)
 
@@ -375,10 +450,14 @@ def test_build_dvd_streams_falls_back_to_pgc_active_ids(monkeypatch: Any) -> Non
 
 
 def test_scan_dvd_source_labels_plain_pgcs_not_editions(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = _make_dvd_source(tmp_path)
-    monkeypatch.setattr(dvdbuild, "_parse_vmg_ifo", lambda _path: VmgInfo())
+
+    def parse_vmg_ifo(_path: Path) -> VmgInfo:
+        return VmgInfo()
+
+    monkeypatch.setattr(dvdbuild, "_parse_vmg_ifo", parse_vmg_ifo)
     _patch_title_builder(monkeypatch)
     plan = dvdbuild._DvdPgcPlan(
         episode_pgcs=[],
@@ -387,9 +466,13 @@ def test_scan_dvd_source_labels_plain_pgcs_not_editions(
         extras=[],
         editions=[(2, True), (3, False), (4, True)],
     )
-    monkeypatch.setattr(
-        dvdbuild, "_plan_dvd_pgc_titles", lambda _ifo_bytes, _config=None: plan
-    )
+
+    def plan_dvd_pgc_titles(
+        _ifo_bytes: bytes, _config: Config | None = None
+    ) -> dvdbuild._DvdPgcPlan:
+        return plan
+
+    monkeypatch.setattr(dvdbuild, "_plan_dvd_pgc_titles", plan_dvd_pgc_titles)
 
     titles, _metadata = dvdbuild._scan_dvd_source(source)
 
@@ -410,7 +493,7 @@ def test_scan_dvd_source_labels_plain_pgcs_not_editions(
 
 
 def test_apply_dvd_ifo_languages_updates_streams_and_timing(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ifo_path = tmp_path / "VTS_01_0.IFO"
     ifo_data = b"DVDVIDEO-VTS"
@@ -479,27 +562,42 @@ def test_apply_dvd_ifo_languages_updates_streams_and_timing(
             is_hearing_impaired=False,
         )
     }
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_ifo_languages",
-        lambda _data: (
+
+    def parse_vts_ifo_languages(
+        _data: bytes,
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return (
             {0x80: "und", 0x81: "fra"},
             {0x20: "und", 0x21: "eng"},
-        ),
-    )
+        )
+
+    def parse_pgc_stream_languages(
+        _data: bytes, _pgc_number: int | None = None
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return ({0x80: "eng"}, {0x21: "fre"})
+
+    def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
+        return audio_attrs
+
+    def parse_vts_video_attrs(_data: bytes) -> dvdifo._IFOVideoAttrs | None:
+        return video_attrs
+
+    def parse_vts_subp_attrs(
+        _data: bytes,
+    ) -> dict[int, dvdifo._IFOSubpictureAttrs]:
+        return subp_attrs
+
+    def parse_vts_pgc_info(_data: bytes) -> tuple[list[float], float]:
+        return ([0.0, 10.0], 120.0)
+
+    monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
     monkeypatch.setattr(
-        dvdbuild,
-        "_parse_pgc_stream_languages",
-        lambda _data, _pgc_number=None: ({0x80: "eng"}, {0x21: "fre"}),
+        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
     )
-    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", lambda _data: audio_attrs)
-    monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", lambda _data: video_attrs)
-    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", lambda _data: subp_attrs)
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_pgc_info",
-        lambda _data: ([0.0, 10.0], 120.0),
-    )
+    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", parse_vts_audio_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", parse_vts_subp_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_pgc_info", parse_vts_pgc_info)
 
     dvdbuild._apply_dvd_ifo_languages(title, ifo_path)
 
@@ -524,7 +622,7 @@ def test_apply_dvd_ifo_languages_updates_streams_and_timing(
 
 
 def test_apply_dvd_ifo_languages_ignores_read_failure(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     title = Title(
         index=0,
@@ -533,10 +631,13 @@ def test_apply_dvd_ifo_languages_ignores_read_failure(
         duration_seconds=90.0,
     )
 
-    def fail_read():
+    def fail_read() -> NoReturn:
         raise OSError("blocked")
 
-    monkeypatch.setattr(Path, "read_bytes", lambda _self: fail_read())
+    def read_bytes(_self: Path) -> bytes:
+        return fail_read()
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
     dvdbuild._apply_dvd_ifo_languages(title, tmp_path / "missing.IFO")
 
     assert title.dvd_ifo_data is None
@@ -545,15 +646,17 @@ def test_apply_dvd_ifo_languages_ignores_read_failure(
 
 
 def test_build_title_from_ifo_falls_back_on_invalid_identity(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ifo_path = tmp_path / "VTS_01_0.IFO"
     ifo_path.write_bytes(b"invalid")
     first_vob = tmp_path / "VTS_01_1.VOB"
     fallback = Title(7, first_vob, "Fallback", 100.0)
-    calls = []
+    calls: list[tuple[list[Title], Path, str]] = []
 
-    def create_title(titles, source, name, **_kwargs):
+    def create_title(
+        titles: list[Title], source: Path, name: str, **_kwargs: object
+    ) -> Title | None:
         calls.append((titles, source, name))
         return fallback
 
@@ -567,34 +670,55 @@ def test_build_title_from_ifo_falls_back_on_invalid_identity(
     assert calls == [([], first_vob, "Fallback")]
 
 
-def _patch_successful_ifo_title(monkeypatch: Any, streams):
+def _patch_successful_ifo_title(
+    monkeypatch: pytest.MonkeyPatch, streams: list[Stream]
+) -> None:
+    def parse_vts_pgc_info(
+        _data: bytes, _pgc_number: int | None
+    ) -> tuple[list[float], float]:
+        return ([0.0, 60.0], 120.0)
+
+    def build_dvd_streams_from_ifo(
+        _data: bytes, _duration: float, _pgc_number: int | None
+    ) -> list[Stream]:
+        return streams
+
+    def parse_vts_ifo_languages(
+        _data: bytes,
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return ({0x80: "eng"}, {0x20: "und"})
+
+    def parse_pgc_stream_languages(
+        _data: bytes, _pgc_number: int | None
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        return ({}, {})
+
+    def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
+        return {}
+
+    def parse_vts_video_attrs(_data: bytes) -> dvdifo._IFOVideoAttrs | None:
+        return None
+
+    def parse_vts_subp_attrs(
+        _data: bytes,
+    ) -> dict[int, dvdifo._IFOSubpictureAttrs]:
+        return {}
+
+    monkeypatch.setattr(dvdbuild, "_parse_vts_pgc_info", parse_vts_pgc_info)
     monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_pgc_info",
-        lambda _data, _pgc_number: ([0.0, 60.0], 120.0),
+        dvdbuild, "_build_dvd_streams_from_ifo", build_dvd_streams_from_ifo
     )
+    monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
     monkeypatch.setattr(
-        dvdbuild,
-        "_build_dvd_streams_from_ifo",
-        lambda _data, _duration, _pgc_number: streams,
+        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
     )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_ifo_languages",
-        lambda _data: ({0x80: "eng"}, {0x20: "und"}),
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_pgc_stream_languages",
-        lambda _data, _pgc_number: ({}, {}),
-    )
-    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", lambda _data: {})
-    monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", lambda _data: None)
-    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", lambda _data: {})
+    monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", parse_vts_audio_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
+    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", parse_vts_subp_attrs)
 
 
 def test_build_title_from_ifo_recovers_undeclared_subpicture(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ifo_data = bytearray(dvdifo._VTS_IFO_IDENT + bytes(0x300))
     # VTS_SPST_ATRT entry 1 (sub-stream 0x21): run-length, language "fr",
@@ -608,14 +732,15 @@ def test_build_title_from_ifo_recovers_undeclared_subpicture(
         Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3", sub_id=0x80),
     ]
     _patch_successful_ifo_title(monkeypatch, streams)
-    scan_calls = []
-    monkeypatch.setattr(
-        dvdbuild,
-        "_scan_vob_subpictures",
-        lambda vobs, max_bytes, debug, **_: (
-            scan_calls.append((vobs, max_bytes, debug)) or {0x21: [(0, b"spu")]}
-        ),
-    )
+    scan_calls: list[tuple[list[Path], int, bool]] = []
+
+    def scan_vob_subpictures(
+        vobs: list[Path], max_bytes: int, debug: bool, **_: object
+    ) -> dict[int, list[tuple[int, bytes]]]:
+        scan_calls.append((vobs, max_bytes, debug))
+        return {0x21: [(0, b"spu")]}
+
+    monkeypatch.setattr(dvdbuild, "_scan_vob_subpictures", scan_vob_subpictures)
 
     title = dvdbuild._build_title_from_ifo(
         [],
@@ -646,23 +771,24 @@ def test_build_title_from_ifo_recovers_undeclared_subpicture(
 
 
 def test_build_title_from_ifo_skips_extra_scan_for_short_titles(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ifo_path = tmp_path / "VTS_01_0.IFO"
     ifo_path.write_bytes(dvdifo._VTS_IFO_IDENT + bytes(0x300))
     first_vob = tmp_path / "VTS_01_1.VOB"
     streams = [Stream(index=0, stream_type=StreamType.VIDEO, sub_id=0x1E0)]
     _patch_successful_ifo_title(monkeypatch, streams)
-    monkeypatch.setattr(
-        dvdbuild,
-        "_parse_vts_pgc_info",
-        lambda _data, _pgc_number: ([], 30.0),
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_scan_vob_subpictures",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError),
-    )
+
+    def parse_vts_pgc_info(
+        _data: bytes, _pgc_number: int | None
+    ) -> tuple[list[float], float]:
+        return ([], 30.0)
+
+    def scan_vob_subpictures(*_args: object, **_kwargs: object) -> NoReturn:
+        raise AssertionError
+
+    monkeypatch.setattr(dvdbuild, "_parse_vts_pgc_info", parse_vts_pgc_info)
+    monkeypatch.setattr(dvdbuild, "_scan_vob_subpictures", scan_vob_subpictures)
 
     title = dvdbuild._build_title_from_ifo(
         [],
@@ -706,7 +832,9 @@ def test_undeclared_subpicture_uses_und_for_invalid_language() -> None:
     assert 0x21 not in title.dvd_subp_attrs
 
 
-def test_undeclared_subpicture_phase_survives_malformed_ifo(monkeypatch: Any) -> None:
+def test_undeclared_subpicture_phase_survives_malformed_ifo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     title = Title(
         index=0,
         source_file=Path("movie.vob"),
@@ -714,16 +842,17 @@ def test_undeclared_subpicture_phase_survives_malformed_ifo(monkeypatch: Any) ->
         duration_seconds=120.0,
     )
     title.streams = [Stream(index=0, stream_type=StreamType.VIDEO, sub_id=0x1E0)]
-    monkeypatch.setattr(
-        dvdbuild,
-        "_scan_vob_subpictures",
-        lambda *_args, **_kwargs: {0x21: [(0, b"spu")]},
-    )
-    monkeypatch.setattr(
-        dvdbuild,
-        "_read_u16",
-        lambda _data, _offset: (_ for _ in ()).throw(IndexError("short IFO")),
-    )
+
+    def scan_vob_subpictures(
+        *_args: object, **_kwargs: object
+    ) -> dict[int, list[tuple[int, bytes]]]:
+        return {0x21: [(0, b"spu")]}
+
+    def read_u16(_data: bytes, _offset: int) -> NoReturn:
+        raise IndexError("short IFO")
+
+    monkeypatch.setattr(dvdbuild, "_scan_vob_subpictures", scan_vob_subpictures)
+    monkeypatch.setattr(dvdbuild, "_read_u16", read_u16)
 
     dvdbuild._append_undeclared_dvd_subpictures(
         title,
@@ -737,12 +866,16 @@ def test_undeclared_subpicture_phase_survives_malformed_ifo(monkeypatch: Any) ->
 
 
 def test_append_dvd_closed_captions_respects_config_flag(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The CC text track is opt-out via Config.cc608_srt (--no-cc-srt)."""
     vob = tmp_path / "VTS_01_1.VOB"
     vob.write_bytes(b"packets")
-    monkeypatch.setattr(dvdbuild, "_has_cc608_data", lambda _path: True)
+
+    def has_cc608_data(_path: Path) -> bool:
+        return True
+
+    monkeypatch.setattr(dvdbuild, "_has_cc608_data", has_cc608_data)
 
     def make_title() -> Title:
         title = Title(0, vob, "Title 1", 100.0)
@@ -836,7 +969,7 @@ def test_label_cross_vts_episodes_skips_labelled_playall_and_editions(
     """Within-VTS episodes, play-all chains, and alternate editions never
     join a cross-VTS cluster."""
     titles: list[Title] = []
-    specs = [
+    specs: list[tuple[int, float, dict[str, object]]] = [
         (1, 1460.0, {"dvd_episode_number": 1}),
         (2, 1461.0, {"dvd_episode_number": 2}),
         (3, 8800.0, {"dvd_play_all": True}),

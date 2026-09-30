@@ -149,8 +149,8 @@ def test_parse_vmg_ifo(fixtures_dir: Path) -> None:
     # The previously pinned {1: (1, 207)} was TT_SRPT misread start-sector
     # bytes: entries begin after the 8-byte table header, and VTS number /
     # VTS_TTN are single bytes at entry offsets 6 and 7.
-    assert vmg["provider_id"] == "WARNER HOME VIDEO"
-    assert vmg["title_map"] == {k: (1, k) for k in range(1, 39)}
+    assert vmg.get("provider_id") == "WARNER HOME VIDEO"
+    assert vmg.get("title_map") == {k: (1, k) for k in range(1, 39)}
 
 
 # --- DVD VTS -----------------------------------------------------------------
@@ -346,7 +346,7 @@ def test_select_multi_angle_edition_cells(fixtures_dir: Path) -> None:
     assert angle_one_selection is not None
     assert angle_two_selection is not None
 
-    default_cells, default_interleaved = default_selection
+    default_cells, _default_interleaved = default_selection
     angle_one_cells, angle_one_interleaved = angle_one_selection
     angle_two_cells, angle_two_interleaved = angle_two_selection
 

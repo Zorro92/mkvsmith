@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+import pytest
 
 from dvdifo import (
     _EnumeratedPgc,
@@ -68,7 +68,7 @@ def test_find_play_all_pgc_matches_episode_duration_sum() -> None:
 
 
 def test_cell_signature_check_rejects_duplicate_verified_tables(
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pgcs: list[_EnumeratedPgc] = [
         (1, 10, 100.0, 2),
@@ -76,9 +76,14 @@ def test_cell_signature_check_rejects_duplicate_verified_tables(
         (3, 30, 100.0, 2),
     ]
     signatures = iter([((1, 1), (1, 2)), ((1, 1), (1, 2)), None])
+
+    def pgc_cell_position_signature(
+        _data: bytes, _pgc_abs: int, _cells: int
+    ) -> tuple[tuple[int, int], ...] | None:
+        return next(signatures)
+
     monkeypatch.setattr(
-        "dvdifo._pgc_cell_position_signature",
-        lambda _data, _pgc_abs, _cells: next(signatures),
+        "dvdifo._pgc_cell_position_signature", pgc_cell_position_signature
     )
 
     assert _has_distinct_pgc_cell_signatures(b"ifo", pgcs) is False

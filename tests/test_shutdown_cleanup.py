@@ -123,7 +123,11 @@ def test_kill_process_group_falls_back_to_current_process_group(
             raise OSError(process_id)
 
     monkeypatch.setattr(models.os, "killpg", killpg)
-    monkeypatch.setattr(models.os, "getpgid", lambda _pid: 432)
+
+    def fake_getpgid(_pid: int) -> int:
+        return 432
+
+    monkeypatch.setattr(models.os, "getpgid", fake_getpgid)
 
     models._kill_process_group(123)
 
@@ -263,12 +267,15 @@ def test_cleanup_failed_unmount_preserves_mountpoint(
     mountpoint = tmp_path / "mount"
     mountpoint.mkdir()
     commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        return SimpleNamespace(returncode=1)
+
     monkeypatch.setattr(
         models.subprocess,
         "run",
-        lambda command, **_kwargs: (
-            commands.append(command) or SimpleNamespace(returncode=1)
-        ),
+        fake_run,
     )
     models.RUNTIME_STATE.cleanup.direct_mounts.append(mountpoint)
 
@@ -284,12 +291,15 @@ def test_cleanup_successful_interrupt_unmount_removes_mountpoint(
     mountpoint = tmp_path / "mount"
     mountpoint.mkdir()
     commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        return SimpleNamespace(returncode=0)
+
     monkeypatch.setattr(
         models.subprocess,
         "run",
-        lambda command, **_kwargs: (
-            commands.append(command) or SimpleNamespace(returncode=0)
-        ),
+        fake_run,
     )
     models.RUNTIME_STATE.cleanup.direct_mounts.append(mountpoint)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from collections.abc import Callable
 
 import pytest
 
@@ -158,12 +158,14 @@ def test_configure_runtime_uses_injected_state(
 ) -> None:
     runtime_state = RuntimeState(config=Config(debug=True))
     runtime_state.config.temp_dir = tmp_path / "scratch"
-    debug_loggers: list[Any] = []
+    debug_loggers: list[Callable[[str], None] | None] = []
     budgets: list[models.Config] = []
     monkeypatch.setattr(cli.dvdifo, "set_debug", debug_loggers.append)
-    monkeypatch.setattr(
-        "disc_reader.init_ram_budget", lambda config: budgets.append(config)
-    )
+
+    def fake_init_ram_budget(config: models.Config) -> None:
+        budgets.append(config)
+
+    monkeypatch.setattr("disc_reader.init_ram_budget", fake_init_ram_budget)
     old_tempdir = __import__("tempfile").tempdir
 
     try:
@@ -172,7 +174,9 @@ def test_configure_runtime_uses_injected_state(
         __import__("tempfile").tempdir = old_tempdir
 
     assert len(debug_loggers) == 1
-    debug_loggers[0]("Injected through controller")
+    logger = debug_loggers[0]
+    assert logger is not None
+    logger("Injected through controller")
     assert "Injected through controller" in capsys.readouterr().out
     assert budgets == [runtime_state.config]
     assert runtime_state.config.temp_dir.is_dir()
@@ -194,19 +198,18 @@ def test_scanner_uses_injected_config(
     config = Config(min_duration=17)
     source = tmp_path / "movie.iso"
     scan_calls: list[tuple[Path, Config]] = []
-    monkeypatch.setattr(
-        disc_reader,
-        "detect_source_type",
-        lambda _source: disc_reader.SourceType.DVD,
-    )
-    monkeypatch.setattr(
-        scan,
-        "_scan_dvd_source",
-        lambda source, config=None: (
-            scan_calls.append((source, config or Config()))
-            or ([], DiscMetadata(name="Injected Disc"))
-        ),
-    )
+
+    def fake_detect_source_type(_source: Path) -> disc_reader.SourceType:
+        return disc_reader.SourceType.DVD
+
+    def fake_scan_dvd_source(
+        source: Path, config: Config | None = None
+    ) -> tuple[list[models.Title], DiscMetadata]:
+        scan_calls.append((source, config or Config()))
+        return [], DiscMetadata(name="Injected Disc")
+
+    monkeypatch.setattr(disc_reader, "detect_source_type", fake_detect_source_type)
+    monkeypatch.setattr(scan, "_scan_dvd_source", fake_scan_dvd_source)
 
     scanner = scan.Scanner(source, config)
 
@@ -274,7 +277,11 @@ def test_temp_base_for_title_uses_injected_config(
     )
     assert config.temp_dir is not None
     config.temp_dir.mkdir()
-    monkeypatch.setattr(disc_reader, "_is_ram_backed_dir", lambda _path: False)
+
+    def fake_is_ram_backed_dir(_path: Path) -> bool:
+        return False
+
+    monkeypatch.setattr(disc_reader, "_is_ram_backed_dir", fake_is_ram_backed_dir)
 
     assert disc_reader.temp_base_for_title(200, config) == config.temp_dir
     assert disc_reader.temp_base_for_title(50, config) is None
@@ -304,9 +311,10 @@ def test_title_ranking_uses_injected_config() -> None:
 def test_direct_mount_honors_injected_no_sudo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "builtins.input", lambda _prompt: (_ for _ in ()).throw(AssertionError)
-    )
+    def fail_input(_prompt: object = "") -> str:
+        raise AssertionError
+
+    monkeypatch.setattr("builtins.input", fail_input)
 
     assert (
         disc_reader._try_direct_mount(Path("movie.iso"), Config(no_sudo=True)) is None

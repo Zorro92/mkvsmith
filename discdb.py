@@ -293,10 +293,11 @@ class DiscDbClient:
             raise DiscDbError("TheDiscDB returned invalid JSON") from exc
         if not isinstance(result, dict):
             raise DiscDbError("TheDiscDB returned an unexpected JSON response")
+        result = cast(dict[str, Any], result)
         errors = result.get("errors")
         if errors:
             messages = "; ".join(
-                str(error.get("message", ""))
+                str(cast(dict[str, Any], error).get("message", ""))
                 for error in errors
                 if isinstance(error, dict)
             )
@@ -306,7 +307,7 @@ class DiscDbClient:
             raise DiscDbError("TheDiscDB query returned no data")
         if not isinstance(data_value, dict):
             raise DiscDbError("TheDiscDB query returned unexpected data")
-        return data_value
+        return cast(dict[str, Any], data_value)
 
     def lookup(self, metadata: DiscMetadata) -> DiscDbLookupResult:
         disc_hash = metadata.disc_hash.upper() if metadata.disc_hash else None
@@ -929,7 +930,7 @@ class DiscDbContributionClient:
                 cookie=self.options.cookie,
                 url=contribution_graphql_url(self.options.base_url),
             )
-            payload = cast(dict[str, Any], data.get(field))
+            payload = cast(dict[str, Any] | None, data.get(field))
         except (KeyError, TypeError, ValueError) as exc:
             raise DiscDbError(
                 f"TheDiscDB returned an invalid mutation response: {exc}"

@@ -52,9 +52,10 @@ def test_filter_vobsub_streams_adds_unknown_language() -> None:
 def test_vobsub_pts_offset_uses_first_video_pts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        vobsub, "_scan_vob_pts", lambda *_args, **_kwargs: [(90_000, 8), (91_000, 9)]
-    )
+    def fake_scan_vob_pts(*_args: object, **_kwargs: object) -> list[tuple[int, int]]:
+        return [(90_000, 8), (91_000, 9)]
+
+    monkeypatch.setattr(vobsub, "_scan_vob_pts", fake_scan_vob_pts)
 
     assert _vobsub_pts_offset([Path("movie.vob")]) == 90_000
 

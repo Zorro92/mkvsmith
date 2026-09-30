@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import disc_reader
 import scan
 from models import DiscMetadata, Stream, StreamType, Title
 
 
-def make_title(index: int, duration: float, **attributes) -> Title:
+def make_title(index: int, duration: float, **attributes: object) -> Title:
     title = Title(
         index=index,
         source_file=Path(f"title-{index}.m2ts"),
@@ -55,7 +57,7 @@ def test_resolve_iso_source_selects_first_iso_in_sorted_order(
 
 
 def test_scan_resolves_folder_iso_before_iso_scanner(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     folder = tmp_path / "isos"
@@ -66,10 +68,14 @@ def test_scan_resolves_folder_iso_before_iso_scanner(
     other.write_bytes(b"z")
     scanner = scan.Scanner(folder)
     scanned_sources: list[Path] = []
+
+    def detect_iso(_source: Path) -> disc_reader.SourceType:
+        return disc_reader.SourceType.ISO_UNKNOWN
+
     monkeypatch.setattr(
         disc_reader,
         "detect_source_type",
-        lambda _source: disc_reader.SourceType.ISO_UNKNOWN,
+        detect_iso,
     )
     monkeypatch.setattr(
         scanner, "_scan_iso", lambda: scanned_sources.append(scanner.source)
@@ -81,7 +87,7 @@ def test_scan_resolves_folder_iso_before_iso_scanner(
 
 
 def test_scan_routes_bluray_raw_and_applies_names_once(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "raw"
@@ -93,18 +99,24 @@ def test_scan_routes_bluray_raw_and_applies_names_once(
     routing_calls: list[Path] = []
     name_calls: list[scan.Scanner] = []
 
+    def detect_bluray_raw(_source: Path) -> disc_reader.SourceType:
+        return disc_reader.SourceType.BLURAY_RAW
+
+    def fake_scan_bluray_raw_source(
+        scanned_source: Path,
+    ) -> tuple[list[Title], DiscMetadata]:
+        routing_calls.append(scanned_source)
+        return (titles, DiscMetadata(name="Injected Disc"))
+
     monkeypatch.setattr(
         disc_reader,
         "detect_source_type",
-        lambda _source: disc_reader.SourceType.BLURAY_RAW,
+        detect_bluray_raw,
     )
     monkeypatch.setattr(
         scan,
         "_scan_bluray_raw_source",
-        lambda scanned_source: (
-            routing_calls.append(scanned_source)
-            or (titles, DiscMetadata(name="Injected Disc"))
-        ),
+        fake_scan_bluray_raw_source,
     )
     monkeypatch.setattr(scanner, "_apply_disc_name", lambda: name_calls.append(scanner))
 
@@ -358,7 +370,7 @@ def test_authorial_main_feature_ignores_generated_names() -> None:
 
 
 def test_hddvd_secondary_experience_hidden() -> None:
-    def rich(index: int, **attrs) -> Title:
+    def rich(index: int, **attrs: object) -> Title:
         title = make_title(index, 8600.0, **attrs)
         title.streams.append(
             Stream(index=1, stream_type=StreamType.AUDIO, codec="eac3")

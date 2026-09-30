@@ -11,16 +11,22 @@ import importlib
 import json
 from pathlib import Path
 
+import pytest
+
 import settings
 
 
-def _point_settings(monkeypatch, new: Path, old: Path, legacy: Path) -> None:
+def _point_settings(
+    monkeypatch: pytest.MonkeyPatch, new: Path, old: Path, legacy: Path
+) -> None:
     monkeypatch.setattr(settings, "SETTINGS_PATH", new)
     monkeypatch.setattr(settings, "_OLD_SETTINGS_PATH", old)
     monkeypatch.setattr(settings, "_LEGACY_CONFIG_PATH", legacy)
 
 
-def test_settings_path_uses_xdg_config_home(monkeypatch, tmp_path: Path) -> None:
+def test_settings_path_uses_xdg_config_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     reloaded = importlib.reload(settings)
     try:
@@ -29,7 +35,9 @@ def test_settings_path_uses_xdg_config_home(monkeypatch, tmp_path: Path) -> None
         importlib.reload(settings)
 
 
-def test_save_creates_parents_and_roundtrips(monkeypatch, tmp_path: Path) -> None:
+def test_save_creates_parents_and_roundtrips(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     new = tmp_path / "cfg" / "mkvsmith" / "config.json"
     _point_settings(monkeypatch, new, tmp_path / "old.json", tmp_path / "legacy.json")
     settings.save_settings({"language": "es"})
@@ -37,7 +45,9 @@ def test_save_creates_parents_and_roundtrips(monkeypatch, tmp_path: Path) -> Non
     assert settings.load_settings() == {"language": "es"}
 
 
-def test_migrates_old_home_settings(monkeypatch, tmp_path: Path) -> None:
+def test_migrates_old_home_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     new = tmp_path / "new" / "config.json"
     old = tmp_path / "home_dotfile.json"
     _point_settings(monkeypatch, new, old, tmp_path / "legacy.json")
@@ -48,7 +58,9 @@ def test_migrates_old_home_settings(monkeypatch, tmp_path: Path) -> None:
     assert json.loads(new.read_text(encoding="utf-8")) == {"api_key": "k"}
 
 
-def test_migrates_legacy_tagger_config(monkeypatch, tmp_path: Path) -> None:
+def test_migrates_legacy_tagger_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     new = tmp_path / "new" / "config.json"
     legacy = tmp_path / "tagger_dotfile.json"
     _point_settings(monkeypatch, new, tmp_path / "old.json", legacy)
@@ -58,7 +70,9 @@ def test_migrates_legacy_tagger_config(monkeypatch, tmp_path: Path) -> None:
     assert json.loads(new.read_text(encoding="utf-8")) == {"api_key": "t"}
 
 
-def test_new_settings_take_precedence(monkeypatch, tmp_path: Path) -> None:
+def test_new_settings_take_precedence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     new = tmp_path / "new" / "config.json"
     old = tmp_path / "old.json"
     _point_settings(monkeypatch, new, old, tmp_path / "legacy.json")
@@ -69,7 +83,9 @@ def test_new_settings_take_precedence(monkeypatch, tmp_path: Path) -> None:
     assert settings.load_settings() == {"language": "es"}
 
 
-def test_missing_and_corrupt_settings_return_empty(monkeypatch, tmp_path: Path) -> None:
+def test_missing_and_corrupt_settings_return_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     new = tmp_path / "new" / "config.json"
     _point_settings(monkeypatch, new, tmp_path / "old.json", tmp_path / "legacy.json")
     assert settings.load_settings() == {}

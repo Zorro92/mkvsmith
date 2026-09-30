@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -45,21 +44,26 @@ class _FakePopen:
 
 
 def prepare_extraction(
-    monkeypatch: Any, tmp_path: Path, stdout: _FakeStdout | None
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stdout: _FakeStdout | None
 ) -> _FakePopen:
     process = _FakePopen(stdout)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        disc_reader, "_get_safe_7z_path", lambda source, symlinks=None: (source, None)
-    )
-    monkeypatch.setattr(
-        disc_reader.subprocess, "Popen", lambda *_args, **_kwargs: process
-    )
+
+    def fake_safe_7z_path(
+        source: Path, symlinks: list[Path] | None = None
+    ) -> tuple[Path, Path | None]:
+        return (source, None)
+
+    def fake_popen(*_args: object, **_kwargs: object) -> _FakePopen:
+        return process
+
+    monkeypatch.setattr(disc_reader, "_get_safe_7z_path", fake_safe_7z_path)
+    monkeypatch.setattr(disc_reader.subprocess, "Popen", fake_popen)
     return process
 
 
 def test_partial_extraction_stops_process_and_removes_temp_on_read_error(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     process = prepare_extraction(
         monkeypatch, tmp_path, _FakeStdout(OSError("pipe failed"))
@@ -78,7 +82,7 @@ def test_partial_extraction_stops_process_and_removes_temp_on_read_error(
 
 
 def test_partial_extraction_stops_process_when_stdout_is_missing(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     process = prepare_extraction(monkeypatch, tmp_path, None)
 
@@ -95,7 +99,7 @@ def test_partial_extraction_stops_process_when_stdout_is_missing(
 
 
 def test_partial_extraction_reads_bounded_prefix(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     first = b"a" * (1024 * 1024)
     second = b"b" * (1024 * 1024)
@@ -116,25 +120,26 @@ def test_partial_extraction_reads_bounded_prefix(
 
 
 def prepare_direct_mount(
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
     mountpoint: Path,
     confirmed: bool = True,
-):
+) -> list[tuple[Path, Path]]:
     calls: list[tuple[Path, Path]] = []
 
-    def make_mountpoint(*_args, **_kwargs):
+    def make_mountpoint(*_args: object, **_kwargs: object) -> str:
         mountpoint.mkdir()
         return str(mountpoint)
 
-    def run_direct_mount(iso_path: Path, candidate: Path):
+    def run_direct_mount(iso_path: Path, candidate: Path) -> SimpleNamespace:
         calls.append((iso_path, candidate))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(
-        disc_reader, "_confirm_direct_mount", lambda _iso_path, *a, **k: confirmed
-    )
+    def fake_confirm(_iso_path: Path, *a: object, **k: object) -> bool:
+        return confirmed
+
+    monkeypatch.setattr(disc_reader, "_confirm_direct_mount", fake_confirm)
     monkeypatch.setattr(disc_reader, "_IS_LINUX", True)
     monkeypatch.setattr(disc_reader.tempfile, "mkdtemp", make_mountpoint)
     monkeypatch.setattr(disc_reader, "_run_direct_mount", run_direct_mount)
@@ -142,7 +147,7 @@ def prepare_direct_mount(
 
 
 def test_direct_mount_success_registers_injected_mountpoint(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     iso_path = tmp_path / "movie.iso"
     mountpoint = tmp_path / "mount"
@@ -159,7 +164,7 @@ def test_direct_mount_success_registers_injected_mountpoint(
 
 
 def test_direct_mount_decline_does_not_run_sudo(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     mountpoint = tmp_path / "mount"
     prepare_direct_mount(monkeypatch, tmp_path, mountpoint=mountpoint, confirmed=False)
@@ -171,17 +176,19 @@ def test_direct_mount_decline_does_not_run_sudo(
 
 
 def test_direct_mount_failure_removes_empty_mountpoint(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     iso_path = tmp_path / "movie.iso"
     mountpoint = tmp_path / "mount"
     prepare_direct_mount(monkeypatch, tmp_path, mountpoint=mountpoint)
+
+    def failed_mount(_iso_path: Path, _mountpoint: Path) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, stdout="", stderr="mount failed")
+
     monkeypatch.setattr(
         disc_reader,
         "_run_direct_mount",
-        lambda _iso_path, _mountpoint: SimpleNamespace(
-            returncode=1, stdout="", stderr="mount failed"
-        ),
+        failed_mount,
     )
     direct_mounts: list[Path] = []
 
@@ -193,7 +200,7 @@ def test_direct_mount_failure_removes_empty_mountpoint(
 
 
 def test_direct_mount_exception_removes_empty_mountpoint(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     iso_path = tmp_path / "movie.iso"
     mountpoint = tmp_path / "mount"
@@ -213,7 +220,7 @@ def test_direct_mount_exception_removes_empty_mountpoint(
 
 
 def test_direct_mount_skipped_on_non_linux_platforms(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     iso_path = tmp_path / "movie.iso"
     mountpoint = tmp_path / "mount"
@@ -243,13 +250,13 @@ def test_confirm_direct_mount_uses_injected_prompts(tmp_path: Path) -> None:
 
 
 def test_try_direct_mount_uses_injected_prompts_without_stdin(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The scan path answers via hooks instead of reading stdin."""
     iso_path = tmp_path / "movie.iso"
     mountpoint = tmp_path / "mount"
 
-    def make_mountpoint(*_args: Any, **_kwargs: Any) -> str:
+    def make_mountpoint(*_args: object, **_kwargs: object) -> str:
         mountpoint.mkdir()
         return str(mountpoint)
 
@@ -262,9 +269,11 @@ def test_try_direct_mount_uses_injected_prompts_without_stdin(
     monkeypatch.setattr(disc_reader, "_IS_LINUX", True)
     monkeypatch.setattr(disc_reader.tempfile, "mkdtemp", make_mountpoint)
     monkeypatch.setattr(disc_reader, "_run_direct_mount", run_direct_mount)
-    monkeypatch.setattr(
-        builtins, "input", lambda _p: (_ for _ in ()).throw(AssertionError())
-    )
+
+    def forbidden_input(_p: object) -> str:
+        raise AssertionError()
+
+    monkeypatch.setattr(builtins, "input", forbidden_input)
 
     result = disc_reader._try_direct_mount(
         iso_path,
@@ -332,11 +341,11 @@ def test_is_iso_media_path_matches_compatible_scanning_subset() -> None:
 
 
 def test_run_7z_listing_uses_expected_arguments(
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[list[str], dict[str, Any]]] = []
+    calls: list[tuple[list[str], dict[str, object]]] = []
 
-    def run(command, **kwargs):
+    def run(command: list[str], **kwargs: object) -> SimpleNamespace:
         calls.append((command, kwargs))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -375,10 +384,10 @@ def test_copy_bounded_stdout_stops_after_limit_chunk() -> None:
     assert stdout.chunks == [second]
 
 
-def test_start_7z_pipe_uses_expected_arguments(monkeypatch: Any) -> None:
-    calls: list[tuple[list[str], dict[str, Any]]] = []
+def test_start_7z_pipe_uses_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
 
-    def popen(command, **kwargs):
+    def popen(command: list[str], **kwargs: object) -> _FakePopen:
         calls.append((command, kwargs))
         return object.__new__(_FakePopen)
 
@@ -519,7 +528,7 @@ def _isolated_link_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point per-process link state at tmp_path (no global leakage)."""
     import tempfile
 
-    monkeypatch.setattr(disc_reader, "_SAFE_LINK_DIR", None)
+    monkeypatch.setattr(disc_reader, "_safe_link_dir_cache", None)
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
 
@@ -606,10 +615,12 @@ def test_safe_7z_path_falls_back_when_no_temp(
 ) -> None:
     import tempfile
 
-    monkeypatch.setattr(disc_reader, "_SAFE_LINK_DIR", None)
-    monkeypatch.setattr(
-        tempfile, "mkdtemp", lambda *_a, **_k: (_ for _ in ()).throw(OSError())
-    )
+    monkeypatch.setattr(disc_reader, "_safe_link_dir_cache", None)
+
+    def failing_mkdtemp(*_a: object, **_k: object) -> str:
+        raise OSError()
+
+    monkeypatch.setattr(tempfile, "mkdtemp", failing_mkdtemp)
     iso = tmp_path / "Movie (2020).iso"
     iso.write_bytes(b"fake")
 

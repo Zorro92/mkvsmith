@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -28,9 +29,11 @@ def make_title(index: int) -> Title:
 def test_run_action_displays_requested_title(monkeypatch: pytest.MonkeyPatch) -> None:
     title = make_title(0)
     displayed: list[Title] = []
-    monkeypatch.setattr(
-        cli, "display_title_details", lambda selected: displayed.append(selected)
-    )
+
+    def record_details(selected: Title) -> None:
+        displayed.append(selected)
+
+    monkeypatch.setattr(cli, "display_title_details", record_details)
 
     cli._run_action("details", [title], None, 0, None, None)
 
@@ -68,7 +71,9 @@ def test_run_action_rips_only_detected_episodes(
     state = models.RuntimeState()
     batch_calls: list[tuple[list[Title], models.RuntimeState]] = []
 
-    def rip_batch(titles: list[Title], runtime_state=None) -> None:
+    def rip_batch(
+        titles: list[Title], runtime_state: models.RuntimeState | None = None
+    ) -> None:
         assert runtime_state is not None
         batch_calls.append((titles, runtime_state))
 
@@ -91,11 +96,10 @@ def test_run_action_rejects_missing_multi_edition_indexes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(
-        cli,
-        "_rip_multi_edition",
-        lambda *_args: (_ for _ in ()).throw(AssertionError),
-    )
+    def fail_multi_edition(*_args: object) -> NoReturn:
+        raise AssertionError
+
+    monkeypatch.setattr(cli, "_rip_multi_edition", fail_multi_edition)
 
     with pytest.raises(SystemExit) as exc_info:
         cli._run_action(
@@ -122,11 +126,11 @@ def test_run_action_rip_title_uses_injected_runtime_state(
     class FakeCreator:
         def __init__(
             self,
-            output,
-            tag_opts=None,
-            config=None,
-            runtime_state=None,
-        ):
+            output: Path,
+            tag_opts: models.TagOptions | None = None,
+            config: models.Config | None = None,
+            runtime_state: models.RuntimeState | None = None,
+        ) -> None:
             self.output = output
             self.tag_opts = tag_opts
             self.config = config
@@ -134,10 +138,14 @@ def test_run_action_rip_title_uses_injected_runtime_state(
             self.rips: list[tuple[Title, list[str]]] = []
             creators.append(self)
 
-        def select_streams(self, selected, force=None):
+        def select_streams(
+            self, selected: Title, force: list[str] | None = None
+        ) -> list[str]:
             return [f"{selected.index}:{value}" for value in (force or [])]
 
-        def create_mkv(self, selected, selected_streams=None):
+        def create_mkv(
+            self, selected: Title, selected_streams: list[str] | None = None
+        ) -> Path:
             self.rips.append((selected, selected_streams or []))
             return tmp_path / "output.mkv"
 
@@ -171,7 +179,7 @@ def test_run_action_forwards_interactive_runtime_state(
     def interactive(
         titles: list[Title],
         disc_metadata: DiscMetadata | None = None,
-        runtime_state=None,
+        runtime_state: models.RuntimeState | None = None,
     ) -> None:
         assert runtime_state is not None
         calls.append((titles, disc_metadata, runtime_state))
@@ -202,7 +210,9 @@ def test_run_main_feature_rip_falls_back_to_episodes_on_series_discs(
     state = models.RuntimeState()
     batch_calls: list[tuple[list[Title], models.RuntimeState]] = []
 
-    def rip_batch(titles: list[Title], runtime_state=None) -> None:
+    def rip_batch(
+        titles: list[Title], runtime_state: models.RuntimeState | None = None
+    ) -> None:
         assert runtime_state is not None
         batch_calls.append((titles, runtime_state))
 

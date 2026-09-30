@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from xdg_base_dirs import xdg_config_home
 
@@ -34,7 +34,7 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    return data if isinstance(data, dict) else None
+    return cast(dict[str, Any], data) if isinstance(data, dict) else None
 
 
 def load_settings() -> dict[str, Any]:

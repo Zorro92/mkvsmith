@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import cli
 import dvdifo
 from models import Stream, StreamType, Title
@@ -65,8 +67,8 @@ def test_stream_flag_formatting() -> None:
 
 
 def test_display_titles_adds_playlist_information_without_renaming_title(
-    monkeypatch, tmp_path, capsys
-):
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(cli, "get_terminal_width", lambda: 70)
     title = Title(
         index=0,
@@ -85,7 +87,9 @@ def test_display_titles_adds_playlist_information_without_renaming_title(
     assert title.name == "Green Room - Blu-ray\u2122"
 
 
-def test_display_titles_limits_name_to_terminal_width(monkeypatch, tmp_path, capsys):
+def test_display_titles_limits_name_to_terminal_width(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(cli, "get_terminal_width", lambda: 40)
     title = Title(
         index=0,
@@ -106,8 +110,8 @@ def test_display_titles_limits_name_to_terminal_width(monkeypatch, tmp_path, cap
 
 
 def test_display_titles_sizes_index_column_to_max_title_number(
-    monkeypatch, tmp_path, capsys
-):
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(cli, "get_terminal_width", lambda: 80)
     titles = [
         Title(
@@ -133,8 +137,8 @@ def test_display_titles_sizes_index_column_to_max_title_number(
 
 
 def test_display_titles_omits_playlist_column_without_playlists(
-    monkeypatch, tmp_path, capsys
-):
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(cli, "get_terminal_width", lambda: 70)
     title = Title(
         index=0,
@@ -167,8 +171,8 @@ def test_stream_lines_include_dimensions_channels_and_extensions() -> None:
 
 
 def test_display_title_details_prints_groups_in_order(
-    monkeypatch, tmp_path: Path, capsys
-):
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(cli, "get_terminal_width", lambda: 80)
     title = make_detail_title(tmp_path)
 
@@ -185,11 +189,13 @@ def test_display_title_details_prints_groups_in_order(
     assert "(forced)" in output
 
 
-def test_display_titles_marks_episodes_on_series_discs(monkeypatch, tmp_path, capsys):
+def test_display_titles_marks_episodes_on_series_discs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """A series disc has no main feature: every episode gets a circle
     marker (play-alls excluded) instead of a star on one arbitrary title."""
     monkeypatch.setattr(cli, "get_terminal_width", lambda: 80)
-    titles = []
+    titles: list[Title] = []
     for index, episode in ((0, 1), (1, 1), (2, None), (3, None)):
         title = Title(
             index=index,

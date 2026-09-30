@@ -37,7 +37,7 @@ import threading
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, TypedDict, final
+from typing import IO, TYPE_CHECKING, Any, TypedDict, cast, final
 from collections.abc import Callable
 
 from dvdifo import (
@@ -858,7 +858,11 @@ def _audio_channels_by_track_id(
         except (TypeError, ValueError):
             continue
         props = track.get("properties", {})
-        value = props.get("audio_channels") if isinstance(props, dict) else None
+        value = (
+            cast(dict[str, Any], props).get("audio_channels")
+            if isinstance(props, dict)
+            else None
+        )
         channels[track_id] = int(value) if isinstance(value, int) else None
     return channels
 

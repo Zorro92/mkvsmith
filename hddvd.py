@@ -100,7 +100,7 @@ class HddvdClip:
     evo_path: Path
     begin_seconds: float = 0.0
     end_seconds: float = 0.0
-    streams: list[HddvdStream] = field(default_factory=list)
+    streams: list[HddvdStream] = field(default_factory=list[HddvdStream])
 
 
 @dataclass
@@ -108,16 +108,16 @@ class HddvdTitle:
     number: int
     name: str
     duration_seconds: float = 0.0
-    clips: list[HddvdClip] = field(default_factory=list)
-    chapters: list[float] = field(default_factory=list)
+    clips: list[HddvdClip] = field(default_factory=list[HddvdClip])
+    chapters: list[float] = field(default_factory=list[float])
     # XPL id attribute ("MainMovie", "Trailer3") — the authorial token,
     # distinct from the human displayName.
     id: str = ""
     # Authoritative per-track languages from TrackNavigationList langcodes
     # ("en:01"), keyed by XPL track number. Missing entries fall back to
     # description parsing, then the disc default language (video only).
-    audio_nav_langs: dict[int, str] = field(default_factory=dict)
-    subtitle_nav_langs: dict[int, str] = field(default_factory=dict)
+    audio_nav_langs: dict[int, str] = field(default_factory=dict[int, str])
+    subtitle_nav_langs: dict[int, str] = field(default_factory=dict[int, str])
 
     @property
     def streams(self) -> list[HddvdStream]:
@@ -127,7 +127,7 @@ class HddvdTitle:
 
 @dataclass
 class HddvdDisc:
-    titles: list[HddvdTitle] = field(default_factory=list)
+    titles: list[HddvdTitle] = field(default_factory=list[HddvdTitle])
     provider: str | None = None
     default_language: str = "und"
 

@@ -24,14 +24,16 @@ from pathlib import Path
 from typing import Any, final
 
 try:
-    from rich.console import Console
+    from rich.console import Console as _ImportedConsole
 
-    HAS_RICH = True
+    _rich_console_class: type[_ImportedConsole] | None = _ImportedConsole
 except ImportError:
-    HAS_RICH = False
+    _rich_console_class = None
 
 from dvdifo import _IFOAudioAttrs, _IFOSubpictureAttrs, _IFOVideoAttrs
 from i18n import tr
+
+HAS_RICH = _rich_console_class is not None
 
 
 # =============================================================================
@@ -49,8 +51,8 @@ class _Console:
     """
 
     def __init__(self) -> None:
-        if HAS_RICH:
-            self._inner = Console()
+        if HAS_RICH and _rich_console_class is not None:
+            self._inner = _rich_console_class()
         else:
             self._inner = None
 
@@ -106,53 +108,6 @@ _HAS_MKVMERGE: bool = shutil.which("mkvmerge") is not None
 # Keep in sync with pyproject.toml [project].version. Shared modules such as
 # discdb.py cannot import cli.py without creating a dependency cycle.
 MKVSMITH_VERSION = "0.6.0"
-
-
-# =============================================================================
-# VTS IFO sector-pointer offsets
-# =============================================================================
-
-
-class _VTSSectorOffset:
-    """VTS IFO header sector-pointer offsets (from the start of the IFO).
-
-    Based on pyparsedvd's SectorOffset enum and the DVD-Video specification.
-    """
-
-    # Header fields (first sector, offsets in bytes from sector start)
-    VTS_ID = 0x000  # 12 bytes: "DVDVIDEO-VTS"
-    VTS_LAST_TITLE_SET_SECTOR = 0x00C  # 4 bytes
-    VTS_LAST_IFO_SECTOR = 0x01C  # 4 bytes
-    VTS_VERSION = 0x020  # 2 bytes
-    VTS_CATEGORY = 0x022  # 4 bytes
-    VTS_MAT_END = 0x080  # 4 bytes: end address of VTSI_MAT
-
-    # Sector pointers (4 bytes each)
-    SECTOR_PTR_VTS_PTT_SRPT = 0x0C8  # Title/Chapter table
-    SECTOR_PTR_VTS_PGCI = 0x0CC  # Program Chain Information table
-    SECTOR_PTR_VTSM_PGCI_UT = 0x0D0  # Menu PGC table
-    SECTOR_PTR_VTS_TMAPTI = 0x0D4  # Time Map table
-    SECTOR_PTR_VTSM_C_ADT = 0x0D8  # Menu Cell Address table
-    SECTOR_PTR_VTSM_VOBU_ADMAP = 0x0DC
-    SECTOR_PTR_VTS_C_ADT = 0x0E0  # Title Cell Address table
-    SECTOR_PTR_VTS_VOBU_ADMAP = 0x0E4
-
-    # Video attributes (menu + title VOBs)
-    VTSM_VOBS_VIDEO_ATTR = 0x100  # 2 bytes
-    VTSM_VOBS_NUM_AUDIO = 0x102  # 2 bytes
-    VTSM_VOBS_AUDIO_ATTR = 0x104  # 8 bytes x 2 entries
-    VTSM_VOBS_NUM_SUBPIC = 0x154  # 2 bytes
-    VTSM_VOBS_SUBPIC_ATTR = 0x156  # 6 bytes x 2 entries
-
-    VTS_VOBS_VIDEO_ATTR = 0x200  # 2 bytes
-    VTS_VOBS_NUM_AUDIO = 0x202  # 2 bytes
-    VTS_VOBS_AUDIO_ATTR = 0x204  # 8 bytes each, 8 entries (0..7)
-    VTS_VOBS_NUM_SUBPIC = 0x254  # 2 bytes
-    VTS_VOBS_SUBPIC_ATTR = 0x256  # 6 bytes each, 32 entries
-
-    # Entry sizes
-    AUDIO_ENTRY_LEN = 8
-    SUBPIC_ENTRY_LEN = 6
 
 
 # =============================================================================
@@ -557,7 +512,7 @@ class EditionSpec:
     uid: int
     name: str
     is_default: bool
-    atoms: list[EditionAtom] = field(default_factory=list)
+    atoms: list[EditionAtom] = field(default_factory=list[EditionAtom])
 
     @property
     def duration(self) -> float:
@@ -575,14 +530,14 @@ class Title:
     source_file: Path
     name: str
     duration_seconds: float
-    streams: list[Stream] = field(default_factory=list)
-    iso_internal_paths: Sequence[str] = field(default_factory=list)
-    append_clips: list[Path] = field(default_factory=list)
+    streams: list[Stream] = field(default_factory=list[Stream])
+    iso_internal_paths: Sequence[str] = field(default_factory=list[str])
+    append_clips: list[Path] = field(default_factory=list[Path])
     # Estimated on-disc size of the title's raw source streams (sum of the
     # M2TS/VOB byte sizes), used to decide whether extraction should stay on a
     # RAM-backed temp dir or spill to disk (see disc_reader.init_ram_budget).
     estimated_size_bytes: int = 0
-    chapters: list[float] = field(default_factory=list)
+    chapters: list[float] = field(default_factory=list[float])
     # Disc-level name parsed from BDMV metadata (bdmt.xml / ID.bdmv) or DVD VMG IFO.
     # Used as the container-level title when TMDB tagging is not available.
     disc_name: str | None = None
@@ -590,11 +545,13 @@ class Title:
     # muxer can label streams correctly: some media tools enumerate PS streams by
     # first packet appearance (not by ID), so per-type positional order is
     # wrong and we must look languages up by the MPEG sub-stream ID.
-    dvd_audio_lang: dict[int, str] = field(default_factory=dict)
-    dvd_sub_lang: dict[int, str] = field(default_factory=dict)
+    dvd_audio_lang: dict[int, str] = field(default_factory=dict[int, str])
+    dvd_sub_lang: dict[int, str] = field(default_factory=dict[int, str])
     # DVD VTS .IFO stream attributes (codec, channels, Dolby Surround)
     # keyed by sub-stream ID (0x80+). Set during ``_apply_dvd_ifo_languages``.
-    dvd_audio_attrs: dict[int, _IFOAudioAttrs] = field(default_factory=dict)
+    dvd_audio_attrs: dict[int, _IFOAudioAttrs] = field(
+        default_factory=dict[int, _IFOAudioAttrs]
+    )
     # Raw VTS IFO bytes, set during ``_apply_dvd_ifo_languages``. Used by
     # ``_lookup_main_feature_range`` for IFO-based cell trimming.
     dvd_ifo_data: bytes | None = None
@@ -602,7 +559,9 @@ class Title:
     # at offset 0x0256). Contains coding_mode and code_extension per sub-stream.
     # The code_extension tells us if a subtitle is "forced" (value 9) — we use
     # this to auto-set the forced flag on subtitle streams.
-    dvd_subp_attrs: dict[int, _IFOSubpictureAttrs] = field(default_factory=dict)
+    dvd_subp_attrs: dict[int, _IFOSubpictureAttrs] = field(
+        default_factory=dict[int, _IFOSubpictureAttrs]
+    )
     # VTS video attributes parsed from VTS_V_ATR (2 bytes at VTSI_MAT+0x200).
     # Contains MPEG version, aspect ratio, standard (NTSC/PAL), resolution.
     # Set during ``_apply_dvd_ifo_languages``.
@@ -649,7 +608,7 @@ class Title:
     # iso_internal_paths (ISO sources). Populated during Blu-ray scanning
     # from MPLS play items ((out_time - in_time) / 45000) so multi-edition
     # chapter atoms can be computed without re-parsing the playlist.
-    clip_durations: list[float] = field(default_factory=list)
+    clip_durations: list[float] = field(default_factory=list[float])
     # Per-clip on-disc byte sizes, aligned with clip_durations. Used to size
     # the union of unique clips when combining editions (a sum of the member
     # titles' estimated_size_bytes would double-count shared clips).
@@ -671,7 +630,7 @@ class Title:
     # muxer writes an ordered-chapters XML with one edition per spec plus
     # edition TITLE tags instead of the flat single-edition chapter table.
     # Set by build_multi_edition_title() on the synthetic combined title.
-    editions: list[EditionSpec] = field(default_factory=list)
+    editions: list[EditionSpec] = field(default_factory=list[EditionSpec])
 
     @property
     def video_streams(self) -> list[Stream]:
@@ -825,10 +784,10 @@ class DiscDbOptions:
 class RuntimeCleanup:
     """Owns temporary filesystem resources and their shutdown cleanup."""
 
-    temp_dirs: list[Path] = field(default_factory=list)
-    temp_files: list[Path] = field(default_factory=list)
-    direct_mounts: list[Path] = field(default_factory=list)
-    symlinks: list[Path] = field(default_factory=list)
+    temp_dirs: list[Path] = field(default_factory=list[Path])
+    temp_files: list[Path] = field(default_factory=list[Path])
+    direct_mounts: list[Path] = field(default_factory=list[Path])
+    symlinks: list[Path] = field(default_factory=list[Path])
 
     def register_temp_dir(self, path: Path) -> Path:
         self.temp_dirs.append(path)
@@ -868,8 +827,8 @@ class RuntimeCleanup:
 class ActiveProcesses:
     """Owns in-flight muxers, partial outputs, and progress-line state."""
 
-    muxer_pgids: list[int] = field(default_factory=list)
-    output_files: list[Path] = field(default_factory=list)
+    muxer_pgids: list[int] = field(default_factory=list[int])
+    output_files: list[Path] = field(default_factory=list[Path])
     progress_active: bool = False
 
     def register_muxer(self, pgid: int) -> None:

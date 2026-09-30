@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -165,19 +166,28 @@ def _pts_stream(*segments: tuple[int, int, int]) -> list[tuple[int, int]]:
     return samples
 
 
+_InstallPtsSamples = Callable[[list[tuple[int, int]]], None]
+
+
 @pytest.fixture
-def pts_range_scan(monkeypatch: pytest.MonkeyPatch):
+def pts_range_scan(monkeypatch: pytest.MonkeyPatch) -> _InstallPtsSamples:
     """Patch the VOB PTS scan and pack snapping for range unit tests."""
 
     def install(samples: list[tuple[int, int]]) -> None:
-        monkeypatch.setattr(vobsub, "_scan_vob_pts", lambda _inputs: samples)
-        monkeypatch.setattr(vobsub, "_snap_to_pack", lambda _inputs, pos, _total: pos)
+        def fake_scan_vob_pts(_inputs: list[Path]) -> list[tuple[int, int]]:
+            return samples
+
+        def fake_snap_to_pack(_inputs: list[Path], pos: int, _total: int) -> int:
+            return pos
+
+        monkeypatch.setattr(vobsub, "_scan_vob_pts", fake_scan_vob_pts)
+        monkeypatch.setattr(vobsub, "_snap_to_pack", fake_snap_to_pack)
 
     return install
 
 
 def test_main_content_range_keeps_multi_epoch_movies(
-    tmp_path: Path, pts_range_scan
+    tmp_path: Path, pts_range_scan: _InstallPtsSamples
 ) -> None:
     """Treasure Planet-style: 6 clock-reset epochs of comparable length.
 
@@ -198,7 +208,9 @@ def test_main_content_range_keeps_multi_epoch_movies(
     assert _dvd_main_content_range([vob]) is None
 
 
-def test_main_content_range_trims_leadin_junk(tmp_path: Path, pts_range_scan) -> None:
+def test_main_content_range_trims_leadin_junk(
+    tmp_path: Path, pts_range_scan: _InstallPtsSamples
+) -> None:
     second = 90000
     vob = tmp_path / "movie.vob"
     vob.write_bytes(b"\x00" * (1024 * 1024))
@@ -212,7 +224,9 @@ def test_main_content_range_trims_leadin_junk(tmp_path: Path, pts_range_scan) ->
     assert _dvd_main_content_range([vob]) == (100_000, 1024 * 1024)
 
 
-def test_main_content_range_trims_both_edges(tmp_path: Path, pts_range_scan) -> None:
+def test_main_content_range_trims_both_edges(
+    tmp_path: Path, pts_range_scan: _InstallPtsSamples
+) -> None:
     second = 90000
     vob = tmp_path / "movie.vob"
     vob.write_bytes(b"\x00" * (10 * 1024 * 1024))
@@ -228,7 +242,7 @@ def test_main_content_range_trims_both_edges(tmp_path: Path, pts_range_scan) -> 
 
 
 def test_main_content_range_skips_trailing_edge_when_scan_capped(
-    tmp_path: Path, pts_range_scan
+    tmp_path: Path, pts_range_scan: _InstallPtsSamples
 ) -> None:
     """The PTS scan is capped at 512 MB; a scan that stopped early leaves
     the last segment partially measured, so the trailing edge is kept."""
@@ -250,7 +264,7 @@ def test_main_content_range_skips_trailing_edge_when_scan_capped(
 
 
 def test_main_content_range_keeps_equal_episodes(
-    tmp_path: Path, pts_range_scan
+    tmp_path: Path, pts_range_scan: _InstallPtsSamples
 ) -> None:
     """Two equal-length episodes sharing a VOB are both substantial; the
     old rule trimmed to one, the edge rule keeps both (no trim)."""
@@ -268,7 +282,7 @@ def test_main_content_range_keeps_equal_episodes(
 
 
 def test_main_content_range_single_run_needs_no_trim(
-    tmp_path: Path, pts_range_scan
+    tmp_path: Path, pts_range_scan: _InstallPtsSamples
 ) -> None:
     second = 90000
     vob = tmp_path / "movie.vob"
@@ -278,7 +292,9 @@ def test_main_content_range_single_run_needs_no_trim(
     assert _dvd_main_content_range([vob]) is None
 
 
-def test_main_content_range_trims_small_trailer(tmp_path: Path, pts_range_scan) -> None:
+def test_main_content_range_trims_small_trailer(
+    tmp_path: Path, pts_range_scan: _InstallPtsSamples
+) -> None:
     """A short trailing menu is trimmed even when the movie dominates —
     the old 98%-of-total rule skipped this trim."""
     second = 90000
@@ -295,7 +311,7 @@ def test_main_content_range_trims_small_trailer(tmp_path: Path, pts_range_scan) 
 
 
 def test_main_content_range_refuses_to_drop_most_content(
-    tmp_path: Path, pts_range_scan
+    tmp_path: Path, pts_range_scan: _InstallPtsSamples
 ) -> None:
     """A pathological scan (one long cell plus many junk-sized ones) must
     not trim away most of the content."""

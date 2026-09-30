@@ -32,7 +32,7 @@ from models import Config, RuntimeState
     reason="disc fixtures not present; capture them locally to run this test",
 )
 def test_dvd_identifiers_use_real_ifo_fixtures(
-    monkeypatch, fixtures_dir: Path, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, fixtures_dir: Path, tmp_path: Path
 ) -> None:
     video_ts = tmp_path / "VIDEO_TS"
     video_ts.mkdir()
@@ -44,9 +44,11 @@ def test_dvd_identifiers_use_real_ifo_fixtures(
         vmg_path: 11_644_473_611 * 10_000_000,
         vts_path: 11_644_473_612 * 10_000_000,
     }
-    monkeypatch.setattr(
-        "dvdifo._dvd_creation_filetime", lambda path: fingerprints[path]
-    )
+
+    def fake_creation_filetime(path: Path) -> int:
+        return fingerprints[path]
+
+    monkeypatch.setattr("dvdifo._dvd_creation_filetime", fake_creation_filetime)
 
     assert _compute_dvd_disc_id(video_ts) == "b090283799370e5f"
     assert _compute_libdvdread_disc_id(video_ts) == ("2DC691009D9A0011AC3C6A9A14C98889")
@@ -213,16 +215,18 @@ def test_matrix256_conformance_vectors() -> None:
 
 
 def test_scanner_adds_matrix256_fingerprint_for_folder_disc(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = tmp_path / "disc"
     stream_dir = source / "BDMV" / "STREAM"
     stream_dir.mkdir(parents=True)
     (stream_dir / "movie.m2ts").write_bytes(b"video")
     scanner = scan.Scanner(source, Config(), RuntimeState())
-    monkeypatch.setattr(
-        scan, "_scan_bluray_source", lambda *_args: ([], DiscMetadata())
-    )
+
+    def fake_scan_bluray_source(*_args: object) -> tuple[list[Title], DiscMetadata]:
+        return [], DiscMetadata()
+
+    monkeypatch.setattr(scan, "_scan_bluray_source", fake_scan_bluray_source)
 
     titles = scanner.scan()
 
@@ -233,7 +237,9 @@ def test_scanner_adds_matrix256_fingerprint_for_folder_disc(
     )
 
 
-def test_scanner_adds_aacs_disc_id_for_folder_disc(monkeypatch, tmp_path: Path) -> None:
+def test_scanner_adds_aacs_disc_id_for_folder_disc(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     source = tmp_path / "disc"
     aacs = source / "AACS"
     aacs.mkdir(parents=True)
@@ -241,9 +247,11 @@ def test_scanner_adds_aacs_disc_id_for_folder_disc(monkeypatch, tmp_path: Path) 
     (source / "BDMV" / "STREAM" / "movie.m2ts").write_bytes(b"video")
     (aacs / "Unit_Key_RO.inf").write_bytes(b"unit key bytes")
     scanner = scan.Scanner(source, Config(), RuntimeState())
-    monkeypatch.setattr(
-        scan, "_scan_bluray_source", lambda *_args: ([], DiscMetadata())
-    )
+
+    def fake_scan_bluray_source(*_args: object) -> tuple[list[Title], DiscMetadata]:
+        return [], DiscMetadata()
+
+    monkeypatch.setattr(scan, "_scan_bluray_source", fake_scan_bluray_source)
 
     scanner.scan()
 
@@ -255,9 +263,14 @@ def test_scanner_adds_aacs_disc_id_for_folder_disc(monkeypatch, tmp_path: Path) 
 
 
 def test_display_titles_shows_available_identifiers(
-    monkeypatch, tmp_path: Path, capsys
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(cli, "get_terminal_width", lambda: 100)
+    def fake_terminal_width() -> int:
+        return 100
+
+    monkeypatch.setattr(cli, "get_terminal_width", fake_terminal_width)
     title = Title(
         index=0,
         source_file=tmp_path / "movie.mkv",
@@ -283,7 +296,9 @@ def test_display_titles_shows_available_identifiers(
     assert "mkvsmith metadata hash:" not in output
 
 
-def test_mux_tags_embed_disc_identifiers(monkeypatch, tmp_path: Path) -> None:
+def test_mux_tags_embed_disc_identifiers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     title = Title(
         index=0,
         source_file=tmp_path / "movie.m2ts",
@@ -297,7 +312,13 @@ def test_mux_tags_embed_disc_identifiers(monkeypatch, tmp_path: Path) -> None:
         matrix256_fingerprint="a" * 64,
     )
     prepared = tagger.MovieMetadata(title="Test Disc")
-    monkeypatch.setattr(tagger, "_prepare_tagging", lambda *_args: (prepared, []))
+
+    def fake_prepare_tagging(
+        *_args: object,
+    ) -> tuple[tagger.MovieMetadata | None, list[tagger.ArtAttachment]]:
+        return prepared, []
+
+    monkeypatch.setattr(tagger, "_prepare_tagging", fake_prepare_tagging)
 
     tagged, _attachments = mkv._prepare_mux_tags(
         title, TagOptions(enabled=True), [], metadata

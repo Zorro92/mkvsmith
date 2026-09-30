@@ -146,9 +146,9 @@ _ES: dict[str, str] = {
     # --- disc_reader (mount / 7z) ---------------------------------------------
     "Skipping direct mount (--no-sudo is set)": "Omitiendo montaje directo (--no-sudo está activado)",
     "Skipping incompatible clip for append: {name} (audio layout differs)": "Omitiendo clip incompatible para anexar: {name} (el audio difiere)",
-    "Could not read clip offsets from {name}; edition chapters may be misaligned at branch points": "No se pudieron leer los desfases de clips de {name}; los capítulos de las ediciones pueden quedar desalineados en los puntos de bifurcación",
     "Skipping {stream}: it is stored in a Blu-ray sub-path clip, which can't be muxed": "Omitiendo {stream}: está en un clip de sub-ruta del Blu-ray, que no se puede multiplexar",
     "(sub-path, not muxed)": "(sub-ruta, no se multiplexa)",
+    "Could not read clip offsets from {name}; edition chapters may be misaligned at branch points": "No se pudieron leer los desfases de clips de {name}; los capítulos de las ediciones pueden quedar desalineados en los puntos de bifurcación",
     "[INFO] Attempt to mount '{path}' via 'sudo mount -o loop,ro'? [y/N]:": "[INFO] ¿Intentar montar '{path}' con 'sudo mount -o loop,ro'? [s/N]:",
     "Attempting direct mount via 'sudo mount -o loop,ro'...": "Intentando montaje directo con 'sudo mount -o loop,ro'...",
     "mount failed (rc={rc}): {err}": "el montaje falló (rc={rc}): {err}",
@@ -249,8 +249,8 @@ _LANGUAGE_NAMES: dict[str, str] = {
 # State
 # =============================================================================
 
-_ACTIVE_LANG = "en"
-_ACTIVE: dict[str, str] = {}
+_active_lang = "en"
+_active_catalog: dict[str, str] = {}
 
 
 # =============================================================================
@@ -264,18 +264,18 @@ def set_language(lang: str | None) -> str:
     Accepts full locale strings like "es_ES.UTF-8" (the part before "." and "_"
     is taken as the language code). Returns the resolved code actually applied.
     """
-    global _ACTIVE_LANG, _ACTIVE
+    global _active_lang, _active_catalog
     code = _normalise(lang)
     if code not in _TRANSLATIONS and code != "en":
         # Unknown / unsupported language -> English.
         code = "en"
-    _ACTIVE_LANG = code
-    _ACTIVE = _TRANSLATIONS.get(code, {})
+    _active_lang = code
+    _active_catalog = _TRANSLATIONS.get(code, {})
     return code
 
 
 def get_language() -> str:
-    return _ACTIVE_LANG
+    return _active_lang
 
 
 def available_languages() -> list[tuple[str, str]]:
@@ -297,7 +297,7 @@ def tr(text: str, **kwargs: Any) -> str:
     The English source string is the key; an unknown key returns the source
     unchanged, so untranslated phrases simply render in English.
     """
-    out = _ACTIVE.get(text, text)
+    out = _active_catalog.get(text, text)
     if kwargs:
         try:
             out = out.format(**kwargs)

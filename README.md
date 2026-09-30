@@ -226,6 +226,11 @@ mv tests/fixtures/VTS_09_0.IFO tests/fixtures/treasure_vts_09_0.ifo
 for c in 00875 00876; do
   uv run python scripts/carve_m2ts_tail_fixture.py /tmp/mu/$c.m2ts tests/fixtures/${c}_tail_headers.m2ts
 done
+
+# STN SubPath / IG entries (tests/test_bluray_stn.py):
+7z e disc.iso "BDMV/PLAYLIST/00307.mpls" -otests/fixtures -y   # Monsters University
+cp SGT_FROG_S1_D1/BDMV/PLAYLIST/00000.mpls tests/fixtures/sgtfrog_s1d1_00000.mpls
+cp SGT_FROG_S7/BDMV/PLAYLIST/00001.mpls tests/fixtures/sgtfrog_s7_00001.mpls
 ```
 
 `scripts/inspect_fixtures.py` re-parses whatever is in `tests/fixtures/` and

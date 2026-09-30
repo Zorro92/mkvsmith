@@ -238,10 +238,12 @@ def _subtitle_extension_info(title: Title, stream: Stream) -> str:
 def _non_video_stream_line(title: Title, stream: Stream) -> str:
     channels = f"{stream.channels}ch" if stream.channels else "-"
     stream_title = f" - {stream.title}" if stream.title else ""
+    not_muxed = "" if stream.is_muxable else f" {tr('(sub-path, not muxed)')}"
     return (
         f"  {stream.display_id:<5} {stream.codec_display:<14} {channels:<6} "
         f"{stream.language_display}{stream_title}"
         f"{_subtitle_extension_info(title, stream)}{_stream_flags(stream)}"
+        f"{not_muxed}"
     )
 
 

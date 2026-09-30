@@ -62,21 +62,23 @@ def _parse_stn_table_languages(stn_bytes: bytes) -> tuple[list[str], list[str]]:
     n_video, n_audio, n_pg = stn_bytes[4], stn_bytes[5], stn_bytes[6]
     pos = 16
 
-    def _skip_entry() -> bytes | None:
+    def _skip_entry() -> tuple[int, bytes | None]:
+        """(stream_type, attributes) of the next entry; see _read_entry."""
         nonlocal pos
         if pos >= len(stn_bytes):
-            return None
+            return 0, None
         elen = stn_bytes[pos]
+        stream_type = stn_bytes[pos + 1] if elen and pos + 1 < len(stn_bytes) else 0
         pos += 1 + elen
         if pos > len(stn_bytes):
-            return None
+            return stream_type, None
         if pos >= len(stn_bytes):
-            return b""
+            return stream_type, b""
         alen = stn_bytes[pos]
         pos += 1
         attr = stn_bytes[pos : pos + alen]
         pos += alen
-        return attr
+        return stream_type, attr
 
     def _lang_from_attr(attr: bytes | None) -> str:
         if not attr or len(attr) < 2:
@@ -97,10 +99,20 @@ def _parse_stn_table_languages(stn_bytes: bytes) -> tuple[list[str], list[str]]:
             return raw.decode("ascii", "ignore")
         return "und"
 
+    def _main_clip_langs(count: int) -> list[str]:
+        # These lists align with the main clip's mkvmerge tracks by
+        # position, so SubPath entries (stream_type != 1) are left out.
+        langs: list[str] = []
+        for _ in range(count):
+            stream_type, attr = _skip_entry()
+            if stream_type in (0, 1):
+                langs.append(_lang_from_attr(attr))
+        return langs
+
     for _ in range(n_video):
         _skip_entry()
-    audio_langs = [_lang_from_attr(_skip_entry()) for _ in range(n_audio)]
-    subtitle_langs = [_lang_from_attr(_skip_entry()) for _ in range(n_pg)]
+    audio_langs = _main_clip_langs(n_audio)
+    subtitle_langs = _main_clip_langs(n_pg)
     return audio_langs, subtitle_langs
 
 
@@ -382,7 +394,9 @@ def _merge_clpi_into_mpls(
     """
     for s in mpls_streams:
         pid = s.get("pid")
-        if pid is None:
+        # SubPath streams live in another clip; the main clip's CLPI entry
+        # for the same PID describes a different stream.
+        if pid is None or "subpath_id" in s:
             continue
         cinfo = clpi_streams.get(pid)
         if cinfo is None:
@@ -486,6 +500,9 @@ class MplsStreamInfo(TypedDict):
     channels: int | None
     pid: int | None
     coding_type: NotRequired[int]
+    # Set for stream_entry types 2-4: the stream lives in this SubPath's
+    # clip, not in the PlayItem's main clip (libbluray MPLS_STREAM).
+    subpath_id: NotRequired[int]
     dynamic_range_type: NotRequired[str]
     colorspace: NotRequired[str]
     sample_rate: NotRequired[int | None]
@@ -636,10 +653,20 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
         dynamic_range_type: str | None = None
         colorspace: str | None = None
 
-        # PID is at entry_data[1:3] (big-endian) for primary streams.
-        # entry_data[0] is a stream-index / ref byte (0x01 for primary, 0x02 for secondary).
-        if elen >= 3:
+        # stream_entry (libbluray mpls_parse.c _parse_stream): byte 0 is
+        # stream_type. 1 = main-clip stream: pid(16). 2 = SubPath sub-clip:
+        # subpath_id(8), subclip_id(8), pid(16). 3/4 = SubPath stream:
+        # subpath_id(8), pid(16). All big-endian.
+        subpath_id: int | None = None
+        stream_type = entry_data[0] if elen >= 1 else 0
+        if stream_type == 1 and elen >= 3:
             pid = (entry_data[1] << 8) | entry_data[2]
+        elif stream_type == 2 and elen >= 5:
+            subpath_id = entry_data[1]
+            pid = (entry_data[3] << 8) | entry_data[4]
+        elif stream_type in (3, 4) and elen >= 4:
+            subpath_id = entry_data[1]
+            pid = (entry_data[2] << 8) | entry_data[3]
 
         # --- Determine stream type and extract fields ---
         if coding_type in _BD_VIDEO_CODING_MAP:
@@ -698,22 +725,37 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
             "channels": channels,
             "pid": pid,
         }
+        if subpath_id is not None:
+            entry["subpath_id"] = subpath_id
         if dynamic_range_type is not None:
             entry["dynamic_range_type"] = dynamic_range_type
         if colorspace is not None:
             entry["colorspace"] = colorspace
         return entry
 
-    # Category iteration order (per BD spec):
-    category_order = [
-        ("prim_video", "video"),
-        ("prim_audio", "audio"),
-        ("prim_pg", "sub"),
-        ("prim_ig", "sub"),
-        ("seco_audio", "audio"),
-        ("seco_video", "video"),
-        ("seco_pg", "sub"),
-        ("dv", "video"),
+    def _skip_ref_list() -> None:
+        # num_refs(8), reserved(8), refs(8 each), padded to 16 bits —
+        # the extra attributes after secondary audio/video entries.
+        nonlocal pos
+        if pos < len(stn_bytes):
+            num_refs = stn_bytes[pos]
+            pos += 2 + num_refs + (num_refs % 2)
+
+    # Category order and per-entry extras follow libbluray _parse_stn:
+    # PiP PG entries directly follow the primary PG entries; secondary
+    # audio carries one trailing reference list, secondary video two.
+    # IG (menu graphics) entries are read to advance but never listed:
+    # they are not subtitles and mkvmerge cannot mux them (the reference ripper does
+    # not list them either).
+    category_order: list[tuple[str, str, int]] = [
+        ("prim_video", "video", 0),
+        ("prim_audio", "audio", 0),
+        ("prim_pg", "sub", 0),
+        ("seco_pg", "sub", 0),
+        ("prim_ig", "ig", 0),
+        ("seco_audio", "audio", 1),
+        ("seco_video", "video", 2),
+        ("dv", "video", 0),
     ]
     placeholder_map: dict[str, MplsStreamInfo] = {
         "video": _PLACEHOLDER_VIDEO,
@@ -721,10 +763,14 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
         "sub": _PLACEHOLDER_SUB,
     }
 
-    for cat_name, cat_kind in category_order:
+    for cat_name, cat_kind, ref_lists in category_order:
         count = counts.get(cat_name, 0)
         for _ in range(count):
             info = _read_entry()
+            for _ref_list in range(ref_lists):
+                _skip_ref_list()
+            if cat_kind == "ig":
+                continue
             if info and info["type"] is not None:
                 result.append(info)
             else:
@@ -841,6 +887,8 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
         audio_langs: list[str] = []
         subtitle_langs: list[str] = []
         stn_data = b""
+        first_signature: list[tuple[object, ...]] | None = None
+        differing_items: list[str] = []
         for i in range(num_playitems):
             if pos + 2 > len(data):
                 break
@@ -871,48 +919,28 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
                     "connection_condition": connection_condition,
                 }
             )
+            signature = _stn_signature(item[stn_off:])
             if i == 0:
                 stn_data = item[stn_off:]
                 audio_langs, subtitle_langs = _parse_stn_table_languages(stn_data)
+                first_signature = signature
+            elif signature != first_signature:
+                differing_items.append(f"{i} ({clip_name})")
         if not play_items:
             return None
+        if differing_items:
+            # Streams are taken from the first PlayItem only (and mkvmerge
+            # appends later clips onto the first clip's tracks), so tracks a
+            # later PlayItem adds or renumbers are not listed or muxed.
+            log_debug(
+                f"{path.stem}: PlayItem stream tables differ from the first "
+                f"at item(s) {', '.join(differing_items)}; using item 0's streams"
+            )
 
         # --- SubPath entries (after PlayItems, before PlayListMark) ---
         # SubPath count is at playlist_start + 8 (2 bytes).
         num_subpaths = _read_u16(data, playlist_start + 8)
-        subpath_entries: list[dict[str, Any]] = []
-        for _sp_idx in range(num_subpaths):
-            if pos + 4 > len(data):
-                break
-            sp_len = _read_u32(data, pos)
-            pos += 4
-            if pos + sp_len > len(data):
-                break
-            sp_data = data[pos : pos + sp_len]
-            pos += sp_len
-            if len(sp_data) < 4:
-                continue
-            sp_type = sp_data[0]
-            num_sp_items = sp_data[3]
-            sp_clips: list[str] = []
-            spi_pos = 4
-            # Out-of-mux SubPath types (1, 4, 6) have sync fields
-            # (sync_PlayItem_id + sync_start_PTS = 5 extra bytes) appended
-            # to each SubPlayItem. In-mux types don't.
-            has_sync = sp_type in (1, 4, 6)
-            sp_item_size = 19 + (5 if has_sync else 0)
-            for _spi in range(num_sp_items):
-                if spi_pos + sp_item_size > len(sp_data):
-                    break
-                clip_name = sp_data[spi_pos : spi_pos + 5].decode("ascii", "ignore")
-                sp_clips.append(clip_name)
-                spi_pos += sp_item_size
-            if sp_clips:
-                sp_entry: dict[str, Any] = {
-                    "type": sp_type,
-                    "clips": sp_clips,
-                }
-                subpath_entries.append(sp_entry)
+        subpath_entries, pos = _parse_subpath_entries(data, pos, num_subpaths)
         if subpath_entries:
             subpath_types = ", ".join(
                 f"type={entry['type']}" for entry in subpath_entries

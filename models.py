@@ -469,6 +469,10 @@ class Stream:
     # subtitles). This is the stream's identifier in the original source medium,
     # matching the reference "ID in the original source medium" output.
     pid: int | None = None
+    # Blu-ray SubPath the stream lives in (MPLS stream_entry types 2-4), or
+    # None for streams in the PlayItem's main clip. mkvsmith muxes only
+    # main-path clips, so such streams are listed but never muxed.
+    subpath_id: int | None = None
     # Video-only metadata that must be explicitly forwarded so the muxer
     # does not substitute wrong defaults (e.g. MPEG-2 SAR, or missing colour
     # signalling on DVD/BD sources).
@@ -486,6 +490,11 @@ class Stream:
     @property
     def language_display(self) -> str:
         return f"{get_language_name(self.language)} ({self.language})"
+
+    @property
+    def is_muxable(self) -> bool:
+        """False for Blu-ray SubPath streams, which mkvsmith cannot mux."""
+        return self.subpath_id is None
 
     @property
     def display_id(self) -> str:

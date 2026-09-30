@@ -114,6 +114,7 @@ def _streams_from_mpls(mpls_streams: list[MplsStreamInfo]) -> list[Stream]:
                 False,
                 type_index=0,
                 pid=stream_info.get("pid"),
+                subpath_id=stream_info.get("subpath_id"),
             )
             _set_video_color_from_info(stream, stream_info)
             title_streams.append(stream)
@@ -129,6 +130,7 @@ def _streams_from_mpls(mpls_streams: list[MplsStreamInfo]) -> list[Stream]:
                 False,
                 type_index=type_counts[StreamType.AUDIO],
                 pid=stream_info.get("pid"),
+                subpath_id=stream_info.get("subpath_id"),
             )
             stream.channels = stream_info.get("channels")
             title_streams.append(stream)
@@ -144,6 +146,7 @@ def _streams_from_mpls(mpls_streams: list[MplsStreamInfo]) -> list[Stream]:
                 False,
                 type_index=type_counts[StreamType.SUBTITLE],
                 pid=stream_info.get("pid"),
+                subpath_id=stream_info.get("subpath_id"),
             )
             title_streams.append(stream)
             type_counts[StreamType.SUBTITLE] += 1
@@ -772,7 +775,7 @@ def _log_bluray_subpaths(
     for subpath in subpath_entries:
         subpath_type = subpath.get("type", 0)
         subpath_clips = subpath.get("clips", [])
-        if subpath_type not in (4, 6) or not subpath_clips:
+        if not subpath_clips:
             continue
         log_debug(f"  SubPath type {subpath_type}: clips {subpath_clips}")
         for subpath_clip in subpath_clips:

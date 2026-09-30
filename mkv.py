@@ -110,13 +110,17 @@ def select_streams(
     sel.extend(
         s
         for s in title.audio_streams
-        if effective_config.keep_all_audio
-        or s.language in effective_config.preferred_languages
+        if s.is_muxable
+        and (
+            effective_config.keep_all_audio
+            or s.language in effective_config.preferred_languages
+        )
     )
     sel.extend(
         s
         for s in title.subtitle_streams
-        if effective_config.keep_all_subtitles
+        if s.is_muxable
+        and effective_config.keep_all_subtitles
         and (effective_config.include_forced or not s.is_forced)
     )
     return sel
@@ -592,6 +596,18 @@ def _map_streams_to_ident_tracks(
     tracks_by_position = _ident_tracks_by_position(ident_tracks)
     mapped: list[MappedStream] = []
     for stream in streams:
+        if not stream.is_muxable:
+            # A SubPath stream's PID belongs to another clip; matching it by
+            # PID or position would pair it with an unrelated main-clip track.
+            log_warn(
+                tr(
+                    "Skipping {stream}: it is stored in a Blu-ray sub-path "
+                    "clip, which can't be muxed",
+                    stream=stream.display_id,
+                )
+            )
+            mapped.append(_unmapped_stream(stream))
+            continue
         ident_track = _ident_track_for_source_id(stream, ident_tracks)
         if ident_track is None:
             ident_track = _positional_ident_track(stream, tracks_by_position)

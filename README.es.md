@@ -232,5 +232,3 @@ confianza inmerecida.
 ## Licencia
 
 GPL-3.0-or-later. Consulta [LICENSE](LICENSE).
-
-`mkvsmith` no está afiliado con the reference ripper ni respaldado por él.

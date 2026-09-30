@@ -246,5 +246,3 @@ disc images; the rest may have been written with unwarranted confidence.
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
-
-`mkvsmith` is not affiliated with, or endorsed by, the reference ripper.

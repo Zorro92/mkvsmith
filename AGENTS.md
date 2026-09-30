@@ -51,14 +51,14 @@ core track, it does NOT duplicate playlist-referenced subs that share a PID,
 and it zlib-compresses PGS subtitles. Don't "fix" mkvsmith to match the reference behaviour on
 these; the divergences are deliberate.
 
-the reference ripper is closed-source. To compare behaviour, ask the user to provide
-reference output (or describe the expected output) — don't guess at
+the reference ripper is closed-source. To compare behaviour, you may collect
+reference output yourself for research — don't guess at
 what the reference ripper does.
 
-Reference means compare-only: never invoke its binaries, parse its output
-files, or depend on its rips, tags, or chapters in code, tests, scripts, or
-workflow. Ground truth may be eyeballed from its output during research, but
-nothing ships (or tests) that reads it.
+Reference means compare-only: invoking its binaries and eyeballing their
+output during research is fine, but never depend on its rips, tags, or
+chapters in code, tests, scripts, or workflow. Nothing that ships (or
+tests) may invoke it, parse its output, or read its files.
 
 ## CLI, interactive prompt, and future GUI
 

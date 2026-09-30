@@ -184,10 +184,10 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   disponible y el espacio libre del tmpfs, ya que `/tmp` es compartido.
 - El montaje directo de ISO en bucle usa `sudo`; pasa `--no-sudo` para
   desactivarlo.
-- **La salida MKV multi-edición es experimental.** Está desactivada por defecto
-  y oculta tras `--debug` (que expone `--multi-edition` y el comando interactivo
-  `me`). La reproducción a través de los puntos donde se unen las ediciones
-  puede no funcionar en todos los reproductores.
+- **La salida MKV multi-edición** (`--multi-edition`, o el comando interactivo
+  `me`) combina playlists con ramificación continua en un solo archivo con
+  uniones sin pausas y capítulos exactos. Requiere un reproductor con
+  soporte de capítulos ordenados (p. ej. mpv, VLC) para cambiar de edición.
 - **Dolby Vision no ha sido probado a fondo.** HDR10 y HDR10+ no requieren
   tratamiento especial (sus metadatos viajan dentro del bitstream de vídeo y
   sobreviven intactos a un remux), y la señalización de color BT.2020/PQ para

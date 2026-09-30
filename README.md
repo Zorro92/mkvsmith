@@ -177,10 +177,10 @@ not expose DVD cell IDs.
   frequently capped at a fraction of RAM), with extra guards for
   currently-available RAM and tmpfs free space, since `/tmp` is shared.
 - Direct ISO loop-mounting uses `sudo`; pass `--no-sudo` to disable it.
-- **Multi-edition MKV output is experimental.** It is disabled by default and
-  gated behind `--debug` (which exposes `--multi-edition` and the interactive
-  `me` command). Playback across the seams where editions are stitched
-  together may not work in every player.
+- **Multi-edition MKV output** (`--multi-edition`, or the interactive `me`
+  command) combines seamless-branching playlists into one file with
+  gapless joins and exact chapter placement. It needs a player with
+  ordered-chapters support (e.g. mpv, VLC) to switch editions.
 - **Dolby Vision has not been fully tested.** HDR10 and HDR10+ need no special
   handling (their metadata travels inside the video bitstream and survives a
   remux untouched), and the BT.2020/PQ colour signalling for HDR and DV

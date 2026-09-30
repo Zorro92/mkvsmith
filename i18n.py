@@ -57,7 +57,7 @@ _ES: dict[str, str] = {
     # --- multi-edition ---------------------------------------------------------
     "--multi-edition expects comma-separated title numbers": "--multi-edition espera números de título separados por comas",
     "--multi-edition needs at least two titles": "--multi-edition necesita al menos dos títulos",
-    "--multi-edition is experimental; pass --debug to enable it": "--multi-edition es experimental; usa --debug para habilitarlo",
+    "combine playlist titles into one multi-edition MKV": "combina títulos de playlist en un MKV multi-edición",
     "Multi-edition titles must come from the same source disc": "Los títulos de multi-edición deben provenir del mismo disco de origen",
     "Multi-edition needs at least two titles": "Multi-edición necesita al menos dos títulos",
     "No edition groups detected; specify titles: me N N ...": "No se detectaron grupos de ediciones; especifica títulos: me N N ...",

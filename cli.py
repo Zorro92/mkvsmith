@@ -498,7 +498,7 @@ class _InteractiveRipper:
             if command == "re":
                 log_warn(tr("re is deprecated; use rm (episodes on series discs)"))
             self._handle_main_feature()
-        elif command == "me" and self.debug:
+        elif command == "me":
             indices = self.multi_edition_indices(args)
             if indices:
                 self.rip_multi_edition(indices)
@@ -591,7 +591,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--multi-edition",
         metavar="N,N,...",
         default=None,
-        help=argparse.SUPPRESS,  # experimental; hidden behind --debug
+        help=tr("combine playlist titles into one multi-edition MKV"),
     )
     p.add_argument("-i", "--info", action="store_true")
     p.add_argument("-d", "--details", type=int)
@@ -938,9 +938,6 @@ def parse_args(
         _save_tmdb_key_and_exit(a.save_key)
 
     if a.multi_edition:
-        if not (runtime_state or RUNTIME_STATE).logger.debug_enabled:
-            log_error(tr("--multi-edition is experimental; pass --debug to enable it"))
-            sys.exit(1)
         try:
             me_idx = [int(x) for x in a.multi_edition.split(",") if x.strip()]
         except ValueError:

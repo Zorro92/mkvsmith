@@ -416,7 +416,7 @@ def _write_chapters_xml(times: list[float], out: Path, lang: str = "eng") -> Non
     """Write a Matroska Chapters XML file for mkvmerge's ``--chapters`` option.
 
     Chapter names are not prefixed with the language code (the ``ChapterLanguage``
-    element handles that for mediainfo).  The prefix is unnecessary
+    element handles that for mediainfo).  A language-code prefix is unnecessary
     and would produce a doubled language label like ``en:eng:Chapter 01``.
     Timestamps use nanosecond precision as mkvmerge expects.
     """

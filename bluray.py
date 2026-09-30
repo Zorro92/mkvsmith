@@ -745,8 +745,8 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
     # PiP PG entries directly follow the primary PG entries; secondary
     # audio carries one trailing reference list, secondary video two.
     # IG (menu graphics) entries are read to advance but never listed:
-    # they are not subtitles and mkvmerge cannot mux them (the reference ripper does
-    # not list them either).
+    # they are not subtitles and mkvmerge cannot mux them (the reference
+    # ripper does not list them either).
     category_order: list[tuple[str, str, int]] = [
         ("prim_video", "video", 0),
         ("prim_audio", "audio", 0),

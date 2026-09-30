@@ -36,29 +36,13 @@ removed on purpose; do not reintroduce it.
   mkvmerge `-J` output or direct parsing. Ask the user before introducing an
   ffprobe/ffmpeg call into the main code.
 
-## the reference ripper is the behavioural reference (but output is not 1:1)
+## Behavioural reference policy (private)
 
-This tool deliberately follows the reference behaviour where behaviour is ambiguous: track
-naming, normalising chapters to start at 0, stripping the trailing
-end-of-movie chapter, exposing seamless-branching editions, and
-de-duplicating identical playlists. When a "how should this behave?" question
-arises and nothing else decides it, match the reference behaviour. Comments that say "matches
-the reference ripper" are intentional — don't "improve" on them.
-
-That said, the two are NOT byte-identical by design. mkvsmith intentionally
-diverges in muxing details — e.g. it does NOT split DTS-HD MA into a separate
-core track, it does NOT duplicate playlist-referenced subs that share a PID,
-and it zlib-compresses PGS subtitles. Don't "fix" mkvsmith to match the reference behaviour on
-these; the divergences are deliberate.
-
-the reference ripper is closed-source. To compare behaviour, you may collect
-reference output yourself for research — don't guess at
-what the reference ripper does.
-
-Reference means compare-only: invoking its binaries and eyeballing their
-output during research is fine, but never depend on its rips, tags, or
-chapters in code, tests, scripts, or workflow. Nothing that ships (or
-tests) may invoke it, parse its output, or read its files.
+Where disc-authoring behaviour is ambiguous, mkvsmith follows a private
+reference policy kept in `.agents/reference-behavior.md` (gitignored, never
+committed). Comments that say "matches the reference behaviour" are
+intentional — don't "improve" on them, and don't "fix" the deliberate
+output divergences that policy documents.
 
 ## CLI, interactive prompt, and future GUI
 

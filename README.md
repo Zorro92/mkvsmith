@@ -8,7 +8,7 @@ DVD/Blu-ray ripper that produces MKV files using
 `mkvsmith` reads disc structures directly — `.mpls` / `.clpi` / `.ifo` / BDMV
 metadata — instead of probing media bitstreams. That makes scanning fast and
 dependency-light: the only external media tool it needs is `mkvmerge`. It
-deliberately mirrors the reference behaviour where that behaviour is the sensible
+follows de-facto ripping conventions where those are the sensible
 default, but it is an independent, GPL-licensed reimplementation.
 
 ## Features
@@ -148,7 +148,7 @@ The format-specific Disc IDs require readable `AACS`/`VIDEO_TS` structures
 (folder, ISO, or mounted image); the raw `/dev` fallback does not expose them.
 
 `--discdb-contribute` writes `manifest.json` plus a compatible scan
-log generated from mkvsmith's own MPLS/CLPI/IFO parsing. In browser mode, open
+log (`scan_log.txt`) generated from mkvsmith's own MPLS/CLPI/IFO parsing. In browser mode, open
 or create a contribution draft and upload `scan_log.txt` where the site
 asks for a scan log. Direct mode attaches that data to an existing
 contribution draft using

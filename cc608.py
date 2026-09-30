@@ -14,7 +14,7 @@ address codes, control codes, special character sets) follows FFmpeg's
 attribution policy, never invoked.
 
 Captions are surfaced as timed ``CcCaptionEvent`` snapshots and written as
-a SubRip (.srt) sidecar for muxing, matching the reference CC->Text track
+a SubRip (.srt) sidecar for muxing, matching the reference CC→Text track
 behaviour ("S_CC608 ... CC→Text (Lossy conversion)").
 """
 

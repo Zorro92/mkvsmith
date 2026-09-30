@@ -8,9 +8,9 @@ Extractor de DVD/Blu-ray que produce archivos MKV usando
 `mkvsmith` lee las estructuras del disco directamente — metadatos
 `.mpls` / `.clpi` / `.ifo` / BDMV — en lugar de sondear los flujos de medios.
 Eso hace que el escaneo sea rápido y con pocas dependencias: la única
-herramienta de medios externa que necesita es `mkvmerge`. Imita deliberadamente
-el comportamiento de referencia cuando ese comportamiento es el valor por defecto
-más sensato, pero es una reimplementación independiente con licencia GPL.
+herramienta de medios externa que necesita es `mkvmerge`. Sigue las convenciones
+de extracción de facto cuando son el valor por defecto más sensato, pero es
+una reimplementación independiente con licencia GPL.
 
 ## Características
 
@@ -151,7 +151,7 @@ legibles (carpeta, ISO o imagen montada); el respaldo directo de `/dev` no los
 expone.
 
 `--discdb-contribute` escribe `manifest.json` y un registro de escaneo
-compatible generado desde el propio análisis de MPLS/CLPI/IFO de
+compatible (`scan_log.txt`) generado desde el propio análisis de MPLS/CLPI/IFO de
 mkvsmith. En el modo browser, abre o crea un borrador de contribución y sube
 `scan_log.txt` donde el sitio pida un registro de escaneo.
 El modo directo adjunta esos datos a un borrador existente con
@@ -225,7 +225,7 @@ cp VIDEO_TS/VTS_01_0.IFO tests/fixtures/dvd_vts_01_0.ifo
 
 Este proyecto fue *vibe coded* — descrito en su mayor parte a un LLM e iterado,
 en lugar de tecleado línea a línea. El análisis de formatos de disco y las
-decisiones de comportamiento de referencia son deliberadas y están cubiertas por
+decisiones de comportamiento son deliberadas y están cubiertas por
 pruebas contra imágenes de disco reales; el resto puede haberse escrito con una
 confianza inmerecida.
 

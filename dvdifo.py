@@ -1336,7 +1336,7 @@ def _pgc_cell_position_signature(
 # Minimum fraction of the default PGC's playback time that must come from
 # cells a candidate PGC also plays for it to be classified as an alternate
 # *edition* (a re-cut of the same footage) rather than an unrelated program
-# sharing the VTS. Verified against the reference ripper on Treasure Planet (2002, R1
+# sharing the VTS. Verified against reference output on Treasure Planet (2002, R1
 # DVD9): the commentary variant PGC covers 100% of the default PGC's
 # runtime, while bonus features packed into shared extras VTSs cover at
 # most 2% (a single shared title-card cell).
@@ -1423,7 +1423,7 @@ def _find_alternate_edition_pgcs(
 
     Used to expose additional programs on the disc as their own separate,
     independently rippable titles - matching how the reference ripper lists every
-    substantial PGC as its own title \(verified against reference output on a movie
+    substantial PGC as its own title (verified against reference output on a movie
     DVD with a shared extras VTS: 1 movie title + 20 bonus-feature titles,
     none of them carrying edition semantics).
 

@@ -479,9 +479,9 @@ def test_alternate_pgc_recutting_default_is_an_edition(fixtures_dir: Path) -> No
 def test_build_dvd_streams_lists_pg_unavailable_streams(fixtures_dir: Path) -> None:
     """Streams a PGC marks unavailable still exist in the VOBs; list them.
 
-    the reference ripper lists all four audio streams for this PGC (verified with
-    reference output) even though its stream-control table disables the
-    commentary; mkvsmith must not drop it.
+    The reference ripper lists all four audio streams for this PGC (verified
+    against reference output) even though its stream-control table disables
+    the commentary; mkvsmith must not drop it.
     """
     data = (fixtures_dir / "treasure_vts_01_0.ifo").read_bytes()
 

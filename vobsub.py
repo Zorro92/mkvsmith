@@ -36,7 +36,7 @@ from models import (
 # intro / rating-card PGCs) interleaved in the same VOB files. Each cell starts
 # its own PTS timeline at ~0, so copying concatenated raw VOBs collapses the
 # overlapping timelines: warning cards appear before the movie and the audio ends
-# up far shorter than the video (hard desync). the reference ripper follows the main PGC's
+# up far shorter than the video (hard desync). The reference ripper follows the main PGC's
 # cell list and extracts only those cells; we approximate that without a full
 # DVD-nav implementation by locating the longest PTS-continuous run (the movie)
 # and copying only that byte range.
@@ -570,7 +570,7 @@ def _default_vobsub_palette() -> str:
     - deKonvoluted guide to VobSub colours:
       https://dekonvoluted.github.io/user%20guides/2011/01/22/
       manipulating-the-colors-of-a-vobsub-subtitle-stream.html
-    - the reference default palette was the starting point; we expanded
+    - The reference default palette was the starting point; we expanded
       white to more indices to cover discs that use non-standard
       pixel-to-index mappings.
     """
@@ -1216,7 +1216,7 @@ def _build_pes_entry(spu_data: bytes, pts: int, sub_stream_id: int) -> list[byte
     """
     # Do NOT patch end_off=0 here.  In PES-wrapped VobSub the PES packet
     # length provides the real boundary, which is what mkvmerge relies on.
-    # the reference ripper keeps end_off=0 in its .sub output.
+    # The reference output keeps end_off=0 in its .sub output.
     sectors: list[bytearray] = []
 
     def _make_sector(data_block: bytes, scr_val: int, is_first: bool) -> bytearray:
@@ -1243,7 +1243,7 @@ def _build_pes_entry(spu_data: bytes, pts: int, sub_stream_id: int) -> list[byte
             sect.extend(pes_hdr)
         else:
             # Continuation PES: no PTS, but includes sub_stream_id
-            # (the reference ripper includes sub_id in EVERY sector, not just the first)
+            # (the reference format includes sub_id in EVERY sector, not just the first)
             pes_hdr = bytearray(b"\x00\x00\x01\xbd")
             pes_len = 3 + 0 + len(data_block)  # flags(2) + hdr_len(1) + payload
             pes_hdr.extend([(pes_len >> 8) & 0xFF, pes_len & 0xFF])

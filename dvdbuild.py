@@ -772,7 +772,7 @@ def _build_dvd_subtitle_streams(
     subtitle_languages: dict[int, str],
 ) -> list[Stream]:
     subtitle_attrs = _parse_vts_subp_attrs(ifo_data)
-    # Attribute-table set first, PGC active set as fallback — same the reference ripper
+    # Attribute-table set first, PGC active set as fallback — same reference
     # rationale as the audio path above.
     subtitle_ids = sorted(subtitle_languages)
     if not subtitle_ids:
@@ -808,11 +808,12 @@ def _build_dvd_streams_from_ifo(
     """Build authoritative DVD streams from a VTS IFO.
 
     Returns video, audio, and subpicture streams in mux order. The VTS
-    attribute-table stream set is authoritative — matching the reference behaviour, which
-    lists every stream a VTS declares even when a PGC's stream-control
-    table marks it unavailable (e.g. Treasure Planet's 2002 R1 DVD9: the
-    commentary track is disabled in the default movie PGC and enabled only
-    in its alternate, yet the reference ripper lists all four audio streams for both).
+    attribute-table stream set is authoritative — matching the reference
+    behaviour, which lists every stream a VTS declares even when a PGC's
+    stream-control table marks it unavailable (e.g. Treasure Planet's 2002 R1
+    DVD9: the commentary track is disabled in the default movie PGC and
+    enabled only in its alternate, yet the reference lists all four audio
+    streams for both).
     PGC control entries supply per-stream language overrides; the PGC
     active set is only a fallback when the attribute table yields nothing.
     An invalid IFO returns an empty list so callers can probe instead.

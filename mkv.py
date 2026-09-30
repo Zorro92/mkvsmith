@@ -845,6 +845,111 @@ def _create_source_id_tags_file(
     return tags_file
 
 
+def _normalize_tags_for_source_id(tags_xml: bytes) -> bytes | None:
+    """Make track SOURCE_ID tags visible to players.
+
+    Two things stop players from surfacing a track's SOURCE_ID tag (as
+    OriginalSourceMedium_ID):
+    - mkvmerge regenerates each tag block's _STATISTICS_TAGS list at mux
+      time from its own statistics tags, dropping SOURCE_ID from it, and
+      players only honour names on that list;
+    - mkvmerge appends the UID it generates for a mux-time ``--tags``
+      file after its Simple elements, but players attach leading
+      Simples to no track, so Targets must come first.
+    Returns the rewritten XML, or None when nothing needs changing.
+    """
+    try:
+        root = ET.fromstring(tags_xml)
+    except ET.ParseError:
+        return None
+    changed = False
+    for tag in root.findall("Tag"):
+        simples = tag.findall("Simple")
+        if not any(simple.findtext("Name") == "SOURCE_ID" for simple in simples):
+            continue
+        children = list(tag)
+        first_simple = next(
+            (i for i, child in enumerate(children) if child.tag == "Simple"), None
+        )
+        first_targets = next(
+            (i for i, child in enumerate(children) if child.tag == "Targets"), None
+        )
+        if (
+            first_simple is not None
+            and first_targets is not None
+            and first_simple < first_targets
+        ):
+            for child in children:
+                tag.remove(child)
+            for child in children:
+                if child.tag == "Targets":
+                    tag.append(child)
+            for child in children:
+                if child.tag != "Targets":
+                    tag.append(child)
+            changed = True
+        for simple in simples:
+            if simple.findtext("Name") != "_STATISTICS_TAGS":
+                continue
+            string_el = simple.find("String")
+            if string_el is None:
+                continue
+            listed = (string_el.text or "").split()
+            if "SOURCE_ID" not in listed:
+                string_el.text = " ".join([*listed, "SOURCE_ID"])
+                changed = True
+    if not changed:
+        return None
+    ET.indent(root, space="  ")
+    result = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    assert isinstance(result, bytes)
+    return result
+
+
+def _apply_source_id_statistics_fix(out_file: Path, temp_files: list[Path]) -> bool:
+    """List each track's SOURCE_ID in its _STATISTICS_TAGS after muxing.
+
+    Reads the muxed tags back, applies _statistics_tags_with_source_id,
+    and writes them back when anything changed. Returns True when the
+    file was rewritten. Never raises: tag cosmetics must not fail a rip.
+    """
+    if shutil.which("mkvextract") is None or shutil.which("mkvpropedit") is None:
+        return False
+    try:
+        extract = _run_mkvtoolnix(["mkvextract", str(out_file), "tags"])
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log_debug(f"SOURCE_ID statistics fix: mkvextract failed: {exc}")
+        return False
+    if extract.returncode != 0:
+        log_debug(f"SOURCE_ID statistics fix: mkvextract failed ({extract.returncode})")
+        return False
+    fixed = _normalize_tags_for_source_id(extract.stdout.encode("utf-8", "replace"))
+    if fixed is None:
+        return False
+    tags_file = Path(tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name)
+    temp_files.append(tags_file)
+    try:
+        tags_file.write_bytes(fixed)
+        rewrite = _run_mkvtoolnix(
+            ["mkvpropedit", str(out_file), "--tags", f"all:{tags_file}"]
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log_warn(
+            tr("Could not update tags in {name}: {err}", name=out_file.name, err=exc)
+        )
+        return False
+    if rewrite.returncode not in (0, 1):
+        log_warn(
+            tr(
+                "Could not update tags in {name} (mkvpropedit failed)",
+                name=out_file.name,
+            )
+        )
+        return False
+    log_debug(f"SOURCE_ID listed in _STATISTICS_TAGS of {out_file.name}")
+    return True
+
+
 def _audio_channels_by_track_id(
     ident_tracks: list[dict[str, Any]],
 ) -> dict[int, int | None]:
@@ -2219,13 +2324,16 @@ class MKVCreator:
         metadata: MovieMetadata | None,
         art_attachments: list[ArtAttachment],
         retime_dropped_inputs: list[int] | None = None,
+        fix_source_id_statistics: bool = False,
     ) -> Path:
         """Run the mux and finalise the output.
 
         *retime_dropped_inputs* is set (possibly empty) when the command used
         ``--generate-chapters when-appending`` for a multi-edition title; the
         placeholder chapters are then replaced by the retimed editions. It
-        lists the union clip indices that were not muxed.
+        lists the union clip indices that were not muxed. *fix_source_id_statistics*
+        lists each track's SOURCE_ID in its _STATISTICS_TAGS afterwards so
+        players surface it (see _apply_source_id_statistics_fix).
         """
         log_info(tr("Muxing: {name}...", name=out_file.name))
         # Track the in-progress output so Ctrl+C deletes the partial file
@@ -2247,6 +2355,8 @@ class MKVCreator:
             _apply_retimed_edition_chapters(
                 out_file, title, retime_dropped_inputs, self.cleanup.temp_files
             )
+        if fix_source_id_statistics:
+            _apply_source_id_statistics_fix(out_file, self.cleanup.temp_files)
         self._finish_created_output(out_file, metadata, art_attachments)
         return out_file
 
@@ -2311,6 +2421,10 @@ class MKVCreator:
                     dropped_inputs
                     if _uses_retimed_edition_chapters(title, kept_inputs)
                     else None
+                ),
+                fix_source_id_statistics=any(
+                    _source_id_for_stream(stream, title) is not None
+                    for stream in streams
                 ),
             )
         finally:

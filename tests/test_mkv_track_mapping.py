@@ -1709,3 +1709,104 @@ def test_drop_incompatible_append_clips(
 
     assert kept == [first]
     assert dropped == [1]
+
+
+def _source_id_tags_xml(mux_order: bool = False) -> bytes:
+    """Two tag blocks: one track with SOURCE_ID, one without.
+
+    With *mux_order*, the SOURCE_ID block mimics mkvmerge's mux-time merge:
+    the Simple it was given comes first and the generated Targets after it.
+    """
+    source_simple = (
+        b"<Simple><Name>SOURCE_ID</Name><TagLanguage>eng</TagLanguage>"
+        b"<String>001011</String></Simple>"
+    )
+    stats_simple = (
+        b"<Simple><Name>_STATISTICS_TAGS</Name><String>BPS DURATION</String></Simple>"
+    )
+    targets = b"<Targets><TrackUID>7</TrackUID></Targets>"
+    first = (
+        b"<Tag>" + source_simple + targets + stats_simple + b"</Tag>"
+        if mux_order
+        else b"<Tag>" + targets + source_simple + stats_simple + b"</Tag>"
+    )
+    return (
+        b'<?xml version="1.0" encoding="utf-8"?><Tags>'
+        + first
+        + b"<Tag><Targets><TrackUID>9</TrackUID></Targets>"
+        + b"<Simple><Name>BPS</Name><String>123</String></Simple></Tag></Tags>"
+    )
+
+
+def test_normalize_tags_for_source_id_appends_to_listing() -> None:
+    fixed = mkv._normalize_tags_for_source_id(_source_id_tags_xml())
+
+    assert fixed is not None
+    root = ET.fromstring(fixed)
+    stats = [
+        simple.findtext("String")
+        for tag in root.findall("Tag")
+        for simple in tag.findall("Simple")
+        if simple.findtext("Name") == "_STATISTICS_TAGS"
+    ]
+    assert stats == ["BPS DURATION SOURCE_ID"]
+    # The tag without SOURCE_ID is untouched.
+    assert b"<String>123</String>" in fixed
+
+
+def test_normalize_tags_for_source_id_noops() -> None:
+    assert mkv._normalize_tags_for_source_id(b"<Tags/>") is None
+    assert mkv._normalize_tags_for_source_id(b"not xml{{{") is None
+    listed = _source_id_tags_xml().replace(b"BPS DURATION<", b"BPS DURATION SOURCE_ID<")
+    assert mkv._normalize_tags_for_source_id(listed) is None
+
+
+def test_apply_source_id_statistics_fix_rewrites_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[0] == "mkvextract":
+            return subprocess.CompletedProcess(
+                cmd, 0, _source_id_tags_xml().decode(), ""
+            )
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def tool_present(_name: str) -> str | None:
+        return "/usr/bin/tool"
+
+    monkeypatch.setattr(mkv, "_run_mkvtoolnix", fake_run)
+    monkeypatch.setattr("shutil.which", tool_present)
+    out = tmp_path / "movie.mkv"
+    out.write_bytes(b"fake")
+
+    assert mkv._apply_source_id_statistics_fix(out, []) is True
+    assert [c[0] for c in calls] == ["mkvextract", "mkvpropedit"]
+    rewritten = Path(calls[1][calls[1].index("--tags") + 1][len("all:") :])
+    assert b"BPS DURATION SOURCE_ID</String>" in rewritten.read_bytes()
+    assert b"BPS DURATION SOURCE_ID" in rewritten.read_bytes()
+
+
+def test_apply_source_id_statistics_fix_skips_without_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def tool_missing(_name: str) -> str | None:
+        return None
+
+    monkeypatch.setattr("shutil.which", tool_missing)
+    out = tmp_path / "movie.mkv"
+    out.write_bytes(b"fake")
+
+    assert mkv._apply_source_id_statistics_fix(out, []) is False
+
+
+def test_normalize_tags_for_source_id_moves_targets_first() -> None:
+    fixed = mkv._normalize_tags_for_source_id(_source_id_tags_xml(mux_order=True))
+
+    assert fixed is not None
+    first = ET.fromstring(fixed).findall("Tag")[0]
+    assert [child.tag for child in first] == ["Targets", "Simple", "Simple"]
+    string_el = first.find("Simple/String")
+    assert string_el is not None and string_el.text == "001011"

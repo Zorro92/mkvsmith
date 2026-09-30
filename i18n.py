@@ -120,6 +120,8 @@ _ES: dict[str, str] = {
     "Metadata Preview": "Vista previa de metadatos",
     "Could not write config: {err}": "No se pudo escribir la configuración: {err}",
     "Could not write tag XML: {err}": "No se pudo escribir el XML de etiquetas: {err}",
+    "Could not update tags in {name}: {err}": "No se pudieron actualizar las etiquetas en {name}: {err}",
+    "Could not update tags in {name} (mkvpropedit failed)": "No se pudieron actualizar las etiquetas en {name} (falló mkvpropedit)",
     "Tagging failed (ripping without tags): {err}": "El etiquetado falló (extrayendo sin etiquetas): {err}",
     # --- muxing ----------------------------------------------------------------
     "Muxing: {name}...": "Multiplexando: {name}...",

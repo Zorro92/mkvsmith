@@ -17,7 +17,6 @@ import os
 import shutil
 import signal
 import socket
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterable, Sequence
@@ -128,9 +127,9 @@ def _remove_temp_file(path: Path) -> None:
 def _has_mounted_child(directory: Path) -> bool:
     """True when a direct child of *directory* is still a mount point.
 
-    Loop-mount points are created at the top of the session temp dir, so a
-    failed unmount leaves one there; deleting through it would walk the
-    mounted image.
+    mkvsmith no longer mounts images, but a session dir from 0.9/0.10 (which
+    could loop-mount inside it) or a hand-made mount may hold one; deleting
+    through it would walk the mounted filesystem.
     """
     try:
         return any(os.path.ismount(child) for child in directory.iterdir())
@@ -271,32 +270,9 @@ def sweep_stale_session_dirs(bases: Iterable[Path]) -> list[tuple[Path, int]]:
     return removed
 
 
-def _unmount_direct_mount(mountpoint: Path, *, interrupt: bool) -> None:
-    command = ["sudo", "umount", str(mountpoint)]
-    if interrupt:
-        # Fail immediately rather than prompting for a password while the user
-        # waits for Ctrl+C shutdown cleanup.
-        command.insert(1, "-n")
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            timeout=30,
-            stdin=subprocess.DEVNULL if interrupt else None,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return
-    if result.returncode != 0:
-        return
-    try:
-        mountpoint.rmdir()
-    except OSError:
-        pass
-
-
-def cleanup_temp_dirs(*, interrupt: bool = False) -> None:
+def cleanup_temp_dirs() -> None:
     """Delete tracked resources using the process runtime state."""
-    RUNTIME_STATE.cleanup.cleanup(interrupt=interrupt)
+    RUNTIME_STATE.cleanup.cleanup()
 
 
 def register_active_muxer(pgid: int) -> None:
@@ -381,7 +357,7 @@ def _signal_cleanup(signum: int, _frame: object) -> None:
     """
     finish_progress_line()
     _kill_active_muxers()
-    cleanup_temp_dirs(interrupt=True)
+    cleanup_temp_dirs()
     signal.signal(signum, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
 
@@ -848,7 +824,6 @@ class Config:
     include_forced: bool = True
     min_duration: float = 60.0
     debug: bool = False
-    no_sudo: bool = False
     show_all: bool = False
     # Extract EIA-608 closed captions as a text subtitle track (SRT or ASS
     # sidecar, see cc608_format) — opt-in via --cc-srt, since the captions
@@ -940,9 +915,6 @@ class RuntimeCleanup:
 
     temp_dirs: list[Path] = field(default_factory=list[Path])
     temp_files: list[Path] = field(default_factory=list[Path])
-    direct_mounts: list[Path] = field(default_factory=list[Path])
-    symlinks: list[Path] = field(default_factory=list[Path])
-
     session_dirs: dict[Path, Path] = field(default_factory=dict[Path, Path])
 
     def register_temp_dir(self, path: Path) -> Path:
@@ -962,34 +934,12 @@ class RuntimeCleanup:
         self.temp_files.append(path)
         return path
 
-    def register_direct_mount(self, path: Path) -> Path:
-        self.direct_mounts.append(path)
-        return path
-
-    def unregister_direct_mount(self, path: Path) -> None:
-        try:
-            self.direct_mounts.remove(path)
-        except ValueError:
-            pass
-
-    def register_symlink(self, path: Path) -> Path:
-        self.symlinks.append(path)
-        return path
-
-    def cleanup(self, *, interrupt: bool = False) -> None:
-        """Delete tracked resources; interrupt mode never prompts for sudo.
-
-        Mounts go first: their mount points live inside the session temp
-        dir, which is only deleted once nothing is mounted in it.
-        """
-        for mountpoint in dict.fromkeys(self.direct_mounts):
-            _unmount_direct_mount(mountpoint, interrupt=interrupt)
+    def cleanup(self) -> None:
+        """Delete tracked temp files, then tracked temp dirs."""
         for file_path in dict.fromkeys(self.temp_files):
             _remove_temp_file(file_path)
         for directory in dict.fromkeys(self.temp_dirs):
             _remove_temp_dir(directory)
-        for symlink in dict.fromkeys(self.symlinks):
-            _remove_temp_file(symlink)
 
 
 @dataclass

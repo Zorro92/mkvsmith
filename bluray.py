@@ -961,8 +961,8 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
             first_clip_name = play_items[0]["clip"]
             clpi_path = clpi_dir / f"{first_clip_name}.clpi"
             if not clpi_path.exists():
-                # Case-insensitive fallback (ISO 7z extraction preserves original
-                # case, which may be .CLPI on some discs).
+                # Case-insensitive fallback (ISO extraction preserves the
+                # original case, which may be .CLPI on some discs).
                 for f in clpi_dir.iterdir():
                     if f.stem == first_clip_name and f.suffix.lower() == ".clpi":
                         clpi_path = f

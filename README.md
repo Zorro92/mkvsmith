@@ -32,10 +32,8 @@ default, but it is an independent, GPL-licensed reimplementation.
 ## Requirements
 
 - **Python 3.12+**
-- **mkvmerge** (MKVToolNix) — the only external media tool, and a hard
-  requirement for muxing.
-- **7z** (`p7zip-full` on Debian/Ubuntu) — for reading ISO images.
-- **sudo + mount** — *optional*, only for loop-mounting ISOs.
+- **mkvmerge** (MKVToolNix) — the only external tool, and a hard
+  requirement for muxing. ISO images (UDF and ISO9660) are read natively.
 - **libdvdcss / libaacs** — needed by your OS to read *encrypted* commercial
   discs (the same as any ripper). `mkvsmith` does not ship or bypass DRM.
 
@@ -114,7 +112,6 @@ mkvsmith> q          # quit
 | `--temp-dir DIR` | Temp dir (default: /var/tmp; override for tmpfs/RAM or another disk path) |
 | `--ram-limit FRAC` | Max fraction of tmpfs capacity for RAM-backed temp dirs |
 | `--force` | Overwrite existing output files without asking |
-| `--no-sudo` | Skip sudo loop-mounting |
 | `--tag` / `--no-tag` | TMDB tagging controls |
 | `--discdb` / `--no-discdb` | TheDiscDB lookup (opt-in) |
 | `--discdb-contribute[=MODE]` | Write/upload a contribution (`browser`, `manual`, or `direct`) |
@@ -162,11 +159,14 @@ not expose DVD cell IDs.
 
 ## Notes
 
-- **Platform support:** Linux is the primary platform. Folder, ISO (via 7z),
-  and video-file sources are written to be cross-platform, and Windows drive
-  letters (`E:`) are recognised as device sources, but the `sudo mount -o
-  loop` ISO fallback and `/dev/...` optical-device input are Linux-only.
-  Windows and macOS support is otherwise untested.
+- **Platform support:** Linux is the primary platform. Folder, ISO, and
+  video-file sources are written to be cross-platform, and Windows drive
+  letters (`E:`) are recognised as device sources, but `/dev/...`
+  optical-device input is Linux-only. Windows and macOS support is otherwise
+  untested.
+- ISO images are read with a built-in UDF/ISO9660 reader. Images from burned
+  rewritable or recordable media (sparable or virtual UDF partitions) are not
+  supported yet; copy such a disc to a folder first.
 - Encrypted commercial discs need `libdvdcss` (DVD) / `libaacs` (Blu-ray) at
   the OS level.
 - Temp files default to `/var/tmp` (disk-backed) when usable, falling back to
@@ -176,7 +176,6 @@ not expose DVD cell IDs.
   `--ram-limit` of the smaller of total RAM and the tmpfs size (a tmpfs is
   frequently capped at a fraction of RAM), with extra guards for
   currently-available RAM and tmpfs free space, since `/tmp` is shared.
-- Direct ISO loop-mounting uses `sudo`; pass `--no-sudo` to disable it.
 - **Multi-edition MKV output** (`--multi-edition`, or the interactive `me`
   command) combines seamless-branching playlists into one file with
   gapless joins and exact chapter placement. It needs a player with
@@ -201,8 +200,8 @@ skipped on a fresh clone.
 To run them locally, capture the fixtures into `tests/fixtures/` yourself:
 
 ```sh
-# Blu-ray, from an .iso via 7z (playlist/clip numbers are disc-specific):
-7z e disc.iso "BDMV/PLAYLIST/00800.mpls" "BDMV/CLIPINF/00875.clpi" "BDMV/META/DL/bdmt_eng.xml" -otests/fixtures -y
+# Blu-ray, from an .iso (playlist/clip numbers are disc-specific):
+uv run python scripts/iso_extract.py disc.iso tests/fixtures "BDMV/PLAYLIST/00800.mpls" "BDMV/CLIPINF/00875.clpi" "BDMV/META/DL/bdmt_eng.xml"
 
 # DVD, from an extracted VIDEO_TS folder:
 cp VIDEO_TS/VIDEO_TS.IFO tests/fixtures/dvd_video_ts.ifo
@@ -213,7 +212,7 @@ Optional, disc-specific fixtures (their tests skip when absent):
 
 ```sh
 # Treasure Planet (2002) R1 DVD9 — alternate-edition PGC detection:
-7z e treasure_planet.iso "VIDEO_TS/VTS_01_0.IFO" "VIDEO_TS/VTS_09_0.IFO" -otests/fixtures -y
+uv run python scripts/iso_extract.py treasure_planet.iso tests/fixtures "VIDEO_TS/VTS_01_0.IFO" "VIDEO_TS/VTS_09_0.IFO"
 mv tests/fixtures/VTS_01_0.IFO tests/fixtures/treasure_vts_01_0.ifo
 mv tests/fixtures/VTS_09_0.IFO tests/fixtures/treasure_vts_09_0.ifo
 
@@ -222,13 +221,13 @@ mv tests/fixtures/VTS_09_0.IFO tests/fixtures/treasure_vts_09_0.ifo
 
 # Monsters University (2013) Blu-ray — seamless-connection trimming
 # (tests/test_m2ts.py). Header-only carvings of two clip tails; no essence:
-7z e disc.iso "BDMV/STREAM/00875.m2ts" "BDMV/STREAM/00876.m2ts" -o/tmp/mu -y
+uv run python scripts/iso_extract.py disc.iso /tmp/mu "BDMV/STREAM/00875.m2ts" "BDMV/STREAM/00876.m2ts"
 for c in 00875 00876; do
   uv run python scripts/carve_m2ts_tail_fixture.py /tmp/mu/$c.m2ts tests/fixtures/${c}_tail_headers.m2ts
 done
 
 # STN SubPath / IG entries (tests/test_bluray_stn.py):
-7z e disc.iso "BDMV/PLAYLIST/00307.mpls" -otests/fixtures -y   # Monsters University
+uv run python scripts/iso_extract.py disc.iso tests/fixtures "BDMV/PLAYLIST/00307.mpls"   # Monsters University
 cp SGT_FROG_S1_D1/BDMV/PLAYLIST/00000.mpls tests/fixtures/sgtfrog_s1d1_00000.mpls
 cp SGT_FROG_S7/BDMV/PLAYLIST/00001.mpls tests/fixtures/sgtfrog_s7_00001.mpls
 

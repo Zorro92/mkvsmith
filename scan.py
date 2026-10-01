@@ -1,7 +1,7 @@
 """
 Source scanning and title ranking.
 
-Extracted from main.py: the Scanner class (ISO image / loop-mount handling),
+Extracted from main.py: the Scanner class (ISO image handling),
 per-source-type scan functions (DVD VIDEO_TS, Blu-ray BDMV, raw M2TS, video
 files, optical devices), duplicate-playlist collapsing, and the
 notable-title / main-feature ranking heuristics used by the display.
@@ -29,8 +29,6 @@ from __future__ import annotations
 import re
 from collections import Counter
 import hashlib
-import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass, replace
 import xml.etree.ElementTree as ET
@@ -1527,14 +1525,12 @@ class Scanner:
             )
             return
         self._scan_iso_image()
-        if not self.titles:
-            self._scan_iso_mount()
 
     def _scan_iso_image(self) -> None:
         from disc_reader import _is_iso_media_path, _list_iso_files
 
         log_info(tr("Scanning ISO..."))
-        paths, sizes = _list_iso_files(self.source, self.cleanup.symlinks)
+        paths, sizes = _list_iso_files(self.source)
         media_paths = [path for path in paths if _is_iso_media_path(path)]
         if not media_paths:
             log_error(
@@ -1596,9 +1592,7 @@ class Scanner:
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
         self.cleanup.register_temp_dir(tmp_dir)
-        extracted = _extract_iso_files(
-            self.source, [xpl_files[0]], tmp_dir, self.cleanup.symlinks
-        )
+        extracted = _extract_iso_files(self.source, [xpl_files[0]], tmp_dir)
         if not extracted:
             return
         evo_by_stem = {
@@ -1637,7 +1631,6 @@ class Scanner:
                     self.source,
                     path,
                     temp_files=self.cleanup.temp_files,
-                    symlinks=self.cleanup.symlinks,
                 )
                 if tmp is None:
                     break
@@ -1671,7 +1664,6 @@ class Scanner:
                 self.source,
                 internal_path,
                 temp_files=self.cleanup.temp_files,
-                symlinks=self.cleanup.symlinks,
             ):
                 if title := _create_title(self.titles, tmp, Path(internal_path).stem):
                     title.source_file = self.source
@@ -1708,9 +1700,7 @@ class Scanner:
         files_to_extract = list(mpls_files)
         files_to_extract.extend(clpi_internal.values())
         files_to_extract.extend(bdmt_files)
-        extracted_paths = _extract_iso_files(
-            self.source, files_to_extract, tmp_dir, self.cleanup.symlinks
-        )
+        extracted_paths = _extract_iso_files(self.source, files_to_extract, tmp_dir)
         extracted_clpi = {
             path.stem: path
             for path in extracted_paths
@@ -1794,7 +1784,6 @@ class Scanner:
             internal_path,
             size_mb=16,
             temp_files=self.cleanup.temp_files,
-            symlinks=self.cleanup.symlinks,
         )
         if extracted is None:
             return
@@ -1846,9 +1835,7 @@ class Scanner:
         tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
         self.cleanup.register_temp_dir(tmp_dir)
         vts_first_vob, vts_all_vobs = self._dvd_iso_vob_maps(vob_files)
-        extracted = _extract_iso_files(
-            self.source, ifo_files, tmp_dir, self.cleanup.symlinks
-        )
+        extracted = _extract_iso_files(self.source, ifo_files, tmp_dir)
         vmg_info = self._parse_iso_vmg(extracted)
         self._read_iso_dvd_metadata(vmg_info)
         self._add_iso_libdvdread_disc_id(extracted)
@@ -1972,7 +1959,6 @@ class Scanner:
                 self.source,
                 first_vob_internal,
                 temp_files=self.cleanup.temp_files,
-                symlinks=self.cleanup.symlinks,
             )
             if not first_vob_extracted:
                 continue
@@ -2145,65 +2131,6 @@ class Scanner:
             f"{len(title.streams)} streams, "
             f"{len(title.iso_internal_paths)} clips"
         )
-
-    def _scan_iso_mount(self) -> None:
-        """Mount the ISO via ``sudo mount -o loop,ro`` and scan the result."""
-        from disc_reader import SourceType, _try_direct_mount
-
-        if self.config.no_sudo:
-            log_info(tr("Skipping direct mount (--no-sudo is set)"))
-            return
-        mnt = _try_direct_mount(
-            self.source,
-            self.config,
-            direct_mounts=self.cleanup.direct_mounts,
-            prompts=self._runtime_state.prompts,
-        )
-        if not mnt:
-            log_error("All ISO reading methods failed.")
-            if sys.platform.startswith("linux"):
-                log_error(f"Try: sudo mount -o loop,ro '{self.source}' /mnt/iso")
-            return
-        log_info(f"Direct mount succeeded at {mnt}")
-        if (mnt / "BDMV").is_dir():
-            blu_titles, metadata = _scan_bluray_source(mnt, self.config)
-            self.titles.extend(blu_titles)
-            self.disc_metadata = metadata
-            self.disc_name = metadata.name
-            self._add_matrix256_fingerprint(mnt)
-            self._add_discdb_identifiers(SourceType.BLURAY, mnt)
-            self._add_discdb_disc_hash(mnt)
-        elif (mnt / "VIDEO_TS").is_dir():
-            dvd_titles, metadata = _scan_dvd_source(mnt, self.config)
-            self.titles.extend(dvd_titles)
-            self.disc_metadata = metadata
-            self.disc_name = metadata.name
-            self._add_matrix256_fingerprint(mnt)
-            self._add_discdb_identifiers(SourceType.DVD, mnt)
-            self._add_discdb_disc_hash(mnt)
-        elif (mnt / "HVDVD_TS").is_dir():
-            hddvd_titles, metadata = _scan_hddvd_source(mnt, self.config)
-            self.titles.extend(hddvd_titles)
-            self.disc_metadata = metadata
-            self.disc_name = metadata.name
-            self._add_matrix256_fingerprint(mnt)
-            self._add_discdb_disc_hash(mnt)
-        else:
-            log_error(
-                tr(
-                    "Mounted {path} but found neither BDMV, VIDEO_TS, nor HVDVD_TS at the top level.",
-                    path=mnt,
-                )
-            )
-            # Unmount and clean up immediately instead of waiting for atexit.
-            _ = subprocess.run(
-                ["sudo", "umount", str(mnt)], capture_output=True, timeout=30
-            )
-            try:
-                mnt.rmdir()
-            except OSError:
-                pass
-            self.cleanup.unregister_direct_mount(mnt)
 
 
 # =============================================================================

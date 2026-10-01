@@ -2,8 +2,8 @@
 Disc-reading helpers for mkvsmith.
 
 Provides functions for detecting source types, listing and extracting files
-from ISO images (natively via ``isofs``, with 7z as a fallback), direct
-loop-mount mounting via sudo, and other low-level disc I/O.  Extracted / mounted resources are tracked in the global
+from ISO images (read natively via ``isofs``), temp-dir selection, and other
+low-level disc I/O.  Extracted resources are tracked in the global
 runtime cleanup registries. Callers may inject registry lists; standalone
 calls fall back to the process-wide ``RUNTIME_STATE``.
 """
@@ -13,20 +13,17 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
 from collections.abc import Sequence
 from collections.abc import Callable
-from typing import Protocol
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
 from models import (
     Config,
     RUNTIME_STATE,
-    UserPrompts,
     log_debug,
     log_error,
     log_info,
@@ -34,11 +31,6 @@ from models import (
 )
 from i18n import tr
 from isofs import IsoImage, IsoImageError
-
-
-# Loop-mounting an ISO with sudo is a Linux-only fallback; macOS mounts
-# images via hdiutil and Windows has no sudo/loop mount at all.
-_IS_LINUX = sys.platform.startswith("linux")
 
 
 # =============================================================================
@@ -511,75 +503,7 @@ def temp_base_for_title(
 
 
 # =============================================================================
-# Safe path handling for 7z
-# =============================================================================
-
-
-def _get_safe_7z_path(
-    iso_path: Path, symlinks: list[Path] | None = None
-) -> tuple[Path, Path | None]:
-    """Return a safe 7z-compatible path for *iso_path*, creating a symlink
-    if the filename contains characters that confuse 7z (e.g. spaces, parens).
-
-    The link lives in a private per-process temp dir, never next to the ISO
-    itself: a stray symlink in a media folder confuses folder watchers (media
-    servers, sync tools) and can look broken from containers or over network
-    filesystems.
-
-    Returns ``(safe_path, symlink_or_None)``.  The second element is the
-    symlink path when one was created, so callers can schedule cleanup.
-    """
-    safe_name = re.sub(r"[^\w\.\-]", "_", iso_path.name)
-    if safe_name == iso_path.name:
-        return iso_path, None
-    base = _safe_link_dir()
-    if base is None:
-        return iso_path, None
-    try:
-        target = iso_path.resolve()
-    except OSError:
-        return iso_path, None
-    stem, suffix = Path(safe_name).stem, Path(safe_name).suffix
-    for attempt in range(100):
-        candidate = base / (safe_name if attempt == 0 else f"{stem}_{attempt}{suffix}")
-        try:
-            if candidate.is_symlink() and candidate.resolve() == target:
-                _register_safe_link(candidate, symlinks)
-                return candidate, candidate
-            candidate.symlink_to(target)
-            _register_safe_link(candidate, symlinks)
-            return candidate, candidate
-        except FileExistsError:
-            continue
-        except OSError:
-            return iso_path, None
-    return iso_path, None
-
-
-def _register_safe_link(link: Path, symlinks: list[Path] | None) -> None:
-    if symlinks is None:
-        RUNTIME_STATE.cleanup.register_symlink(link)
-    else:
-        symlinks.append(link)
-
-
-_safe_link_dir_cache: Path | None = None
-
-
-def _safe_link_dir() -> Path | None:
-    """Private per-process temp dir for 7z-safe symlinks (never raises)."""
-    global _safe_link_dir_cache
-    if _safe_link_dir_cache is None:
-        try:
-            _safe_link_dir_cache = Path(tempfile.mkdtemp(prefix="mkv_safepath_"))
-            RUNTIME_STATE.cleanup.register_temp_dir(_safe_link_dir_cache)
-        except OSError:
-            return None
-    return _safe_link_dir_cache
-
-
-# =============================================================================
-# ISO listing
+# ISO images (read natively via isofs)
 # =============================================================================
 
 
@@ -608,160 +532,27 @@ _ISO_MEDIA_EXTENSIONS = (
 )
 
 
-def _run_7z_listing(target_path: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["7z", "l", "-slt", str(target_path)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=120,
-    )
-
-
 def _is_iso_media_path(internal_path: str) -> bool:
     return internal_path.upper().startswith(_ISO_MEDIA_PREFIXES) and (
         internal_path.lower().endswith(_ISO_MEDIA_EXTENSIONS)
     )
 
 
-def _parse_7z_listing(stdout: str) -> tuple[list[str], dict[str, int]]:
-    paths: list[str] = []
-    sizes: dict[str, int] = {}
-    current_path: str | None = None
-    current_path_is_file = False
-
-    # 7z -slt prints one block per entry; Path precedes Folder and Size.
-    for line in stdout.splitlines():
-        if line.startswith("Path = "):
-            internal_path = line[7:].strip()
-            if internal_path.startswith("/"):
-                internal_path = internal_path[1:]
-            current_path = internal_path
-            current_path_is_file = False
-        elif line.startswith("Folder = "):
-            current_path_is_file = line[9:].strip() == "-"
-            if current_path_is_file and current_path is not None:
-                paths.append(current_path)
-        elif (
-            line.startswith("Size = ")
-            and current_path is not None
-            and current_path_is_file
-        ):
-            try:
-                sizes[current_path] = int(line[7:].strip())
-            except ValueError:
-                pass
-
-    return paths, sizes
-
-
 @dataclass(frozen=True)
 class _IsoFileMetadata:
     path: str
     size: int
-    modified: str | None = None
+    modified: datetime | None = None
 
 
-def _parse_7z_metadata_listing(
-    stdout: str,
-) -> list[_IsoFileMetadata]:
-    """Parse path, size, and 7z local Modified timestamps from ``l -slt``."""
-    entries: list[_IsoFileMetadata] = []
-    current_path: str | None = None
-    current_size = 0
-    current_modified: str | None = None
-    current_is_file = False
-
-    def finish_entry() -> None:
-        nonlocal current_path, current_size, current_modified, current_is_file
-        if current_is_file and current_path is not None:
-            entries.append(
-                _IsoFileMetadata(current_path, current_size, current_modified)
-            )
-        current_path = None
-        current_size = 0
-        current_modified = None
-        current_is_file = False
-
-    for line in stdout.splitlines():
-        if line.startswith("Path = "):
-            finish_entry()
-            path = line[7:].strip()
-            current_path = path[1:] if path.startswith("/") else path
-        elif line.startswith("Folder = "):
-            current_is_file = line[9:].strip() == "-"
-        elif line.startswith("Size = ") and current_path is not None:
-            try:
-                current_size = int(line[7:].strip())
-            except ValueError:
-                current_size = 0
-        elif line.startswith("Modified = ") and current_path is not None:
-            current_modified = line[11:].strip() or None
-    finish_entry()
-    return entries
-
-
-def _list_iso_file_metadata_7z(
-    iso_path: Path, symlinks: list[Path] | None = None
-) -> list[_IsoFileMetadata]:
-    """List ISO files with sizes and 7z-reported local modification timestamps."""
-    target_path, _ = _get_safe_7z_path(iso_path, symlinks)
-    try:
-        result = _run_7z_listing(target_path)
-    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-        log_debug(f"7z metadata listing failed: {exc}")
-        return []
-    if result.returncode != 0:
-        log_debug(f"7z metadata listing failed: {result.stderr.strip()}")
-        return []
-    return _parse_7z_metadata_listing(result.stdout)
-
-
-def _list_iso_files_7z(
-    iso_path: Path, symlinks: list[Path] | None = None
-) -> tuple[list[str], dict[str, int]]:
-    """List the regular files inside an ISO using ``7z l -slt``.
-
-    Returns a ``(paths, sizes)`` pair. *paths* are all internal ISO file paths
-    and *sizes* maps each path to its uncompressed byte size. The complete
-    listing supports matrix256 fingerprinting; callers select media paths.
-    Returns ``([], {})`` on failure.
-    """
-    target_path, _ = _get_safe_7z_path(iso_path, symlinks)
-    try:
-        result = _run_7z_listing(target_path)
-    except FileNotFoundError:
-        log_error(tr("7z missing. Install with: sudo apt install p7zip-full"))
-        return [], {}
-    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-        log_error(tr("7z exception: {err}", err=exc))
-        return [], {}
-
-    if result.returncode != 0:
-        log_error(
-            tr(
-                "7z failed: {err}",
-                err=(result.stdout + " " + result.stderr).strip(),
-            )
-        )
-        return [], {}
-    return _parse_7z_listing(result.stdout)
-
-
-# =============================================================================
-# Native listing (isofs), falling back to 7z
-# =============================================================================
-
-
-def _open_native_iso(iso_path: Path) -> IsoImage | None:
-    """Open *iso_path* with the native reader, or ``None`` to use 7z."""
+def _open_iso(iso_path: Path) -> IsoImage | None:
+    """Open *iso_path*, logging why and returning ``None`` when unreadable."""
     try:
         return IsoImage(iso_path)
     except (IsoImageError, OSError) as exc:
-        log_warn(
+        log_error(
             tr(
-                "Built-in ISO reader could not read {path} ({err}); falling back to 7z.",
+                "Could not read ISO image {path}: {err}",
                 path=iso_path.name,
                 err=exc,
             )
@@ -769,105 +560,34 @@ def _open_native_iso(iso_path: Path) -> IsoImage | None:
         return None
 
 
-def _list_iso_files(
-    iso_path: Path, symlinks: list[Path] | None = None
-) -> tuple[list[str], dict[str, int]]:
+def _list_iso_files(iso_path: Path) -> tuple[list[str], dict[str, int]]:
     """List the regular files inside an ISO as ``(paths, sizes)``.
 
-    Same contract as ``_list_iso_files_7z``: ``([], {})`` on failure.
+    *paths* are all internal file paths and *sizes* maps each to its byte
+    size; the complete listing supports matrix256 fingerprinting, and callers
+    select media paths. Returns ``([], {})`` when the image is unreadable.
     """
-    image = _open_native_iso(iso_path)
+    image = _open_iso(iso_path)
     if image is None:
-        return _list_iso_files_7z(iso_path, symlinks)
+        return [], {}
     with image:
         entries = image.files()
     return [entry.path for entry in entries], {e.path: e.size for e in entries}
 
 
-def _list_iso_file_metadata(
-    iso_path: Path, symlinks: list[Path] | None = None
-) -> list[_IsoFileMetadata]:
-    """List ISO files with sizes and local-time modification timestamps.
-
-    The timestamp uses 7z's ``Modified`` string format so both sources feed
-    ``discdb._iso_datetime_from_7z`` alike. The native value is converted
-    with the DST offset in effect at that date, whereas 7z applies today's
-    offset, so the native path is the correct one for dates across DST.
-    """
-    image = _open_native_iso(iso_path)
+def _list_iso_file_metadata(iso_path: Path) -> list[_IsoFileMetadata]:
+    """List ISO files with sizes and timezone-aware modification times."""
+    image = _open_iso(iso_path)
     if image is None:
-        return _list_iso_file_metadata_7z(iso_path, symlinks)
+        return []
     with image:
         entries = image.files()
-    return [
-        _IsoFileMetadata(
-            entry.path,
-            entry.size,
-            entry.modified.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-            if entry.modified
-            else None,
-        )
-        for entry in entries
-    ]
+    return [_IsoFileMetadata(e.path, e.size, e.modified) for e in entries]
 
 
 # =============================================================================
 # Extraction
 # =============================================================================
-
-
-# Floor assumption for 7z extraction throughput (10 MiB/s): network mounts
-# serve ISOs much slower than local disks, and a fixed timeout that fits a
-# single title starves a 39-clip multi-edition extraction (~45 GB).
-_MIN_EXTRACT_BPS = 10 * 1024 * 1024
-_MIN_EXTRACT_TIMEOUT = 300
-
-
-def _extract_timeout(expected_bytes: int) -> int:
-    """subprocess timeout for a 7z extraction of *expected_bytes*."""
-    if expected_bytes <= 0:
-        return _MIN_EXTRACT_TIMEOUT
-    return max(
-        _MIN_EXTRACT_TIMEOUT,
-        -(-expected_bytes // _MIN_EXTRACT_BPS),
-    )
-
-
-def _extract_with_7z(
-    iso_path: Path,
-    internal_paths: list[str],
-    out_dir: Path,
-    symlinks: list[Path] | None = None,
-    expected_bytes: int = 0,
-) -> list[Path]:
-    """Extract *internal_paths* from *iso_path* into *out_dir* using 7z.
-
-    Returns the list of successfully-extracted files on disk.
-    """
-    if not internal_paths:
-        return []
-    out_dir.mkdir(parents=True, exist_ok=True)
-    target_path, _ = _get_safe_7z_path(iso_path, symlinks)
-    res = subprocess.run(
-        ["7z", "e", str(target_path), f"-o{out_dir}"] + internal_paths + ["-y"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=_extract_timeout(expected_bytes),
-    )
-    if res.returncode != 0:
-        log_error(
-            tr(
-                "7z extraction failed: {err}",
-                err=(res.stdout + " " + res.stderr).strip(),
-            )
-        )
-    return [
-        out_dir / Path(p).name
-        for p in internal_paths
-        if (out_dir / Path(p).name).exists()
-    ]
 
 
 def _registered_temp_file(temp_files: list[Path] | None) -> Path:
@@ -880,79 +600,7 @@ def _registered_temp_file(temp_files: list[Path] | None) -> Path:
     return temp_path
 
 
-def _start_7z_pipe(target_path: Path, internal_path: str) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
-        ["7z", "e", "-so", str(target_path), internal_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-
-
-def _stop_7z_process(process: subprocess.Popen[bytes]) -> None:
-    try:
-        process.kill()
-    except OSError:
-        pass
-    try:
-        process.wait()
-    except OSError:
-        pass
-
-
-class _ByteReader(Protocol):
-    def read(self, size: int, /) -> bytes: ...
-
-
-class _ByteWriter(Protocol):
-    def write(self, data: bytes, /) -> object: ...
-
-
-def _copy_bounded_stdout(
-    stdout: _ByteReader, output_file: _ByteWriter, limit: int
-) -> None:
-    bytes_read = 0
-    while True:
-        chunk = stdout.read(1024 * 1024)
-        if not chunk:
-            break
-        bytes_read += len(chunk)
-        output_file.write(chunk)
-        if bytes_read >= limit:
-            break
-
-
-def _extract_partial_7z(
-    iso_path: Path,
-    internal_path: str,
-    size_mb: int = 256,
-    *,
-    temp_files: list[Path] | None = None,
-    symlinks: list[Path] | None = None,
-) -> Path | None:
-    """Extract a bounded prefix from one ISO member using a 7z pipe."""
-    target_path, _ = _get_safe_7z_path(iso_path, symlinks)
-    temp_path = _registered_temp_file(temp_files)
-    try:
-        process = _start_7z_pipe(target_path, internal_path)
-        try:
-            stdout = process.stdout
-            if stdout is None:
-                _stop_7z_process(process)
-                temp_path.unlink(missing_ok=True)
-                return None
-            with temp_path.open("wb") as output_file:
-                _copy_bounded_stdout(stdout, output_file, size_mb * 1024 * 1024)
-        except BaseException:
-            _stop_7z_process(process)
-            raise
-        _stop_7z_process(process)
-        return temp_path
-    except (OSError, subprocess.SubprocessError):
-        temp_path.unlink(missing_ok=True)
-        return None
-
-
-def _copy_native_member(
+def _copy_iso_member(
     image: IsoImage, internal_path: str, dest: Path, limit: int | None = None
 ) -> bool:
     """Copy one ISO member to *dest*; on failure log it and leave no file."""
@@ -981,29 +629,23 @@ def _copy_native_member(
 
 
 def _extract_iso_files(
-    iso_path: Path,
-    internal_paths: list[str],
-    out_dir: Path,
-    symlinks: list[Path] | None = None,
-    expected_bytes: int = 0,
+    iso_path: Path, internal_paths: list[str], out_dir: Path
 ) -> list[Path]:
     """Extract *internal_paths* into *out_dir*, flattened to their basenames.
 
-    Same contract as ``_extract_with_7z``: returns the files that exist.
+    Returns the files that were extracted successfully.
     """
     if not internal_paths:
         return []
-    image = _open_native_iso(iso_path)
+    image = _open_iso(iso_path)
     if image is None:
-        return _extract_with_7z(
-            iso_path, internal_paths, out_dir, symlinks, expected_bytes
-        )
+        return []
     out_dir.mkdir(parents=True, exist_ok=True)
     extracted: list[Path] = []
     with image:
         for internal_path in internal_paths:
             dest = out_dir / Path(internal_path).name
-            if _copy_native_member(image, internal_path, dest):
+            if _copy_iso_member(image, internal_path, dest):
                 extracted.append(dest)
     return extracted
 
@@ -1014,116 +656,16 @@ def _extract_iso_prefix(
     size_mb: int = 256,
     *,
     temp_files: list[Path] | None = None,
-    symlinks: list[Path] | None = None,
 ) -> Path | None:
     """Extract the first *size_mb* MiB of one ISO member to a temp file."""
-    image = _open_native_iso(iso_path)
+    image = _open_iso(iso_path)
     if image is None:
-        return _extract_partial_7z(
-            iso_path,
-            internal_path,
-            size_mb,
-            temp_files=temp_files,
-            symlinks=symlinks,
-        )
+        return None
     with image:
         temp_path = _registered_temp_file(temp_files)
-        if _copy_native_member(image, internal_path, temp_path, size_mb * 1024 * 1024):
+        if _copy_iso_member(image, internal_path, temp_path, size_mb * 1024 * 1024):
             return temp_path
     return None
-
-
-# =============================================================================
-# Direct mounting via sudo
-# =============================================================================
-
-
-def _confirm_direct_mount(iso_path: Path, prompts: UserPrompts | None = None) -> bool:
-    hooks = prompts or RUNTIME_STATE.prompts
-    return hooks.confirm(
-        tr(
-            "[INFO] Attempt to mount '{path}' via 'sudo mount -o loop,ro'? [y/N]:",
-            path=iso_path,
-        )
-    )
-
-
-def _run_direct_mount(
-    iso_path: Path, mountpoint: Path
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["sudo", "mount", "-o", "loop,ro", str(iso_path), str(mountpoint)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-    )
-
-
-def _register_direct_mount(mountpoint: Path, direct_mounts: list[Path] | None) -> None:
-    if direct_mounts is None:
-        RUNTIME_STATE.cleanup.register_direct_mount(mountpoint)
-    else:
-        direct_mounts.append(mountpoint)
-
-
-def _remove_empty_mountpoint(mountpoint: Path) -> None:
-    try:
-        mountpoint.rmdir()
-    except OSError:
-        pass
-
-
-def _try_direct_mount(
-    iso_path: Path,
-    config: Config | None = None,
-    *,
-    direct_mounts: list[Path] | None = None,
-    prompts: UserPrompts | None = None,
-) -> Path | None:
-    """Attempt to mount *iso_path* via ``sudo mount -o loop,ro``.
-
-    Returns the mount-point ``Path`` on success, ``None`` on failure or
-    when disabled (``--no-sudo``).
-    """
-    if (config or RUNTIME_STATE.config).no_sudo:
-        log_info(tr("Skipping direct mount (--no-sudo is set)"))
-        return None
-    if not _IS_LINUX:
-        # 7z has already handled the ISO upstream, so skip instead of
-        # prompting for a sudo command that cannot work on this platform.
-        log_debug("Skipping direct mount (Linux-only fallback)")
-        return None
-    if not _confirm_direct_mount(iso_path, prompts):
-        return None
-
-    log_info(tr("Attempting direct mount via 'sudo mount -o loop,ro'..."))
-    mountpoint = Path(tempfile.mkdtemp(prefix="mkv_mount_"))
-    try:
-        result = _run_direct_mount(iso_path, mountpoint)
-    except FileNotFoundError:
-        log_error(tr("mount/sudo not found on PATH."))
-        _remove_empty_mountpoint(mountpoint)
-        return None
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_error(tr("mount exception: {err}", err=exc))
-        _remove_empty_mountpoint(mountpoint)
-        return None
-
-    if result.returncode != 0:
-        log_error(
-            tr(
-                "mount failed (rc={rc}): {err}",
-                rc=result.returncode,
-                err=(result.stdout + result.stderr).strip(),
-            )
-        )
-        _remove_empty_mountpoint(mountpoint)
-        return None
-
-    _register_direct_mount(mountpoint, direct_mounts)
-    return mountpoint
 
 
 # =============================================================================
@@ -1137,8 +679,6 @@ def _extract_full_for_muxing(
     *,
     temp_base: Path | None = None,
     temp_dirs: list[Path] | None = None,
-    symlinks: list[Path] | None = None,
-    expected_bytes: int = 0,
 ) -> list[Path]:
     """Extract the full set of internal ISO files for muxing into a temp dir.
 
@@ -1146,7 +686,6 @@ def _extract_full_for_muxing(
     *internals* into it via ``_extract_iso_files``. *temp_base*, when given,
     overrides the parent of the temp directory — used to spill oversized
     titles off a RAM-backed temp dir onto disk (see ``temp_base_for_title``).
-    *expected_bytes* sizes the 7z timeout when 7z is the fallback.
     """
     out_dir = Path(
         tempfile.mkdtemp(
@@ -1158,6 +697,4 @@ def _extract_full_for_muxing(
         RUNTIME_STATE.cleanup.register_temp_dir(out_dir)
     else:
         temp_dirs.append(out_dir)
-    return _extract_iso_files(
-        iso_path, list(internals), out_dir, symlinks, expected_bytes
-    )
+    return _extract_iso_files(iso_path, list(internals), out_dir)

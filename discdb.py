@@ -564,17 +564,6 @@ def _iso_datetime(timestamp: float) -> str:
     )
 
 
-def _iso_datetime_from_7z(value: str | None, fallback: str) -> str:
-    if not value:
-        return fallback
-    normalized = value.split(".", 1)[0]
-    try:
-        local_time = datetime.strptime(normalized, "%Y-%m-%d %H:%M:%S")
-        return _iso_datetime(local_time.astimezone().timestamp())
-    except ValueError:
-        return fallback
-
-
 def _folder_hash_files(source: Path) -> list[FileHashInfo]:
     video_ts = source / "VIDEO_TS"
     stream_dir = source / "BDMV" / "STREAM"
@@ -598,7 +587,7 @@ def _iso_hash_files(source: Path) -> list[FileHashInfo]:
     from disc_reader import _list_iso_file_metadata
 
     entries = _list_iso_file_metadata(source)
-    selected: list[tuple[str, int, str | None]] = []
+    selected: list[tuple[str, int, datetime | None]] = []
     for entry in entries:
         normalized = entry.path.replace("\\", "/")
         if _is_disc_hash_path(normalized):
@@ -609,7 +598,7 @@ def _iso_hash_files(source: Path) -> list[FileHashInfo]:
         FileHashInfo(
             index=index,
             name=Path(path).name,
-            creationTime=_iso_datetime_from_7z(modified, timestamp),
+            creationTime=_iso_datetime(modified.timestamp()) if modified else timestamp,
             size=size,
         )
         for index, (path, size, modified) in enumerate(selected)

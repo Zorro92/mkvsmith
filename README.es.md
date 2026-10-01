@@ -35,10 +35,9 @@ una reimplementación independiente con licencia GPL.
 ## Requisitos
 
 - **Python 3.12+**
-- **mkvmerge** (MKVToolNix) — la única herramienta de medios externa y un
-  requisito imprescindible para el multiplexado.
-- **7z** (`p7zip-full` en Debian/Ubuntu) — para leer imágenes ISO.
-- **sudo + mount** — *opcional*, solo para montar ISOs en bucle.
+- **mkvmerge** (MKVToolNix) — la única herramienta externa y un requisito
+  imprescindible para el multiplexado. Las imágenes ISO (UDF e ISO9660) se
+  leen de forma nativa.
 - **libdvdcss / libaacs** — necesarios para que tu sistema lea discos
   comerciales *cifrados* (igual que cualquier extractor). `mkvsmith` no incluye
   ni elude DRM.
@@ -115,7 +114,6 @@ mkvsmith> q          # salir
 | `--temp-dir DIR` | Directorio temporal (predeterminado: /var/tmp; para tmpfs/RAM u otra ruta en disco) |
 | `--ram-limit FRAC` | Fracción máxima de capacidad tmpfs para directorios temporales en RAM |
 | `--force` | Sobrescribir los archivos de salida existentes sin preguntar |
-| `--no-sudo` | Omite el montaje en bucle con sudo |
 | `--tag` / `--no-tag` | Controles de etiquetado TMDB |
 | `--discdb` / `--no-discdb` | Consulta de TheDiscDB (participativa) |
 | `--discdb-contribute[=MODO]` | Prepara o sube una contribución (`browser`, `manual` o `direct`) |
@@ -167,11 +165,13 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
 ## Notas
 
 - **Soporte de plataformas:** Linux es la plataforma principal. Las fuentes
-  de carpetas, ISO (vía 7z) y archivos de vídeo están escritas para ser
+  de carpetas, ISO y archivos de vídeo están escritas para ser
   multiplataforma, y las letras de unidad de Windows (`E:`) se reconocen como
-  fuentes de dispositivo, pero el montaje de ISO con `sudo mount -o loop` y la
-  entrada de dispositivos ópticos `/dev/...` son exclusivos de Linux. El
-  soporte de Windows y macOS no está probado.
+  fuentes de dispositivo, pero la entrada de dispositivos ópticos `/dev/...`
+  es exclusiva de Linux. El soporte de Windows y macOS no está probado.
+- Las imágenes ISO se leen con un lector UDF/ISO9660 integrado. Las imágenes
+  de discos grabables o regrabables (particiones UDF «sparable» o virtuales)
+  aún no son compatibles; copia esos discos a una carpeta primero.
 - Los discos comerciales cifrados necesitan `libdvdcss` (DVD) / `libaacs`
   (Blu-ray) a nivel de sistema.
 - Los archivos temporales usan `/var/tmp` (en disco) por defecto cuando está
@@ -182,8 +182,6 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   menor entre la RAM total y el tamaño del tmpfs (un tmpfs suele estar limitado
   a una fracción de la RAM), con comprobaciones adicionales para la RAM
   disponible y el espacio libre del tmpfs, ya que `/tmp` es compartido.
-- El montaje directo de ISO en bucle usa `sudo`; pasa `--no-sudo` para
-  desactivarlo.
 - **La salida MKV multi-edición** (`--multi-edition`, o el comando interactivo
   `me`) combina playlists con ramificación continua en un solo archivo con
   uniones sin pausas y capítulos exactos. Requiere un reproductor con
@@ -209,8 +207,8 @@ metadatos de disco), por lo que las pruebas se omiten en un clon nuevo.
 Para ejecutarlas localmente, captura los fixtures en `tests/fixtures/` tú mismo:
 
 ```sh
-# Blu-ray, desde un .iso mediante 7z (los números de playlist/clip dependen del disco):
-7z e disc.iso "BDMV/PLAYLIST/00800.mpls" "BDMV/CLIPINF/00875.clpi" "BDMV/META/DL/bdmt_eng.xml" -otests/fixtures -y
+# Blu-ray, desde un .iso (los números de playlist/clip dependen del disco):
+uv run python scripts/iso_extract.py disc.iso tests/fixtures "BDMV/PLAYLIST/00800.mpls" "BDMV/CLIPINF/00875.clpi" "BDMV/META/DL/bdmt_eng.xml"
 
 # DVD, desde una carpeta VIDEO_TS extraída:
 cp VIDEO_TS/VIDEO_TS.IFO tests/fixtures/dvd_video_ts.ifo

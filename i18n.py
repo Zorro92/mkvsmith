@@ -137,10 +137,8 @@ _ES: dict[str, str] = {
     "No ISO file found in {path}": "No se encontró ningún archivo ISO en {path}",
     "{path} is not a valid disc image (no ISO9660 or UDF filesystem found)": "{path} no es una imagen de disco válida (no se encontró sistema de archivos ISO9660 o UDF)",
     "Scanning ISO...": "Escaneando ISO...",
-    "7z could not find any .mpls, .m2ts, or .vob files inside the ISO.": "7z no pudo encontrar ningún archivo .mpls, .m2ts o .vob dentro de la ISO.",
     "Could not find any .mpls, .m2ts, .vob, or .evo files inside the ISO.": "No se encontró ningún archivo .mpls, .m2ts, .vob o .evo dentro de la ISO.",
     "HD DVD playlist: {name} ({n} title(s))": "Lista HD DVD: {name} ({n} título(s))",
-    "Mounted {path} but found neither BDMV, VIDEO_TS, nor HVDVD_TS at the top level.": "Se montó {path} pero no se encontró ni BDMV, ni VIDEO_TS ni HVDVD_TS en el nivel superior.",
     "Disc name from bdmt.xml: {name}": "Nombre del disco desde bdmt.xml: {name}",
     "Disc name: {name}": "Nombre del disco: {name}",
     "VMG disc name: {name}": "Nombre del disco VMG: {name}",
@@ -149,9 +147,7 @@ _ES: dict[str, str] = {
     " (play-all PGC {pgc})": " (PGC reproducir-todos {pgc})",
     "mkvmerge not available, cannot scan video file.": "mkvmerge no disponible, no se puede escanear el archivo de vídeo.",
     "Device read failed (needs libdvdcss/libaacs)": "Error de lectura del dispositivo (necesita libdvdcss/libaacs)",
-    "Mounted {path} but found neither BDMV nor VIDEO_TS at the top level.": "Se montó {path} pero no se encontró ni BDMV ni VIDEO_TS en el nivel superior.",
-    # --- disc_reader (mount / 7z) ---------------------------------------------
-    "Skipping direct mount (--no-sudo is set)": "Omitiendo montaje directo (--no-sudo está activado)",
+    # --- disc_reader ------------------------------------------------------------
     "Skipping incompatible clip for append: {name} (audio layout differs)": "Omitiendo clip incompatible para anexar: {name} (el audio difiere)",
     "Extracting {n} files from ISO ({size} GB); this may take a while...": "Extrayendo {n} archivos del ISO ({size} GB); esto puede tardar un rato...",
     "Extracting {n} files from ISO; this may take a while...": "Extrayendo {n} archivos del ISO; esto puede tardar un rato...",
@@ -161,11 +157,6 @@ _ES: dict[str, str] = {
     "Skipping {stream}: it is stored in a Blu-ray sub-path clip, which can't be muxed": "Omitiendo {stream}: está en un clip de sub-ruta del Blu-ray, que no se puede multiplexar",
     "(sub-path, not muxed)": "(sub-ruta, no se multiplexa)",
     "Could not read clip offsets from {name}; edition chapters may be misaligned at branch points": "No se pudieron leer los desfases de clips de {name}; los capítulos de las ediciones pueden quedar desalineados en los puntos de bifurcación",
-    "[INFO] Attempt to mount '{path}' via 'sudo mount -o loop,ro'? [y/N]:": "[INFO] ¿Intentar montar '{path}' con 'sudo mount -o loop,ro'? [s/N]:",
-    "Attempting direct mount via 'sudo mount -o loop,ro'...": "Intentando montaje directo con 'sudo mount -o loop,ro'...",
-    "mount failed (rc={rc}): {err}": "el montaje falló (rc={rc}): {err}",
-    "mount/sudo not found on PATH.": "mount/sudo no encontrado en el PATH.",
-    "mount exception: {err}": "excepción de montaje: {err}",
     "Temp dir '{dir}' is RAM-backed; limiting extracts to {gb:.1f} GB "
     "({pct:.0%} of {total_gb:.1f} GB {kind}). Oversized titles spill to disk.": "El directorio temporal '{dir}' está en RAM; limitando las extracciones "
     "a {gb:.1f} GB ({pct:.0%} de {total_gb:.1f} GB de {kind}). Los títulos "
@@ -191,13 +182,9 @@ _ES: dict[str, str] = {
     "({avail:.1f} GB libres); usando el directorio temporal en disco '{dir}' "
     "para este título.",
     "Removed {count} leftover temp folder(s) ({gb:.1f} GB) from interrupted runs.": "Se eliminaron {count} carpeta(s) temporal(es) sobrante(s) ({gb:.1f} GB) de ejecuciones interrumpidas.",
-    "Built-in ISO reader could not read {path} ({err}); falling back to 7z.": "El lector de ISO integrado no pudo leer {path} ({err}); se usará 7z.",
+    "Could not read ISO image {path}: {err}": "No se pudo leer la imagen ISO {path}: {err}",
     "File not found inside the ISO: {path}": "Archivo no encontrado dentro de la ISO: {path}",
     "Could not extract {path} from the ISO: {err}": "No se pudo extraer {path} de la ISO: {err}",
-    "7z missing. Install with: sudo apt install p7zip-full": "Falta 7z. Instálalo con: sudo apt install p7zip-full",
-    "7z failed: {err}": "7z falló: {err}",
-    "7z extraction failed: {err}": "la extracción con 7z falló: {err}",
-    "7z exception: {err}": "excepción de 7z: {err}",
     "'{name}' already exists. Overwrite? [y/N]:": "'{name}' ya existe. ¿Sobrescribir? [y/N]:",
     # --- misc ------------------------------------------------------------------
     "Not found: {path}": "No encontrado: {path}",
@@ -218,7 +205,6 @@ _ES: dict[str, str] = {
     "RAM (tmpfs) que las extracciones pueden usar antes de pasar al disco "
     "(predeterminado: 0.8). 0 desactiva la comprobación.",
     "overwrite existing output files without asking": "sobrescribir los archivos de salida existentes sin preguntar",
-    "skip all sudo-based ISO mounting (loop mount, etc.)": "omitir todo el montaje de ISO con sudo (loop mount, etc.)",
     "do not tag, even in interactive mode when a TMDB key is available": "no etiquetar, ni siquiera en modo interactivo cuando hay una clave de TMDB",
     "fetch TMDB metadata and tag each rip during muxing": "obtener metadatos de TMDB y etiquetar cada extracción durante el muxado",
     "TMDB API key (or set TMDB_API_KEY, or store with --save-key)": "clave de API de TMDB (o define TMDB_API_KEY, o guárdala con --save-key)",

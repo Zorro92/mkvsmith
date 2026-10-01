@@ -645,11 +645,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=tr("overwrite existing output files without asking"),
     )
     p.add_argument(
-        "--no-sudo",
-        action="store_true",
-        help=tr("skip all sudo-based ISO mounting (loop mount, etc.)"),
-    )
-    p.add_argument(
         "--no-tag",
         action="store_true",
         help=tr("do not tag, even in interactive mode when a TMDB key is available"),
@@ -859,7 +854,6 @@ def _apply_parsed_args(
     config.temp_dir = a.temp_dir
     config.ram_limit = a.ram_limit
     config.force_overwrite = a.force
-    config.no_sudo = a.no_sudo
     config.show_all = a.show_all
     config.extract_cc608 = a.cc_srt
     config.cc608_format = a.cc_format

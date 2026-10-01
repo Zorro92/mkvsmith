@@ -2241,8 +2241,6 @@ class MKVCreator:
                 title.iso_internal_paths,
                 temp_base=extract_temp_base,
                 temp_dirs=self.cleanup.temp_dirs,
-                symlinks=self.cleanup.symlinks,
-                expected_bytes=estimated_size,
             )
             cleanup = list(inputs)
         else:

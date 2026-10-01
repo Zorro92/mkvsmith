@@ -20,7 +20,6 @@ import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from types import SimpleNamespace
 
 import models
 import pytest
@@ -62,19 +61,6 @@ def test_cleanup_temp_dirs_removes_tracked_files_and_dirs(tmp_path: Path) -> Non
 
     assert not d.exists()
     assert not f.exists()
-
-
-def test_cleanup_temp_dirs_removes_symlinks_only(tmp_path: Path) -> None:
-    target = tmp_path / "target.iso"
-    target.write_bytes(b"iso")
-    link = tmp_path / "safe.iso"
-    link.symlink_to(target)
-
-    models.RUNTIME_STATE.cleanup.symlinks.append(link)
-    cleanup_temp_dirs()
-
-    assert not link.exists()
-    assert target.exists()  # only the symlink is removed, not its target
 
 
 def test_cleanup_temp_dirs_ignores_missing_paths() -> None:
@@ -274,54 +260,6 @@ def test_cleanup_temp_dirs_removes_nested_contents(tmp_path: Path) -> None:
     assert not directory.exists()
 
 
-def test_cleanup_failed_unmount_preserves_mountpoint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    mountpoint = tmp_path / "mount"
-    mountpoint.mkdir()
-    commands: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
-        commands.append(command)
-        return SimpleNamespace(returncode=1)
-
-    monkeypatch.setattr(
-        models.subprocess,
-        "run",
-        fake_run,
-    )
-    models.RUNTIME_STATE.cleanup.direct_mounts.append(mountpoint)
-
-    cleanup_temp_dirs(interrupt=True)
-
-    assert commands == [["sudo", "-n", "umount", str(mountpoint)]]
-    assert mountpoint.exists()
-
-
-def test_cleanup_successful_interrupt_unmount_removes_mountpoint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    mountpoint = tmp_path / "mount"
-    mountpoint.mkdir()
-    commands: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
-        commands.append(command)
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr(
-        models.subprocess,
-        "run",
-        fake_run,
-    )
-    models.RUNTIME_STATE.cleanup.direct_mounts.append(mountpoint)
-
-    cleanup_temp_dirs(interrupt=True)
-
-    assert commands == [["sudo", "-n", "umount", str(mountpoint)]]
-    assert not mountpoint.exists()
-
-
 @pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="no SIGHUP on Windows")
 def test_sighup_left_ignored_under_nohup() -> None:
     # nohup ignores SIGHUP before exec; importing models must not undo that,
@@ -335,27 +273,6 @@ def test_sighup_left_ignored_under_nohup() -> None:
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
     )
     assert proc.stdout.strip() == "True", proc.stderr
-
-
-def test_cleanup_unmounts_before_removing_temp_dirs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    session = tmp_path / "mkvsmith-tmp-1-x"
-    mountpoint = session / "mkv_mount_y"
-    mountpoint.mkdir(parents=True)
-    events: list[str] = []
-
-    def fake_unmount(path: Path, *, interrupt: bool) -> None:
-        events.append(f"umount {path.name} exists={session.exists()}")
-
-    monkeypatch.setattr(models, "_unmount_direct_mount", fake_unmount)
-    models.RUNTIME_STATE.cleanup.direct_mounts.append(mountpoint)
-    models.RUNTIME_STATE.cleanup.temp_dirs.append(session)
-
-    cleanup_temp_dirs()
-
-    assert events == ["umount mkv_mount_y exists=True"]
-    assert not session.exists()
 
 
 def test_cleanup_keeps_temp_dir_holding_a_live_mount(

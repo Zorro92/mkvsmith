@@ -14,7 +14,6 @@ import json
 import os
 import shutil
 import subprocess
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -155,49 +154,36 @@ def test_copy_to_honours_limit(
 
 
 def test_list_iso_files_uses_native_reader(
-    monster_high: tuple[Path, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+    monster_high: tuple[Path, dict[str, Any]],
 ) -> None:
-    def no_7z(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("7z fallback should not run")
-
-    monkeypatch.setattr(disc_reader, "_list_iso_files_7z", no_7z)
     path, header = monster_high
     paths, sizes = disc_reader._list_iso_files(path)
     assert paths == [row[0] for row in header["udf"]["files"]]
     assert sizes == {row[0]: row[1] for row in header["udf"]["files"]}
 
 
-def test_list_iso_files_falls_back_to_7z(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_unreadable_iso_reports_error_and_returns_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "junk.iso"
     path.write_bytes(bytes(300 * isofs.SECTOR))
-    calls: list[Path] = []
 
-    def fake_7z(
-        iso_path: Path, symlinks: list[Path] | None = None
-    ) -> tuple[list[str], dict[str, int]]:
-        calls.append(iso_path)
-        return ["VIDEO_TS/VIDEO_TS.IFO"], {"VIDEO_TS/VIDEO_TS.IFO": 1}
-
-    monkeypatch.setattr(disc_reader, "_list_iso_files_7z", fake_7z)
-    assert disc_reader._list_iso_files(path) == (
-        ["VIDEO_TS/VIDEO_TS.IFO"],
-        {"VIDEO_TS/VIDEO_TS.IFO": 1},
-    )
-    assert calls == [path]
+    assert disc_reader._list_iso_files(path) == ([], {})
+    assert disc_reader._list_iso_file_metadata(path) == []
+    assert disc_reader._extract_iso_files(path, ["X"], tmp_path / "out") == []
+    assert disc_reader._extract_iso_prefix(path, "X") is None
+    assert "Could not read ISO image junk.iso" in capsys.readouterr().out
 
 
-def test_metadata_timestamp_is_local_wall_time(
+def test_metadata_timestamps_are_timezone_aware(
     monster_high: tuple[Path, dict[str, Any]],
 ) -> None:
     path, header = monster_high
     expected = {row[0]: row[2] for row in header["udf"]["files"]}
     for entry in disc_reader._list_iso_file_metadata(path):
-        stamp = expected[entry.path]
-        assert stamp is not None and entry.modified is not None
-        local = datetime.fromisoformat(stamp).astimezone()
-        assert entry.modified == local.strftime("%Y-%m-%d %H:%M:%S")
+        assert entry.modified is not None
+        assert entry.modified.utcoffset() is not None
+        assert entry.modified.isoformat() == expected[entry.path]
 
 
 def test_extract_iso_files_flattens_and_skips_missing(
@@ -234,6 +220,23 @@ def test_extract_iso_prefix_registers_temp_file(
 # =============================================================================
 # Opt-in cross-check against 7z on real images
 # =============================================================================
+# 7z is only a test-time reference here; mkvsmith itself never runs it.
+
+
+def _parse_7z_slt(listing: str) -> dict[str, int]:
+    """``{path: size}`` for the regular files in ``7z l -slt`` output."""
+    files: dict[str, int] = {}
+    block: dict[str, str] = {}
+    for line in [*listing.splitlines(), ""]:
+        if " = " in line:
+            key, value = line.split(" = ", 1)
+            block[key] = value
+        elif not line and block:
+            if block.get("Folder") == "-" and "Size" in block:
+                files[block["Path"].lstrip("/")] = int(block["Size"])
+            block = {}
+    return files
+
 
 _REAL_ISOS = [
     Path(p) for p in os.environ.get("MKVSMITH_TEST_ISOS", "").split(os.pathsep) if p
@@ -251,9 +254,8 @@ def test_real_iso_matches_7z(iso: Path, tmp_path: Path) -> None:
     listing = subprocess.run(
         ["7z", "l", "-slt", str(link)], capture_output=True, text=True, check=True
     ).stdout
-    paths, sizes = disc_reader._parse_7z_listing(listing)
     with isofs.IsoImage(iso) as image:
-        assert {e.path: e.size for e in image.files()} == {p: sizes[p] for p in paths}
+        assert {e.path: e.size for e in image.files()} == _parse_7z_slt(listing)
         for entry in image.files():
             if entry.size > 2_000_000:
                 continue

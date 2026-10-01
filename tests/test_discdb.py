@@ -7,6 +7,7 @@ import email.message
 import io
 import json
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -498,7 +499,7 @@ def test_contribution_format_distinguishes_uhd_bluray():
     assert discdb._contribution_format([hd_title], False) == "DVD"
 
 
-def test_iso_hash_files_preserve_7z_internal_timestamps(
+def test_iso_hash_files_use_internal_timestamps(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     source = tmp_path / "movie.iso"
@@ -507,7 +508,10 @@ def test_iso_hash_files_preserve_7z_internal_timestamps(
     def fake_list_metadata(_source: Path) -> list[disc_reader._IsoFileMetadata]:
         return [
             disc_reader._IsoFileMetadata(
-                "BDMV/STREAM/01000.m2ts", 123, "2024-01-02 03:04:05"
+                "BDMV/STREAM/01000.m2ts",
+                123,
+                # UDF timestamps carry their own zone; +01:00 -> 02:04:05Z.
+                datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone(timedelta(hours=1))),
             ),
             disc_reader._IsoFileMetadata("VIDEO_TS/VIDEO_TS.IFO", 456, None),
         ]
@@ -520,10 +524,7 @@ def test_iso_hash_files_preserve_7z_internal_timestamps(
         {
             "index": 0,
             "name": "01000.m2ts",
-            "creationTime": discdb._iso_datetime_from_7z(
-                "2024-01-02 03:04:05",
-                discdb._iso_datetime(source.stat().st_mtime),
-            ),
+            "creationTime": "2024-01-02T02:04:05Z",
             "size": 123,
         },
         {
@@ -532,31 +533,6 @@ def test_iso_hash_files_preserve_7z_internal_timestamps(
             "creationTime": discdb._iso_datetime(source.stat().st_mtime),
             "size": 456,
         },
-    ]
-
-
-def test_7z_metadata_listing_parses_only_file_entries():
-    listing = """
-Path = movie.iso
-Type = Iso
-Modified = 2026-01-01 12:00:00.00
-
-Path = BDMV
-Folder = +
-Modified = 2026-01-01 12:00:00
-
-Path = BDMV/STREAM/01000.m2ts
-Folder = -
-Size = 123
-Modified = 2024-01-02 03:04:05
-"""
-
-    entries = disc_reader._parse_7z_metadata_listing(listing)
-
-    assert entries == [
-        disc_reader._IsoFileMetadata(
-            "BDMV/STREAM/01000.m2ts", 123, "2024-01-02 03:04:05"
-        )
     ]
 
 
@@ -968,7 +944,6 @@ def test_iso_aacs_identifier_uses_bounded_extraction(
             {
                 "size_mb": 16,
                 "temp_files": scanner.cleanup.temp_files,
-                "symlinks": scanner.cleanup.symlinks,
             },
         )
     ]
@@ -977,7 +952,7 @@ def test_iso_aacs_identifier_uses_bounded_extraction(
     )
 
 
-def test_iso_disc_hash_uses_existing_7z_listing_sizes(tmp_path: Path):
+def test_iso_disc_hash_uses_existing_iso_listing_sizes(tmp_path: Path):
     scanner = scan.Scanner(tmp_path / "movie.iso", scan.Config(), RuntimeState())
 
     scanner._add_iso_discdb_disc_hash(
@@ -999,33 +974,3 @@ def test_iso_disc_hash_uses_existing_7z_listing_sizes(tmp_path: Path):
         .upper()
     )
     assert scanner.disc_metadata.disc_hash == expected
-
-
-def test_direct_mounted_bluray_receives_aacs_identifier(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    source = tmp_path / "movie.iso"
-    mount = tmp_path / "mount"
-    (mount / "BDMV").mkdir(parents=True)
-    (mount / "AACS").mkdir()
-    (mount / "AACS" / "Unit_Key_RO.inf").write_bytes(b"mounted unit key")
-    scanner = scan.Scanner(source, scan.Config(no_sudo=False), RuntimeState())
-
-    def fake_direct_mount(*_args: object, **_kwargs: object) -> Path:
-        return mount
-
-    def fake_scan_bluray_source(*_args: object) -> tuple[list[Title], DiscMetadata]:
-        return [], DiscMetadata()
-
-    def skip_fingerprint(*_args: object) -> None:
-        return None
-
-    monkeypatch.setattr("disc_reader._try_direct_mount", fake_direct_mount)
-    monkeypatch.setattr(scan, "_scan_bluray_source", fake_scan_bluray_source)
-    monkeypatch.setattr(scanner, "_add_matrix256_fingerprint", skip_fingerprint)
-
-    scanner._scan_iso_mount()
-
-    assert scanner.disc_metadata.aacs_disc_id == (
-        hashlib.sha1(b"mounted unit key").hexdigest().upper()
-    )

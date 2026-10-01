@@ -96,7 +96,6 @@ def test_apply_parsed_args_populates_config_and_tag_options(
             str(temp_dir),
             "--ram-limit",
             "0.5",
-            "--no-sudo",
             "--show-all",
             "--ui-lang",
             "es",
@@ -135,7 +134,6 @@ def test_apply_parsed_args_populates_config_and_tag_options(
     assert runtime_state.logger.debug_enabled is True
     assert config.temp_dir == temp_dir
     assert config.ram_limit == 0.5
-    assert config.no_sudo is True
     assert config.show_all is True
     assert config.ui_lang == "es"
     assert tag_options.enabled is True
@@ -318,19 +316,6 @@ def test_title_ranking_uses_injected_config() -> None:
     assert scan.pick_main_feature([title], global_config) == 0
     assert scan._main_feature_score(title, injected_config)[0] == -1
     assert scan._main_feature_score(title, global_config)[0] > -1
-
-
-def test_direct_mount_honors_injected_no_sudo(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_input(_prompt: object = "") -> str:
-        raise AssertionError
-
-    monkeypatch.setattr("builtins.input", fail_input)
-
-    assert (
-        disc_reader._try_direct_mount(Path("movie.iso"), Config(no_sudo=True)) is None
-    )
 
 
 def test_runtime_logger_and_dvdifo_use_injected_logger(

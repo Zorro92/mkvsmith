@@ -68,6 +68,9 @@ _ES: dict[str, str] = {
     "Combining {n} editions into one multi-edition MKV (requires a player with ordered-chapters support)": "Combinando {n} ediciones en un MKV multi-edición (requiere un reproductor con soporte de capítulos ordenados)",
     "Titles {idxs} look like editions of the same movie - combine them with: me {idxs}": "Los títulos {idxs} parecen ediciones de la misma película: combínalos con: me {idxs}",
     "me N N ...=multi-edition rip (no args = auto-detect)": "me N N ...=extracción multi-edición (sin argumentos = detección automática)",
+    "'{name}' lists different tracks than '{first}'; combining all tracks from both editions": "'{name}' lista pistas diferentes que '{first}'; combinando todas las pistas de ambas ediciones",
+    "'{name}' shares too few clips with '{first}'; editions combined into one MKV must overlap": "'{name}' comparte muy pocos clips con '{first}'; las ediciones combinadas en un MKV deben solaparse",
+    "'{name}' has a very different duration than '{first}'; editions combined into one MKV must be cuts of the same movie": "'{name}' tiene una duración muy diferente de '{first}'; las ediciones combinadas en un MKV deben ser cortes de la misma película",
     # --- display_titles --------------------------------------------------------
     "  SCANNED TITLES": "  TÍTULOS ESCANEADOS",
     "Dur": "Dur",

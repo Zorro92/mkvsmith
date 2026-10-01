@@ -17,9 +17,11 @@ import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import mkv
 from mkv import (
     _append_clip_bounds,
     _apply_retimed_edition_chapters,
@@ -28,8 +30,9 @@ from mkv import (
     _uses_retimed_edition_chapters,
     _write_multi_edition_chapters_xml,
     _write_tags_xml_mkvmerge,
+    MappedStream,
 )
-from models import EditionAtom, EditionSpec, Stream, StreamType, Title
+from models import EditionAtom, EditionSpec, RipError, Stream, StreamType, Title
 from scan import (
     _build_edition_specs,
     _detect_edition_groups,
@@ -120,7 +123,11 @@ def test_atoms_no_chapters_one_atom_per_clip() -> None:
 def test_build_combines_clip_union_in_first_appearance_order() -> None:
     t1 = _mk_title(0, ["A", "B", "C"], [5.0, 5.0, 5.0], [0.0], playlist="00800")
     t2 = _mk_title(
-        1, ["A", "X", "B", "Y"], [5.0, 2.0, 5.0, 2.0], [0.0], playlist="00801"
+        1,
+        ["A", "X", "B", "C", "Y"],
+        [5.0, 2.0, 5.0, 5.0, 2.0],
+        [0.0],
+        playlist="00801",
     )
     combined = build_multi_edition_title([t1, t2])
     keys = [Path(combined.source_file).stem] + [
@@ -134,32 +141,48 @@ def test_build_combines_clip_union_in_first_appearance_order() -> None:
     assert [e.name for e in combined.editions] == ["T", "Playlist 00801"]
     assert combined.editions[0].is_default and not combined.editions[1].is_default
     assert [e.uid for e in combined.editions] == [1, 2]
-    # Edition 1 = A,B,C = 15s; edition 2 = A,X,B,Y = 14s.
+    # Edition 1 = A,B,C = 15s; edition 2 = A,X,B,C,Y = 19s.
     assert combined.editions[0].duration == pytest.approx(15.0)
-    assert combined.editions[1].duration == pytest.approx(14.0)
+    assert combined.editions[1].duration == pytest.approx(19.0)
     # Streams are copies, not shared mutable objects.
     assert combined.streams[0] is not t1.streams[0]
 
 
 def test_build_edition_atoms_reference_global_timeline() -> None:
-    t1 = _mk_title(0, ["A", "B"], [10.0, 10.0], [0.0, 5.0], playlist="00800")
-    t2 = _mk_title(1, ["C", "B"], [4.0, 10.0], [0.0, 2.0], playlist="00801")
+    t1 = _mk_title(
+        0,
+        ["A", "B", "S1", "S2"],
+        [10.0, 10.0, 6.0, 6.0],
+        [0.0, 5.0],
+        playlist="00800",
+    )
+    t2 = _mk_title(
+        1,
+        ["C", "B", "S1", "S2"],
+        [4.0, 10.0, 6.0, 6.0],
+        [0.0, 2.0],
+        playlist="00801",
+    )
     combined = build_multi_edition_title([t1, t2])
-    # Union: A[0,10) B[10,20) C[20,24).
+    # Union: A[0,10) B[10,20) S1[20,26) S2[26,32) C[32,36).
     e1, e2 = combined.editions
-    # e1: chapters 0 and 5 -> [0,5) [5,10) | [10,20)
+    # e1: chapters 0 and 5 -> [0,5) [5,10) | [10,20) [20,26) [26,32)
     assert [(a.start, a.end, a.hidden) for a in e1.atoms] == [
         (0.0, 5.0, False),
         (5.0, 10.0, False),
         (10.0, 20.0, True),
+        (20.0, 26.0, True),
+        (26.0, 32.0, True),
     ]
-    # e2 plays C then B: [20,22) is the edition's opening (chapter 0 starts
-    # here, so visible), [22,24) is chapter 2, then B [10,20) is a hidden
+    # e2 plays C then B: [32,34) is the edition's opening (chapter 0 starts
+    # here, so visible), [34,36) is chapter 2, then B/S1/S2 are a hidden
     # continuation of chapter 2.
     assert [(a.start, a.end, a.hidden) for a in e2.atoms] == [
-        (20.0, 22.0, False),
-        (22.0, 24.0, False),
+        (32.0, 34.0, False),
+        (34.0, 36.0, False),
         (10.0, 20.0, True),
+        (20.0, 26.0, True),
+        (26.0, 32.0, True),
     ]
     # Visible atoms get sequential names.
     vis = [a for a in e1.atoms if not a.hidden]
@@ -172,26 +195,63 @@ def test_build_rejects_mismatched_inputs() -> None:
     t2.streams = [Stream(0, StreamType.VIDEO, "mpeg2video", "und")]
     with pytest.raises(ValueError, match="at least two"):
         build_multi_edition_title([t1])
-    with pytest.raises(ValueError, match="different stream layout"):
+    with pytest.raises(ValueError, match="must overlap"):
         build_multi_edition_title([t1, t2])
     t3 = _mk_title(2, ["C"], [5.0], [0.0])  # no playlist_name
     with pytest.raises(ValueError, match="playlist"):
         build_multi_edition_title([t1, t3])
 
 
+def test_build_rejects_duration_outliers() -> None:
+    t1 = _mk_title(0, ["A", "B", "C"], [60.0] * 3, [0.0], playlist="00800")
+    t2 = _mk_title(1, ["A", "B", "C"], [10.0] * 3, [0.0], playlist="00801")
+    with pytest.raises(ValueError, match="same movie"):
+        build_multi_edition_title([t1, t2])
+
+
+def test_build_unions_differing_stream_layouts() -> None:
+    t1 = _mk_title(0, ["S", "A", "B", "C"], [10.0] * 4, [0.0], playlist="00800")
+    t2 = _mk_title(1, ["S", "X", "B", "C"], [10.0] * 4, [0.0], playlist="00801")
+    t2.streams = [
+        Stream(0, StreamType.VIDEO, "h264", "und"),
+        Stream(1, StreamType.AUDIO, "truehd", "eng"),
+        Stream(2, StreamType.AUDIO, "ac3", "eng", pid=0x1101),
+    ]
+    combined = build_multi_edition_title([t1, t2])
+    assert [(s.stream_type, s.codec, s.pid) for s in combined.streams] == [
+        (StreamType.VIDEO, "h264", None),
+        (StreamType.AUDIO, "truehd", None),
+        (StreamType.AUDIO, "ac3", 0x1101),
+    ]
+
+
+def test_build_union_prefers_first_on_pid_collision() -> None:
+    t1 = _mk_title(0, ["S", "A", "B", "C"], [10.0] * 4, [0.0], playlist="00800")
+    t1.streams = [
+        Stream(0, StreamType.VIDEO, "h264", "und", pid=0x1011),
+        Stream(1, StreamType.AUDIO, "ac3", "eng", pid=0x1101),
+    ]
+    t2 = _mk_title(1, ["S", "X", "B", "C"], [10.0] * 4, [0.0], playlist="00801")
+    t2.streams = [
+        Stream(0, StreamType.VIDEO, "h264", "und", pid=0x1011),
+        Stream(1, StreamType.AUDIO, "dts", "eng", pid=0x1101),
+    ]
+    combined = build_multi_edition_title([t1, t2])
+    assert [(s.codec, s.pid) for s in combined.streams] == [
+        ("h264", 0x1011),
+        ("ac3", 0x1101),
+    ]
+
+
 def test_build_iso_source_union() -> None:
-    t1 = _mk_title(0, ["A", "B"], [5.0, 5.0], [0.0], playlist="00800")
-    t2 = _mk_title(1, ["B", "C"], [5.0, 5.0], [0.0], playlist="00801")
+    t1 = _mk_title(0, ["A", "B", "C", "D"], [5.0] * 4, [0.0], playlist="00800")
+    t2 = _mk_title(1, ["B", "C", "D", "E"], [5.0] * 4, [0.0], playlist="00801")
     for t in (t1, t2):
         t.source_file = Path("/disc/disc.iso")
-    t1.iso_internal_paths = ["BDMV/STREAM/A.m2ts", "BDMV/STREAM/B.m2ts"]
-    t2.iso_internal_paths = ["BDMV/STREAM/B.m2ts", "BDMV/STREAM/C.m2ts"]
+    t1.iso_internal_paths = [f"BDMV/STREAM/{c}.m2ts" for c in "ABCD"]
+    t2.iso_internal_paths = [f"BDMV/STREAM/{c}.m2ts" for c in "BCDE"]
     combined = build_multi_edition_title([t1, t2])
-    assert combined.iso_internal_paths == [
-        "BDMV/STREAM/A.m2ts",
-        "BDMV/STREAM/B.m2ts",
-        "BDMV/STREAM/C.m2ts",
-    ]
+    assert combined.iso_internal_paths == [f"BDMV/STREAM/{c}.m2ts" for c in "ABCDE"]
     assert combined.source_file == Path("/disc/disc.iso")
     assert not combined.append_clips
 
@@ -210,6 +270,106 @@ def test_detect_edition_groups_rejects_duration_outliers() -> None:
     main = _mk_title(0, ["A", "B", "C"], [60.0] * 3, [0.0], playlist="00800")
     short = _mk_title(1, ["A", "B", "C"], [10.0] * 3, [0.0], playlist="00801")
     assert _detect_edition_groups([main, short]) == []
+
+
+def test_detect_edition_groups_ignores_track_differences() -> None:
+    main = _mk_title(0, ["A", "B", "C", "D"], [30.0] * 4, [0.0], playlist="00800")
+    alt = _mk_title(1, ["A", "X", "C", "D"], [30.0] * 4, [0.0], playlist="00801")
+    alt.streams = [
+        Stream(0, StreamType.VIDEO, "h264", "und"),
+        Stream(1, StreamType.AUDIO, "truehd", "eng"),
+        Stream(2, StreamType.AUDIO, "ac3", "eng", pid=0x1101),
+    ]
+    groups = _detect_edition_groups([main, alt])
+    assert len(groups) == 1
+    assert {t.playlist_name for t in groups[0]} == {"00800", "00801"}
+
+
+def _mapped_pid_stream(stream: Stream, input_id: int) -> MappedStream:
+    return {
+        "input_id": input_id,
+        "type": stream.stream_type.value,
+        "stream": stream,
+        "ident_channels": None,
+    }
+
+
+def _edition_verify_title() -> Title:
+    title = _mk_title(0, ["S", "A", "B", "C"], [10.0] * 4, [0.0], playlist="00800")
+    title.editions = [_spec()]
+    title.streams = [
+        Stream(0, StreamType.VIDEO, "h264", "und", pid=0x1011),
+        Stream(1, StreamType.AUDIO, "dts_hd_ma", "eng", pid=0x1100),
+    ]
+    return title
+
+
+def test_verify_edition_append_pids_passes_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = _edition_verify_title()
+    mapped = [_mapped_pid_stream(s, i) for i, s in enumerate(title.streams)]
+
+    def fake_ident(path: Path) -> list[dict[str, Any]]:
+        return [
+            {"id": 0, "type": "video", "properties": {"number": 0x1011}},
+            {"id": 1, "type": "audio", "properties": {"number": 0x1100}},
+        ]
+
+    monkeypatch.setattr(mkv, "_identify_input_tracks", fake_ident)
+    mkv._verify_edition_append_pids(
+        title, title.streams, [Path("/c/a.m2ts"), Path("/c/b.m2ts")], mapped
+    )
+
+
+def test_verify_edition_append_pids_fails_on_missing_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = _edition_verify_title()
+    mapped = [_mapped_pid_stream(s, i) for i, s in enumerate(title.streams)]
+
+    def fake_ident(path: Path) -> list[dict[str, Any]]:
+        tracks = [
+            {"id": 0, "type": "video", "properties": {"number": 0x1011}},
+        ]
+        if path.name == "a.m2ts":
+            tracks.append({"id": 1, "type": "audio", "properties": {"number": 0x1100}})
+        return tracks
+
+    monkeypatch.setattr(mkv, "_identify_input_tracks", fake_ident)
+    with pytest.raises(RipError, match=r"b\.m2ts.*0x1100"):
+        mkv._verify_edition_append_pids(
+            title, title.streams, [Path("/c/a.m2ts"), Path("/c/b.m2ts")], mapped
+        )
+
+
+def test_verify_edition_append_pids_skips_single_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = _edition_verify_title()
+    mapped = [_mapped_pid_stream(s, i) for i, s in enumerate(title.streams)]
+
+    def fail_ident(path: Path) -> list[dict[str, Any]]:
+        raise AssertionError("must not probe single inputs")
+
+    monkeypatch.setattr(mkv, "_identify_input_tracks", fail_ident)
+    mkv._verify_edition_append_pids(title, title.streams, [Path("/c/a.m2ts")], mapped)
+
+
+def test_verify_edition_append_pids_skips_non_editions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = _edition_verify_title()
+    title.editions = []
+    mapped = [_mapped_pid_stream(s, i) for i, s in enumerate(title.streams)]
+
+    def fail_ident(path: Path) -> list[dict[str, Any]]:
+        raise AssertionError("must not probe non-edition titles")
+
+    monkeypatch.setattr(mkv, "_identify_input_tracks", fail_ident)
+    mkv._verify_edition_append_pids(
+        title, title.streams, [Path("/c/a.m2ts"), Path("/c/b.m2ts")], mapped
+    )
 
 
 # --- XML writers ------------------------------------------------------------

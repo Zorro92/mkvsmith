@@ -492,25 +492,63 @@ class _EditionClipUnion:
     total_duration: float
 
 
+def _editions_share_clips(first: Title, title: Title) -> bool:
+    """Whether two titles share enough clips to be editions of one movie."""
+    return len(set(_title_clip_keys(first)) & set(_title_clip_keys(title))) >= 3
+
+
+def _edition_duration_within(first: Title, title: Title) -> bool:
+    """Whether two titles' durations are close enough to be one movie."""
+    return abs(title.duration_seconds - first.duration_seconds) <= 0.25 * max(
+        title.duration_seconds, first.duration_seconds
+    )
+
+
 def _validate_edition_titles(edition_titles: list[Title]) -> tuple[Title, bool]:
     if len(edition_titles) < 2:
         raise ValueError("multi-edition needs at least two titles")
     first = edition_titles[0]
-    for title in edition_titles:
+    is_iso = bool(first.iso_internal_paths)
+    if any(bool(title.iso_internal_paths) != is_iso for title in edition_titles):
+        raise ValueError("cannot mix ISO and folder sources in one multi-edition title")
+    for title in edition_titles[1:]:
         if not title.playlist_name:
             raise ValueError(
                 f"'{title.name}' is not a Blu-ray playlist title; "
                 "multi-edition MKVs can only combine playlists"
             )
-        if _stream_signature(title) != _stream_signature(first):
+        if not _editions_share_clips(first, title):
             raise ValueError(
-                f"'{title.name}' has a different stream layout than '{first.name}'; "
-                "editions combined into one MKV must share the same tracks"
+                tr(
+                    "'{name}' shares too few clips with '{first}'; "
+                    "editions combined into one MKV must overlap",
+                    name=title.name,
+                    first=first.name,
+                )
             )
-
-    is_iso = bool(first.iso_internal_paths)
-    if any(bool(title.iso_internal_paths) != is_iso for title in edition_titles):
-        raise ValueError("cannot mix ISO and folder sources in one multi-edition title")
+        if not _edition_duration_within(first, title):
+            raise ValueError(
+                tr(
+                    "'{name}' has a very different duration than "
+                    "'{first}'; editions combined into one MKV must "
+                    "be cuts of the same movie",
+                    name=title.name,
+                    first=first.name,
+                )
+            )
+        if _stream_signature(title) != _stream_signature(first):
+            # Branched discs sometimes expose extra tracks (commentaries,
+            # isolated scores) on one playlist's STN table only; the
+            # elementary streams still ride every clip, so the mux carries
+            # the union of both layouts (see _union_edition_streams).
+            log_info(
+                tr(
+                    "'{name}' lists different tracks than '{first}'; "
+                    "combining all tracks from both editions",
+                    name=title.name,
+                    first=first.name,
+                )
+            )
     return first, is_iso
 
 
@@ -626,12 +664,48 @@ def _build_edition_specs(
     return editions
 
 
+def _union_edition_streams(edition_titles: list[Title]) -> list[Stream]:
+    """Every track exposed by any edition, in first-appearance order.
+
+    Later editions may list tracks the first one doesn't (a playlist's STN
+    table can gate commentaries or isolated scores to one cut while the
+    elementary streams ride every clip). On a PID collision the first
+    edition's entry wins so one PID never maps to two tracks.
+    """
+    union: list[Stream] = []
+    signatures: list[tuple[object, ...]] = []
+    for title in edition_titles:
+        for stream in title.streams:
+            signature = (
+                stream.stream_type,
+                stream.codec,
+                stream.language,
+                stream.pid,
+                stream.channels,
+            )
+            if signature in signatures:
+                continue
+            if (stream.pid, stream.sub_id) != (None, None) and any(
+                (kept.pid, kept.sub_id) == (stream.pid, stream.sub_id) for kept in union
+            ):
+                log_debug(
+                    f"Multi-edition tracks: {stream.display_id} from "
+                    f"'{title.name}' reuses an already-listed source ID; "
+                    "keeping the first entry"
+                )
+                continue
+            signatures.append(signature)
+            union.append(Stream(**vars(stream)))
+    return union
+
+
 def _build_combined_edition_title(
-    first: Title,
+    edition_titles: list[Title],
     clip_union: _EditionClipUnion,
     is_iso: bool,
     editions: list[EditionSpec],
 ) -> Title:
+    first = edition_titles[0]
     base_name = first.disc_name or first.name
     if is_iso:
         combined = Title(
@@ -650,7 +724,7 @@ def _build_combined_edition_title(
         )
         combined.append_clips = [Path(key) for key in clip_union.keys[1:]]
 
-    combined.streams = [Stream(**vars(stream)) for stream in first.streams]
+    combined.streams = _union_edition_streams(edition_titles)
     combined.disc_name = first.disc_name
     combined.playlist_name = first.playlist_name
     combined.clip_durations = clip_union.durations
@@ -677,13 +751,17 @@ def build_multi_edition_title(
     tags naming each cut.
 
     All titles must come from the same disc/source mode, be Blu-ray playlist
-    titles, and share an identical stream layout (editions of one movie differ
-    in clip order/selection, not in tracks). Raises ``ValueError`` otherwise.
+    titles, and overlap on at least three clips with durations within 25% of
+    each other (editions of one movie differ in clip order/selection, and may
+    expose different track lists, but not in substance). Raises
+    ``ValueError`` otherwise.
     """
     first, is_iso = _validate_edition_titles(edition_titles)
     clip_union = _union_edition_clips(edition_titles)
     editions = _build_edition_specs(edition_titles, first, clip_union, edition_names)
-    combined = _build_combined_edition_title(first, clip_union, is_iso, editions)
+    combined = _build_combined_edition_title(
+        edition_titles, clip_union, is_iso, editions
+    )
     combined.seamless_connections = any(t.seamless_connections for t in edition_titles)
     return combined
 
@@ -691,10 +769,10 @@ def build_multi_edition_title(
 def _detect_edition_groups(titles: list[Title]) -> list[list[Title]]:
     """Find groups of playlist titles that look like editions of one movie.
 
-    Candidates must be Blu-ray playlist titles with an identical stream
-    layout, at least three shared clips, and durations within 25% of each
-    other. This only feeds the interactive hint / ``me`` default selection —
-    users can always combine any matching set explicitly.
+    Candidates must be Blu-ray playlist titles overlapping on at least three
+    clips with durations within 25% of each other. This only feeds the
+    interactive hint / ``me`` default selection — users can always combine
+    any matching set explicitly.
     """
     groups: list[list[Title]] = []
     pending = [
@@ -703,15 +781,9 @@ def _detect_edition_groups(titles: list[Title]) -> list[list[Title]]:
     while pending:
         head, pending = pending[0], pending[1:]
         group = [head]
-        head_clips = set(_title_clip_keys(head))
         rest: list[Title] = []
         for t in pending:
-            if (
-                _stream_signature(t) == _stream_signature(head)
-                and len(head_clips & set(_title_clip_keys(t))) >= 3
-                and abs(t.duration_seconds - head.duration_seconds)
-                <= 0.25 * max(t.duration_seconds, head.duration_seconds)
-            ):
+            if _editions_share_clips(head, t) and _edition_duration_within(head, t):
                 group.append(t)
             else:
                 rest.append(t)

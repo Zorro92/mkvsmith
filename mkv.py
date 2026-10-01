@@ -621,6 +621,49 @@ def _map_streams_to_ident_tracks(
     return mapped
 
 
+def _verify_edition_append_pids(
+    title: Title,
+    streams: list[Stream],
+    inputs: list[Path],
+    mapped: list[MappedStream],
+) -> None:
+    """Fail loud when a muxed PID is missing from any appended edition clip.
+
+    Appended inputs are selected by mkvmerge track ID, so a clip physically
+    lacking a union PID would silently shift every later TID and append the
+    wrong tracks. Multi-edition titles carry the union of their editions'
+    track lists, which is only safe when every staged clip actually contains
+    every muxed PID — ``mkvmerge -J`` reads headers only, so probing each
+    input is cheap. Raises ``RipError`` naming the clip and PID otherwise.
+    """
+    if not title.editions or len(inputs) < 2:
+        return
+    wanted: dict[int, str] = {}
+    for entry in mapped:
+        stream = entry["stream"]
+        if entry["input_id"] >= 0 and stream.pid is not None:
+            wanted.setdefault(stream.pid, stream.display_id)
+    for path in inputs:
+        probed = _identify_input_tracks(path)
+        if not probed:
+            raise RipError(
+                message=f"Cannot verify track layout of {path.name}; "
+                "aborting multi-edition mux",
+                title=title,
+                streams=streams,
+            )
+        numbers = {track.get("properties", {}).get("number") for track in probed}
+        for pid, display_id in wanted.items():
+            if pid not in numbers:
+                raise RipError(
+                    message=f"Clip {path.name} lacks {display_id} "
+                    f"(PID 0x{pid:x}); editions with different tracks "
+                    "cannot be combined",
+                    title=title,
+                    streams=streams,
+                )
+
+
 def _prepare_mux_tags(
     title: Title,
     tag_opts: TagOptions | None,
@@ -2181,6 +2224,7 @@ class MKVCreator:
                 "and per-stream properties may be incorrect."
             )
         mapped = _map_streams_to_ident_tracks(streams, ident_tracks)
+        _verify_edition_append_pids(title, streams, input_plan.inputs, mapped)
 
         # mkvmerge cannot detect sparse DVD subpictures from the first VOB,
         # and misses HD DVD EVO subpictures the same way (0xBD private

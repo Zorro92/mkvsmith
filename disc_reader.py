@@ -731,11 +731,29 @@ def _list_iso_files_7z(
 # =============================================================================
 
 
+# Floor assumption for 7z extraction throughput (10 MiB/s): network mounts
+# serve ISOs much slower than local disks, and a fixed timeout that fits a
+# single title starves a 39-clip multi-edition extraction (~45 GB).
+_MIN_EXTRACT_BPS = 10 * 1024 * 1024
+_MIN_EXTRACT_TIMEOUT = 300
+
+
+def _extract_timeout(expected_bytes: int) -> int:
+    """subprocess timeout for a 7z extraction of *expected_bytes*."""
+    if expected_bytes <= 0:
+        return _MIN_EXTRACT_TIMEOUT
+    return max(
+        _MIN_EXTRACT_TIMEOUT,
+        -(-expected_bytes // _MIN_EXTRACT_BPS),
+    )
+
+
 def _extract_with_7z(
     iso_path: Path,
     internal_paths: list[str],
     out_dir: Path,
     symlinks: list[Path] | None = None,
+    expected_bytes: int = 0,
 ) -> list[Path]:
     """Extract *internal_paths* from *iso_path* into *out_dir* using 7z.
 
@@ -751,7 +769,7 @@ def _extract_with_7z(
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=300,
+        timeout=_extract_timeout(expected_bytes),
     )
     if res.returncode != 0:
         log_error(
@@ -954,6 +972,7 @@ def _extract_full_for_muxing(
     temp_base: Path | None = None,
     temp_dirs: list[Path] | None = None,
     symlinks: list[Path] | None = None,
+    expected_bytes: int = 0,
 ) -> list[Path]:
     """Extract the full set of internal ISO files for muxing into a temp dir.
 
@@ -961,6 +980,7 @@ def _extract_full_for_muxing(
     *internals* into it via ``_extract_with_7z``. *temp_base*, when given,
     overrides the parent of the temp directory — used to spill oversized
     titles off a RAM-backed temp dir onto disk (see ``temp_base_for_title``).
+    *expected_bytes* sizes the 7z timeout for the whole extraction.
     """
     out_dir = Path(
         tempfile.mkdtemp(
@@ -972,4 +992,6 @@ def _extract_full_for_muxing(
         RUNTIME_STATE.cleanup.register_temp_dir(out_dir)
     else:
         temp_dirs.append(out_dir)
-    return _extract_with_7z(iso_path, list(internals), out_dir, symlinks)
+    return _extract_with_7z(
+        iso_path, list(internals), out_dir, symlinks, expected_bytes
+    )

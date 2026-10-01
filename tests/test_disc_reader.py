@@ -650,3 +650,15 @@ def test_probe_rejects_garbage_and_missing_files(tmp_path: Path) -> None:
 
     assert disc_reader._probe_has_disc_image_fs(iso) is False
     assert disc_reader._probe_has_disc_image_fs(tmp_path / "absent.iso") is False
+
+
+def test_extract_timeout_floors_small_and_unknown_sizes() -> None:
+    assert disc_reader._extract_timeout(0) == 300
+    assert disc_reader._extract_timeout(-5) == 300
+    assert disc_reader._extract_timeout(1024) == 300
+
+
+def test_extract_timeout_scales_with_expected_bytes() -> None:
+    assert disc_reader._extract_timeout(45 * 1024**3) == 4608
+    # Ceiling division: one byte over the floor's coverage bumps the timeout.
+    assert disc_reader._extract_timeout(300 * 10 * 1024 * 1024 + 1) == 301

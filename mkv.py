@@ -38,7 +38,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, TypedDict, cast, final
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from dvdifo import (
     _AUDIO_CHANNEL_TITLES,
@@ -761,11 +761,42 @@ def _track_filter_options(
     return options
 
 
-def _append_track_state_options(cmd: list[str], input_id: int, stream: Stream) -> None:
+def default_audio_stream(
+    streams: Sequence[Stream], preferred_languages: Sequence[str]
+) -> Stream | None:
+    """The audio track to flag as default in the output, or ``None``.
+
+    Blu-ray playlists and DVD IFOs carry no per-track default flag, so the
+    first audio track in the most-preferred language (disc order) is chosen,
+    else the first audio track; commentary tracks only when nothing else is
+    selected. This matches the reference behaviour. A source that already
+    flags an audio track default (probed file inputs) keeps its own flags,
+    signalled by returning ``None``.
+    """
+    audio = sorted(
+        (s for s in streams if s.stream_type == StreamType.AUDIO),
+        key=lambda s: s.type_index,
+    )
+    if not audio or any(s.is_default for s in audio):
+        return None
+    candidates = [s for s in audio if not s.is_commentary] or audio
+    for language in preferred_languages:
+        for stream in candidates:
+            if stream.language == language:
+                return stream
+    return candidates[0]
+
+
+def _append_track_state_options(
+    cmd: list[str], input_id: int, stream: Stream, *, is_default: bool | None = None
+) -> None:
+    default = stream.is_default if is_default is None else is_default
     cmd += ["--language", f"{input_id}:{stream.language}"]
+    # Always explicit: left unset, mkvmerge flags the first track of each
+    # type default even when the source flags none.
     cmd += [
         "--default-track",
-        f"{input_id}:{'yes' if stream.is_default else 'no'}",
+        f"{input_id}:{'yes' if default else 'no'}",
     ]
     if stream.is_forced:
         cmd += ["--forced-track", f"{input_id}:yes"]
@@ -1077,6 +1108,7 @@ def _append_track_options(
     cleanup: list[Path] | None = None,
     temp_files: list[Path] | None = None,
     hddvd_video_id: int | None = None,
+    default_audio: Stream | None = None,
 ) -> None:
     for entry in mapped:
         stream = entry["stream"]
@@ -1088,7 +1120,12 @@ def _append_track_options(
             )
             continue
 
-        _append_track_state_options(cmd, input_id, stream)
+        _append_track_state_options(
+            cmd,
+            input_id,
+            stream,
+            is_default=stream.is_default or stream is default_audio,
+        )
         if stream.stream_type == StreamType.VIDEO:
             _append_video_track_options(cmd, input_id, stream)
 
@@ -1498,6 +1535,7 @@ def _build_mkvmerge_command(
     temp_files: list[Path],
     verbose: bool = False,
     track_append: bool = False,
+    preferred_languages: Sequence[str] = (),
 ) -> list[str]:
     cmd: list[str] = (
         ["mkvmerge"]
@@ -1539,6 +1577,10 @@ def _build_mkvmerge_command(
         cleanup=cleanup,
         temp_files=temp_files,
         hddvd_video_id=hddvd_video_id,
+        default_audio=default_audio_stream(
+            [entry["stream"] for entry in mapped if entry["input_id"] >= 0],
+            preferred_languages,
+        ),
     )
     if need_positional_fallback:
         log_warn(
@@ -2475,6 +2517,7 @@ class MKVCreator:
                 self.cleanup.temp_files,
                 verbose=self.config.debug,
                 track_append=seamless_inputs is not None,
+                preferred_languages=self.config.preferred_languages,
             )
             return self._execute_mux(
                 title,

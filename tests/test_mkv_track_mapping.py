@@ -1813,3 +1813,99 @@ def test_normalize_tags_for_source_id_moves_targets_first() -> None:
     assert [child.tag for child in first] == ["Targets", "Simple", "Simple"]
     string_el = first.find("Simple/String")
     assert string_el is not None and string_el.text == "001011"
+
+
+# =============================================================================
+# Default audio track
+# =============================================================================
+
+
+def _audio(
+    type_index: int,
+    language: str,
+    *,
+    is_default: bool = False,
+    is_commentary: bool = False,
+) -> Stream:
+    return Stream(
+        index=type_index + 1,
+        stream_type=StreamType.AUDIO,
+        codec="dts",
+        language=language,
+        type_index=type_index,
+        is_default=is_default,
+        is_commentary=is_commentary,
+    )
+
+
+def test_default_audio_is_first_preferred_language_in_disc_order() -> None:
+    video = Stream(index=0, stream_type=StreamType.VIDEO, codec="h264")
+    spa, eng, eng2 = _audio(0, "spa"), _audio(1, "eng"), _audio(2, "eng")
+    # Selection order differs from disc order; disc order decides.
+    streams = [video, eng2, spa, eng]
+
+    assert mkv.default_audio_stream(streams, ["eng", "en", "und"]) is eng
+    assert mkv.default_audio_stream(streams, ["spa", "eng"]) is spa
+
+
+def test_default_audio_falls_back_to_first_track() -> None:
+    fre, spa = _audio(0, "fre"), _audio(1, "spa")
+
+    assert mkv.default_audio_stream([spa, fre], ["eng"]) is fre
+    assert mkv.default_audio_stream([spa, fre], []) is fre
+
+
+def test_default_audio_skips_commentary_unless_only_choice() -> None:
+    commentary = _audio(0, "eng", is_commentary=True)
+    main = _audio(1, "eng")
+
+    assert mkv.default_audio_stream([commentary, main], ["eng"]) is main
+    assert mkv.default_audio_stream([commentary], ["eng"]) is commentary
+
+
+def test_default_audio_keeps_source_flags_and_handles_no_audio() -> None:
+    flagged = _audio(1, "spa", is_default=True)
+
+    assert mkv.default_audio_stream([_audio(0, "eng"), flagged], ["eng"]) is None
+    video = Stream(index=0, stream_type=StreamType.VIDEO, codec="h264")
+    assert mkv.default_audio_stream([video], ["eng"]) is None
+
+
+def test_build_mkvmerge_command_flags_only_the_default_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "00800.m2ts"
+    source.write_bytes(b"video")
+    title = Title(index=2, source_file=source, name="Movie", duration_seconds=10.0)
+    video = Stream(index=0, stream_type=StreamType.VIDEO, codec="h264")
+    eng, spa = _audio(0, "eng"), _audio(1, "spa")
+    subtitle = Stream(
+        index=3, stream_type=StreamType.SUBTITLE, codec="hdmv_pgs_subtitle"
+    )
+    mapped: list[MappedStream] = [
+        {"input_id": i, "type": kind, "stream": s, "ident_channels": None}
+        for i, (kind, s) in enumerate(
+            [("video", video), ("audio", eng), ("audio", spa), ("subtitles", subtitle)]
+        )
+    ]
+
+    cmd = mkv._build_mkvmerge_command(
+        title,
+        tmp_path / "movie.mkv",
+        [source],
+        mapped,
+        [],
+        None,
+        [],
+        None,
+        [],
+        [],
+        None,
+        [],
+        [],
+        preferred_languages=["eng"],
+    )
+
+    flags = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--default-track"]
+    assert flags == ["0:no", "1:yes", "2:no", "3:no"]

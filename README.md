@@ -193,6 +193,11 @@ not expose DVD cell IDs.
   mpv-android) show a black screen with audio. `mkvsmith` warns when a rip
   starts this way; play those files with software decoding (fixing it would
   need re-encoding).
+- **Interlaced video.** H.264 rips that are interlaced throughout (e.g. 1080i
+  extras, SD anime) are marked interlaced with their field order, judged from
+  the muxed frames themselves. Soft-telecined film, which Blu-ray clip info
+  also calls "interlaced", is left progressive so players don't deinterlace
+  real film frames. Needs `mkvpropedit` (part of MKVToolNix).
 - **Dolby Vision has not been fully tested.** HDR10 and HDR10+ need no special
   handling (their metadata travels inside the video bitstream and survives a
   remux untouched), and the BT.2020/PQ colour signalling for HDR and DV

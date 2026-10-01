@@ -28,8 +28,9 @@ def _track(number: int, codec: bytes, private: bytes = b"") -> bytes:
     return _el("AE", body)
 
 
-# avcC: version 1, High profile, level 4.1, lengthSizeMinusOne = 3.
-_AVCC = bytes([1, 0x64, 0x00, 0x29, 0xFF])
+# avcC: version 1, High profile, level 4.1, lengthSizeMinusOne = 3, and no
+# SPS/PPS (the IDR check doesn't need them).
+_AVCC = bytes([1, 0x64, 0x00, 0x29, 0xFF, 0xE0, 0x00])
 
 
 def _frame(*nal_headers: int) -> bytes:

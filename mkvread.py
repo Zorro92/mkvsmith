@@ -1,7 +1,8 @@
 """Minimal read-only Matroska reader for post-mux checks.
 
 Walks just enough EBML structure to find the first H.264 video frame of a
-finished MKV and tell whether it is an IDR picture. Elements that are not
+finished MKV and its first few hundred frames: whether playback starts on an
+IDR picture, and (with ``h264``) whether the video is interlaced. Elements that are not
 needed (attachments, cues, other tracks) are skipped by size, so only a few
 kilobytes are read regardless of file size.
 
@@ -18,8 +19,12 @@ configuration record (ISO/IEC 14496-15) for the NAL length size.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
+
+from h264 import ScanType, stream_scan_type
 
 _SEGMENT = 0x18538067
 _TRACKS = 0x1654AE6B
@@ -36,9 +41,9 @@ _AVC_CODEC_ID = b"V_MPEG4/ISO/AVC"
 _NAL_IDR = 5
 _NAL_NON_IDR = 1
 _UNKNOWN_SIZE = -1
-# Give up after this many elements: a sane file reaches its first video
-# frame long before, and a corrupt one must not loop forever.
-_MAX_ELEMENTS = 100_000
+# Give up after this many elements: a sane file reaches the frames we sample
+# long before, and a corrupt one must not loop forever.
+_MAX_ELEMENTS = 200_000
 
 
 class _Reader:
@@ -82,32 +87,72 @@ def _vint_length(first: int) -> int:
     raise ValueError("bad vint")
 
 
-def _block_track(block: bytes) -> tuple[int, int]:
-    """(track number, offset of the frame data) for a (Simple)Block body."""
+def _block_track(block: bytes) -> tuple[int, int, bool]:
+    """(track number, frame data offset, laced?) for a (Simple)Block body.
+
+    Audio blocks are often laced (several frames per block); only the video
+    track's blocks are read, and those are never laced in practice.
+    """
     length = _vint_length(block[0])
     track = block[0] & (0xFF >> length)
     for byte in block[1:length]:
         track = (track << 8) | byte
-    flags = block[length + 2]
-    if flags & 0x06:
-        raise ValueError("laced video block")
-    return track, length + 3
+    laced = bool(block[length + 2] & 0x06)
+    return track, length + 3, laced
 
 
-def _first_frame_is_idr(frame: bytes, length_size: int) -> bool | None:
+@dataclass(frozen=True)
+class _AvcConfig:
+    """The parts of an AVCDecoderConfigurationRecord (CodecPrivate) we use."""
+
+    length_size: int
+    sps: list[bytes]
+    pps: list[bytes]
+
+
+def _parse_avc_config(private: bytes) -> _AvcConfig:
+    length_size = (private[4] & 0x03) + 1
+    pos = 5
+    sets: list[list[bytes]] = []
+    for count_mask in (0x1F, 0xFF):  # SPS count (5 bits), then PPS count
+        count = private[pos] & count_mask
+        pos += 1
+        units: list[bytes] = []
+        for _ in range(count):
+            size = int.from_bytes(private[pos : pos + 2], "big")
+            units.append(private[pos + 2 : pos + 2 + size])
+            pos += 2 + size
+        sets.append(units)
+    return _AvcConfig(length_size, sets[0], sets[1])
+
+
+def _split_nals(frame: bytes, length_size: int) -> list[bytes]:
+    nals: list[bytes] = []
     pos = 0
     while pos + length_size <= len(frame):
         size = int.from_bytes(frame[pos : pos + length_size], "big")
         pos += length_size
         if size <= 0 or pos + size > len(frame):
-            return None
-        nal_type = frame[pos] & 0x1F
-        if nal_type == _NAL_IDR:
-            return True
-        if nal_type == _NAL_NON_IDR:
-            return False
+            break
+        nals.append(frame[pos : pos + size])
         pos += size
-    return None
+    return nals
+
+
+def _avc_frames(path: Path, limit: int) -> tuple[_AvcConfig | None, list[list[bytes]]]:
+    """The AVC config and up to *limit* leading frames (as NAL lists)."""
+    config: _AvcConfig | None = None
+    frames: list[list[bytes]] = []
+    try:
+        with path.open("rb") as f:
+            for found_config, nals in _scan(_Reader(f)):
+                config = found_config
+                frames.append(nals)
+                if len(frames) >= limit:
+                    break
+    except (OSError, EOFError, ValueError, IndexError):
+        pass
+    return config, frames
 
 
 def first_video_frame_is_idr(path: Path) -> bool | None:
@@ -115,30 +160,46 @@ def first_video_frame_is_idr(path: Path) -> bool | None:
 
     ``None`` when there is no H.264 track or the file can't be read.
     """
-    try:
-        with path.open("rb") as f:
-            return _scan(_Reader(f))
-    except (OSError, EOFError, ValueError, IndexError):
+    _config, frames = _avc_frames(path, 1)
+    for nal in frames[0] if frames else []:
+        nal_type = nal[0] & 0x1F
+        if nal_type == _NAL_IDR:
+            return True
+        if nal_type == _NAL_NON_IDR:
+            return False
+    return None
+
+
+def video_scan_type(path: Path, sample_frames: int = 300) -> ScanType | None:
+    """Progressive / interlaced (with field order) for *path*'s H.264 video.
+
+    Judged from the first *sample_frames* frames (see ``h264.classify_scan``);
+    ``None`` when undecided or there is no H.264 track.
+    """
+    config, frames = _avc_frames(path, sample_frames)
+    if config is None:
         return None
+    return stream_scan_type(config.sps, config.pps, frames)
 
 
-def _scan(r: _Reader) -> bool | None:
+def _scan(r: _Reader) -> Iterator[tuple[_AvcConfig, list[bytes]]]:
+    """Yield the first AVC track's frames, in file order, as NAL lists."""
     # EBML header, then the Segment whose children we walk.
     r.element_id()
     header_size = r.element_size()  # read before tell(): it advances the file
     r.seek(r.tell() + header_size)
     if r.element_id() != _SEGMENT:
-        return None
+        return
     segment_size = r.element_size()
     segment_end = None if segment_size == _UNKNOWN_SIZE else r.tell() + segment_size
-    avc: dict[int, int] = {}  # track number -> NAL length size
+    avc: dict[int, _AvcConfig] = {}  # track number -> its AVC config
     stack: list[int | None] = [segment_end]
     for _ in range(_MAX_ELEMENTS):
         end = stack[-1]
         if end is not None and r.tell() >= end:
             stack.pop()
             if not stack:
-                return None
+                return
             continue
         element = r.element_id()
         size = r.element_size()
@@ -148,20 +209,22 @@ def _scan(r: _Reader) -> bool | None:
             avc.update(_track_entry(r.read(size)))
         elif element in (_SIMPLE_BLOCK, _BLOCK):
             if not avc:
-                return None
+                return
             block = r.read(size)
-            track, offset = _block_track(block)
-            if track in avc:
-                return _first_frame_is_idr(block[offset:], avc[track])
+            track, offset, laced = _block_track(block)
+            config = avc.get(track)
+            if config is not None and track == min(avc):
+                if laced:
+                    return
+                yield config, _split_nals(block[offset:], config.length_size)
         elif size == _UNKNOWN_SIZE:
-            return None
+            return
         else:
             r.seek(r.tell() + size)
-    return None
 
 
-def _track_entry(data: bytes) -> dict[int, int]:
-    """``{track number: NAL length size}`` if this entry is an AVC track."""
+def _track_entry(data: bytes) -> dict[int, _AvcConfig]:
+    """``{track number: AVC config}`` if this entry is an AVC track."""
     r = _BytesReader(data)
     number: int | None = None
     codec: bytes | None = None
@@ -176,9 +239,9 @@ def _track_entry(data: bytes) -> dict[int, int]:
             codec = value.rstrip(b"\0")
         elif element == _CODEC_PRIVATE:
             private = value
-    if number is None or codec != _AVC_CODEC_ID or not private or len(private) < 5:
+    if number is None or codec != _AVC_CODEC_ID or not private or len(private) < 7:
         return {}
-    return {number: (private[4] & 0x03) + 1}
+    return {number: _parse_avc_config(private)}
 
 
 class _BytesReader(_Reader):

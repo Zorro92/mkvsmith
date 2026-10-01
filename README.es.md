@@ -201,6 +201,12 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   pantalla en negro con audio. `mkvsmith` avisa cuando una extracción empieza
   así; reproduce esos archivos con decodificación por software (corregirlo
   requeriría recodificar).
+- **Vídeo entrelazado.** Las extracciones H.264 entrelazadas de principio a
+  fin (p. ej. extras 1080i, anime SD) se marcan como entrelazadas con su orden
+  de campos, decidido a partir de los propios fotogramas. El cine con telecine
+  suave, que la información de clip del Blu-ray también llama «entrelazado»,
+  se deja como progresivo para que los reproductores no desentrelacen
+  fotogramas de película reales. Requiere `mkvpropedit` (parte de MKVToolNix).
 - **Dolby Vision no ha sido probado a fondo.** HDR10 y HDR10+ no requieren
   tratamiento especial (sus metadatos viajan dentro del bitstream de vídeo y
   sobreviven intactos a un remux), y la señalización de color BT.2020/PQ para

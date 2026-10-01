@@ -1540,6 +1540,59 @@ def _warn_if_starts_without_idr(out_file: Path) -> None:
         )
 
 
+# Matroska FieldOrder values (RFC 9559): 1 = top field first, 6 = bottom.
+_MATROSKA_FIELD_ORDER = {"tff": 1, "bff": 6}
+
+
+def _apply_interlace_flags(out_file: Path) -> bool:
+    """Mark interlaced H.264 video as such, with its field order.
+
+    mkvmerge writes no interlace elements for AVC, and Blu-ray clip info
+    calls soft-telecined film "interlaced" too, so the decision comes from
+    the muxed frames themselves (``mkvread.video_scan_type``). Only video
+    that is consistently interlaced with one field order is flagged;
+    progressive, pulldown and mixed video is left alone. Returns True when
+    the file was updated. Never raises: metadata must not fail a rip.
+    """
+    from h264 import ScanType
+    from mkvread import video_scan_type
+
+    scan = video_scan_type(out_file)
+    if scan is None or scan == ScanType.PROGRESSIVE:
+        return False
+    if shutil.which("mkvpropedit") is None:
+        log_debug("mkvpropedit not found; interlace flags not written")
+        return False
+    command = [
+        "mkvpropedit",
+        str(out_file),
+        "--edit",
+        "track:v1",
+        "--set",
+        "interlaced=1",
+        "--set",
+        f"field-order={_MATROSKA_FIELD_ORDER[scan.value]}",
+    ]
+    try:
+        result = _run_mkvtoolnix(command)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log_debug(f"Interlace flags: mkvpropedit failed: {exc}")
+        return False
+    if result.returncode != 0:
+        log_debug(f"Interlace flags: mkvpropedit failed ({result.returncode})")
+        return False
+    log_info(
+        tr(
+            "Marked {name} as interlaced ({order})",
+            name=out_file.name,
+            order=tr("top field first")
+            if scan == ScanType.INTERLACED_TFF
+            else tr("bottom field first"),
+        )
+    )
+    return True
+
+
 def _mkvmerge_timestamp(seconds: float) -> str:
     """``HH:MM:SS.nnnnnnnnn`` for mkvmerge's ``--split parts:`` ranges."""
     nanoseconds = round(seconds * 1_000_000_000)
@@ -2449,6 +2502,7 @@ class MKVCreator:
 
         self._log_created(out_file)
         _warn_if_starts_without_idr(out_file)
+        _apply_interlace_flags(out_file)
         if (
             metadata is not None
             and self.tag_opts is not None

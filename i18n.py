@@ -190,6 +190,7 @@ _ES: dict[str, str] = {
     "{budget:.1f} GB pero el sistema de archivos temporal tiene poco espacio "
     "({avail:.1f} GB libres); usando el directorio temporal en disco '{dir}' "
     "para este título.",
+    "Removed {count} leftover temp folder(s) ({gb:.1f} GB) from interrupted runs.": "Se eliminaron {count} carpeta(s) temporal(es) sobrante(s) ({gb:.1f} GB) de ejecuciones interrumpidas.",
     "Built-in ISO reader could not read {path} ({err}); falling back to 7z.": "El lector de ISO integrado no pudo leer {path} ({err}); se usará 7z.",
     "File not found inside the ISO: {path}": "Archivo no encontrado dentro de la ISO: {path}",
     "Could not extract {path} from the ISO: {err}": "No se pudo extraer {path} de la ISO: {err}",

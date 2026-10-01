@@ -1,4 +1,4 @@
-"""Tests for graceful-shutdown temp-file cleanup (SIGINT/SIGTERM).
+"""Tests for graceful-shutdown temp-file cleanup (SIGINT/SIGTERM/SIGHUP).
 
 The signal handlers themselves terminate the process, so these tests cover
 the helpers they delegate to: the active-muxer/output registries populated by
@@ -11,11 +11,14 @@ MKVCreator, and the kill/cleanup functions the handlers call.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -190,7 +193,7 @@ models.RUNTIME_STATE.cleanup.temp_files.append(tmp)
 models.set_progress_active(True)
 sys.stderr.write("\rMuxing 42%")
 sys.stderr.flush()
-os.kill(os.getpid(), signal.SIGINT)
+os.kill(os.getpid(), getattr(signal, sys.argv[4]))
 time.sleep(10)  # reached only if the handler failed to terminate us
 """
 
@@ -206,24 +209,34 @@ def _proc_gone_or_zombie(pid: int) -> bool:
     return state == "Z"
 
 
-def test_sigint_handler_kills_muxer_and_cleans_up(tmp_path: Path) -> None:
+@pytest.mark.parametrize("signame", ["SIGINT", "SIGTERM", "SIGHUP"])
+def test_signal_handler_kills_muxer_and_cleans_up(tmp_path: Path, signame: str) -> None:
     if not Path("/proc").exists():
         pytest.skip("/proc not available; process-state check is Linux-only")
+    signum = getattr(signal, signame)
     out = tmp_path / "movie_t01.mkv"
     tmp = tmp_path / "partial.tmp"
     pidfile = tmp_path / "muxer.pid"
 
     proc = subprocess.run(
-        [sys.executable, "-c", _SIGINT_CHILD_SCRIPT, str(out), str(tmp), str(pidfile)],
+        [
+            sys.executable,
+            "-c",
+            _SIGINT_CHILD_SCRIPT,
+            str(out),
+            str(tmp),
+            str(pidfile),
+            signame,
+        ],
         capture_output=True,
         text=True,
         timeout=30,
     )
     gpid = int(pidfile.read_text())
     try:
-        # The handler re-raises SIGINT after cleanup, so the process must die
-        # from the signal rather than exiting normally.
-        assert proc.returncode == -signal.SIGINT
+        # The handler re-raises the signal after cleanup, so the process must
+        # die from it rather than exiting normally.
+        assert proc.returncode == -signum
         assert not out.exists()
         assert not tmp.exists()
         # The handler finished the carriage-return progress line.
@@ -235,7 +248,7 @@ def test_sigint_handler_kills_muxer_and_cleans_up(tmp_path: Path) -> None:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and not _proc_gone_or_zombie(gpid):
             time.sleep(0.05)
-        assert _proc_gone_or_zombie(gpid), "muxer child survived SIGINT"
+        assert _proc_gone_or_zombie(gpid), f"muxer child survived {signame}"
     finally:
         if not _proc_gone_or_zombie(gpid):
             try:
@@ -307,3 +320,151 @@ def test_cleanup_successful_interrupt_unmount_removes_mountpoint(
 
     assert commands == [["sudo", "-n", "umount", str(mountpoint)]]
     assert not mountpoint.exists()
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="no SIGHUP on Windows")
+def test_sighup_left_ignored_under_nohup() -> None:
+    # nohup ignores SIGHUP before exec; importing models must not undo that,
+    # or a detached rip would die when its terminal closes.
+    script = (
+        "import signal; signal.signal(signal.SIGHUP, signal.SIG_IGN); "
+        "import models; "
+        "print(signal.getsignal(signal.SIGHUP) == signal.SIG_IGN)"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    assert proc.stdout.strip() == "True", proc.stderr
+
+
+def test_cleanup_unmounts_before_removing_temp_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    session = tmp_path / "mkvsmith-tmp-1-x"
+    mountpoint = session / "mkv_mount_y"
+    mountpoint.mkdir(parents=True)
+    events: list[str] = []
+
+    def fake_unmount(path: Path, *, interrupt: bool) -> None:
+        events.append(f"umount {path.name} exists={session.exists()}")
+
+    monkeypatch.setattr(models, "_unmount_direct_mount", fake_unmount)
+    models.RUNTIME_STATE.cleanup.direct_mounts.append(mountpoint)
+    models.RUNTIME_STATE.cleanup.temp_dirs.append(session)
+
+    cleanup_temp_dirs()
+
+    assert events == ["umount mkv_mount_y exists=True"]
+    assert not session.exists()
+
+
+def test_cleanup_keeps_temp_dir_holding_a_live_mount(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    session = tmp_path / "mkvsmith-tmp-1-x"
+    mountpoint = session / "mkv_mount_y"
+    mountpoint.mkdir(parents=True)
+
+    def is_mountpoint(path: str | Path) -> bool:
+        return Path(path) == mountpoint
+
+    monkeypatch.setattr(models.os.path, "ismount", is_mountpoint)
+    models.RUNTIME_STATE.cleanup.temp_dirs.append(session)
+
+    cleanup_temp_dirs()
+
+    assert mountpoint.exists()
+
+
+# =============================================================================
+# Session temp dirs and the stale-session sweep
+# =============================================================================
+
+
+def _make_session(base: Path, owner: Mapping[str, object] | None) -> Path:
+    directory = base / f"{models.SESSION_DIR_PREFIX}{owner and owner.get('pid')}-abc"
+    (directory / "mkv_mux_q").mkdir(parents=True)
+    (directory / "mkv_mux_q" / "00800.m2ts").write_bytes(b"x" * 1000)
+    if owner is not None:
+        (directory / models._SESSION_MARKER).write_text(json.dumps(owner))
+    return directory
+
+
+def _exited_pid() -> int:
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+def test_session_dir_is_marked_cached_and_registered(tmp_path: Path) -> None:
+    cleanup = models.RUNTIME_STATE.cleanup
+    session = cleanup.session_dir(tmp_path)
+    assert session.parent == tmp_path
+    assert session.name.startswith(f"{models.SESSION_DIR_PREFIX}{os.getpid()}-")
+    owner = json.loads((session / models._SESSION_MARKER).read_text())
+    assert owner["pid"] == os.getpid()
+    assert owner["host"] == socket.gethostname()
+    assert cleanup.session_dir(tmp_path) == session
+    assert cleanup.temp_dirs == [session]
+
+
+posix_only = pytest.mark.skipif(os.name != "posix", reason="sweep is POSIX-only")
+
+
+@posix_only
+def test_sweep_removes_session_of_exited_owner(tmp_path: Path) -> None:
+    host = socket.gethostname()
+    stale = _make_session(tmp_path, {"pid": _exited_pid(), "host": host, "start": None})
+
+    marker_size = (stale / models._SESSION_MARKER).stat().st_size
+
+    removed = models.sweep_stale_session_dirs([tmp_path])
+
+    # The reported size covers the 1000-byte clip plus the owner marker.
+    assert removed == [(stale, 1000 + marker_size)]
+    assert not stale.exists()
+
+
+@posix_only
+def test_sweep_removes_session_whose_pid_was_reused(tmp_path: Path) -> None:
+    if models._process_start_token(os.getpid()) is None:
+        pytest.skip("process start time unavailable (no /proc)")
+    owner = {"pid": os.getpid(), "host": socket.gethostname(), "start": "1"}
+    reused = _make_session(tmp_path, owner)
+
+    removed = models.sweep_stale_session_dirs([tmp_path])
+    assert [path for path, _size in removed] == [reused]
+    assert not reused.exists()
+
+
+@posix_only
+def test_sweep_keeps_live_foreign_unmarked_and_mounted_sessions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = socket.gethostname()
+    me = models.create_session_dir(tmp_path)
+    other_host = _make_session(
+        tmp_path / "a", {"pid": _exited_pid(), "host": "elsewhere", "start": None}
+    )
+    unmarked = _make_session(tmp_path / "b", None)
+    mounted = _make_session(
+        tmp_path / "c", {"pid": _exited_pid(), "host": host, "start": None}
+    )
+
+    def is_mountpoint(path: str | Path) -> bool:
+        return Path(path) == mounted / "mkv_mux_q"
+
+    monkeypatch.setattr(models.os.path, "ismount", is_mountpoint)
+
+    bases = [tmp_path, tmp_path / "a", tmp_path / "b", tmp_path / "c"]
+    assert models.sweep_stale_session_dirs(bases) == []
+    for directory in (me, other_host, unmarked, mounted):
+        assert directory.exists()
+
+
+@posix_only
+def test_sweep_ignores_unrelated_dirs_and_missing_bases(tmp_path: Path) -> None:
+    unrelated = tmp_path / "mkv_mux_legacy"
+    unrelated.mkdir()
+    assert models.sweep_stale_session_dirs([tmp_path, tmp_path / "missing"]) == []
+    assert unrelated.exists()

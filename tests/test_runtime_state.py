@@ -166,6 +166,11 @@ def test_configure_runtime_uses_injected_state(
         budgets.append(config)
 
     monkeypatch.setattr("disc_reader.init_ram_budget", fake_init_ram_budget)
+
+    def only_tmp_path(_config: models.Config | None = None) -> list[Path]:
+        return [tmp_path]
+
+    monkeypatch.setattr("disc_reader.temp_base_candidates", only_tmp_path)
     old_tempdir = __import__("tempfile").tempdir
 
     try:
@@ -282,8 +287,15 @@ def test_temp_base_for_title_uses_injected_config(
         return False
 
     monkeypatch.setattr(disc_reader, "_is_ram_backed_dir", fake_is_ram_backed_dir)
+    runtime_state = RuntimeState()
+    monkeypatch.setattr(disc_reader, "RUNTIME_STATE", runtime_state)
 
-    assert disc_reader.temp_base_for_title(200, config) == config.temp_dir
+    spill = disc_reader.temp_base_for_title(200, config)
+    # Spills land in this run's marked session dir under the disk base.
+    assert spill is not None and spill.parent == config.temp_dir
+    assert spill.name.startswith(models.SESSION_DIR_PREFIX)
+    assert runtime_state.cleanup.temp_dirs == [spill]
+    assert disc_reader.temp_base_for_title(200, config) == spill
     assert disc_reader.temp_base_for_title(50, config) is None
 
 

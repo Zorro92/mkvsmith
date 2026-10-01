@@ -17,7 +17,7 @@ import pytest
 
 import cli
 import disc_reader
-from models import Config, RuntimeState
+from models import SESSION_DIR_PREFIX, Config, RuntimeState
 
 
 def _always_ram_backed(_p: Path) -> bool:
@@ -193,9 +193,19 @@ def test_configure_runtime_defaults_tempdir_off_tmpfs(
 
     monkeypatch.setattr("disc_reader.init_ram_budget", skip_init_ram_budget)
     monkeypatch.setattr(cli.dvdifo, "set_debug", skip_set_debug)
+
+    def only_default(_config: Config | None = None) -> list[Path]:
+        return [default]
+
+    monkeypatch.setattr("disc_reader.temp_base_candidates", only_default)
     old_tempdir = tempfile.tempdir
+    state = RuntimeState(config=Config(debug=True))
     try:
-        cli._configure_runtime(RuntimeState(config=Config(debug=True)))
-        assert tempfile.tempdir == str(default)
+        cli._configure_runtime(state)
+        session = Path(tempfile.tempdir or "")
     finally:
         tempfile.tempdir = old_tempdir
+    # Temp files go into a marked per-run session dir under the default base.
+    assert session.parent == default
+    assert session.name.startswith(SESSION_DIR_PREFIX)
+    assert state.cleanup.temp_dirs == [session]

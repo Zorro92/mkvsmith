@@ -57,6 +57,7 @@ from models import (
     log_debug,
     _HAS_MKVMERGE,
     MKVSMITH_VERSION,
+    sweep_stale_session_dirs,
 )
 from i18n import (
     tr,
@@ -1153,24 +1154,45 @@ def _configure_runtime(runtime_state: RuntimeState | None = None) -> None:
     config = state.config
     state.logger.configure(config)
     dvdifo.set_debug(state.logger.debug)
+    from disc_reader import default_temp_dir, init_ram_budget, temp_base_candidates
+
     if config.temp_dir:
         config.temp_dir.mkdir(parents=True, exist_ok=True)
-        tempfile.tempdir = str(config.temp_dir)
+        base = config.temp_dir
     else:
         # Default to disk-backed /var/tmp (see disc_reader.default_temp_dir)
         # so temp files never silently land on a RAM-backed /tmp.
-        from disc_reader import default_temp_dir
-
-        default = default_temp_dir()
+        base = default_temp_dir()
         try:
-            default.mkdir(parents=True, exist_ok=True)
+            base.mkdir(parents=True, exist_ok=True)
         except OSError:
-            default = Path(tempfile.gettempdir())
-        tempfile.tempdir = str(default)
+            base = Path(tempfile.gettempdir())
 
-    from disc_reader import init_ram_budget
+    _sweep_stale_temp(temp_base_candidates(config))
+    # All of this run's temp files live in one marked session dir, so a run
+    # killed before cleanup can be swept by the next one.
+    try:
+        tempfile.tempdir = str(state.cleanup.session_dir(base))
+    except OSError as exc:
+        log_debug(f"Could not create session temp dir in {base}: {exc}")
+        tempfile.tempdir = str(base)
 
     init_ram_budget(config)
+
+
+def _sweep_stale_temp(bases: list[Path]) -> None:
+    removed = sweep_stale_session_dirs(bases)
+    if not removed:
+        return
+    log_info(
+        tr(
+            "Removed {count} leftover temp folder(s) ({gb:.1f} GB) from interrupted runs.",
+            count=len(removed),
+            gb=sum(size for _path, size in removed) / 1e9,
+        )
+    )
+    for path, _size in removed:
+        log_debug(f"Removed stale session dir {path}")
 
 
 def _apply_discdb_lookup(

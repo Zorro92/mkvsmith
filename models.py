@@ -12,16 +12,19 @@ Extracted from main.py. Contains:
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+import tempfile
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, final
+from typing import Any, TypedDict, cast, final
 
 try:
     from rich.console import Console as _ImportedConsole
@@ -120,6 +123,152 @@ def _remove_temp_file(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _has_mounted_child(directory: Path) -> bool:
+    """True when a direct child of *directory* is still a mount point.
+
+    Loop-mount points are created at the top of the session temp dir, so a
+    failed unmount leaves one there; deleting through it would walk the
+    mounted image.
+    """
+    try:
+        return any(os.path.ismount(child) for child in directory.iterdir())
+    except OSError:
+        return False
+
+
+def _remove_temp_dir(directory: Path) -> None:
+    if _has_mounted_child(directory):
+        return
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+# =============================================================================
+# Per-run session temp dirs and the stale-session sweep
+# =============================================================================
+
+# Every run keeps its temp files inside a session dir named
+# ``mkvsmith-tmp-<pid>-<random>`` holding an owner marker. A run killed
+# without cleanup (SIGKILL, OOM killer, power loss) leaves its session dir
+# behind; the next run removes it once the owner is provably gone.
+SESSION_DIR_PREFIX = "mkvsmith-tmp-"
+_SESSION_MARKER = ".mkvsmith-owner.json"
+
+
+class SessionOwner(TypedDict):
+    pid: int
+    host: str
+    # Kernel start time of the owner (Linux), so a reused PID is not
+    # mistaken for the original owner. ``None`` where unavailable.
+    start: str | None
+
+
+def _process_start_token(pid: int) -> str | None:
+    """Start time of *pid* from ``/proc/<pid>/stat``, or ``None``."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # Field 2 (comm) may contain spaces or ')'; fields after the last ')'
+    # start at field 3, so starttime (field 22) is index 19.
+    fields = stat.rsplit(")", 1)[-1].split()
+    return fields[19] if len(fields) > 19 else None
+
+
+def create_session_dir(base: Path) -> Path:
+    """Create a marked session temp dir under *base* for this process."""
+    pid = os.getpid()
+    path = Path(tempfile.mkdtemp(prefix=f"{SESSION_DIR_PREFIX}{pid}-", dir=base))
+    owner = SessionOwner(
+        pid=pid, host=socket.gethostname(), start=_process_start_token(pid)
+    )
+    (path / _SESSION_MARKER).write_text(json.dumps(owner))
+    return path
+
+
+def _read_session_owner(directory: Path) -> SessionOwner | None:
+    try:
+        raw: object = json.loads((directory / _SESSION_MARKER).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    data = cast(dict[str, object], raw)
+    pid = data.get("pid")
+    host = data.get("host")
+    start = data.get("start")
+    if not isinstance(pid, int) or not isinstance(host, str):
+        return None
+    if start is not None and not isinstance(start, str):
+        return None
+    return SessionOwner(pid=pid, host=host, start=start)
+
+
+def _session_owner_gone(owner: SessionOwner) -> bool:
+    """True only when the owning process has certainly exited."""
+    if owner["host"] != socket.gethostname():
+        # Temp on shared storage: another machine's run may still be live.
+        return False
+    try:
+        os.kill(owner["pid"], 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        # EPERM: the PID exists under another user.
+        return False
+    recorded = owner["start"]
+    current = _process_start_token(owner["pid"])
+    return recorded is not None and current is not None and current != recorded
+
+
+def _tree_size(directory: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(directory):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def sweep_stale_session_dirs(bases: Iterable[Path]) -> list[tuple[Path, int]]:
+    """Delete session dirs under *bases* whose owning run has exited.
+
+    Only directories carrying a valid owner marker, owned by the current
+    user, created on this host, and holding no live mount are touched.
+    Returns ``(path, bytes)`` for each directory removed. POSIX only:
+    Windows has no signal-0 liveness probe (``os.kill(pid, 0)`` sends
+    CTRL_C_EVENT there), so the sweep is a no-op.
+    """
+    if os.name != "posix":
+        return []
+    removed: list[tuple[Path, int]] = []
+    for base in dict.fromkeys(bases):
+        try:
+            candidates = sorted(base.glob(f"{SESSION_DIR_PREFIX}*"))
+        except OSError:
+            continue
+        for directory in candidates:
+            try:
+                info = directory.lstat()
+            except OSError:
+                continue
+            if not directory.is_dir() or directory.is_symlink():
+                continue
+            if info.st_uid != os.getuid():
+                continue
+            owner = _read_session_owner(directory)
+            if owner is None or not _session_owner_gone(owner):
+                continue
+            if _has_mounted_child(directory):
+                continue
+            size = _tree_size(directory)
+            shutil.rmtree(directory, ignore_errors=True)
+            if not directory.exists():
+                removed.append((directory, size))
+    return removed
 
 
 def _unmount_direct_mount(mountpoint: Path, *, interrupt: bool) -> None:
@@ -224,7 +373,7 @@ _ = atexit.register(cleanup_temp_dirs)
 
 
 def _signal_cleanup(signum: int, _frame: object) -> None:
-    """Run temp file cleanup on SIGINT/SIGTERM, then restore default handler.
+    """Run temp file cleanup on SIGINT/SIGTERM/SIGHUP, then re-raise.
 
     The active muxer is killed first — it runs in its own session, so the
     terminal's Ctrl+C never reaches it — and its partial output file is
@@ -240,6 +389,11 @@ def _signal_cleanup(signum: int, _frame: object) -> None:
 # Run cleanup on Ctrl+C and termination signals to prevent orphaned temp dirs.
 signal.signal(signal.SIGINT, _signal_cleanup)
 signal.signal(signal.SIGTERM, _signal_cleanup)
+# A closed terminal sends SIGHUP. Unhandled, it kills Python without cleanup
+# while the muxer (in its own session) keeps running. Leave it alone when
+# already ignored, so ``nohup mkvsmith ...`` keeps surviving the hangup.
+if hasattr(signal, "SIGHUP") and signal.getsignal(signal.SIGHUP) != signal.SIG_IGN:
+    signal.signal(signal.SIGHUP, _signal_cleanup)
 
 
 # =============================================================================
@@ -789,8 +943,19 @@ class RuntimeCleanup:
     direct_mounts: list[Path] = field(default_factory=list[Path])
     symlinks: list[Path] = field(default_factory=list[Path])
 
+    session_dirs: dict[Path, Path] = field(default_factory=dict[Path, Path])
+
     def register_temp_dir(self, path: Path) -> Path:
         self.temp_dirs.append(path)
+        return path
+
+    def session_dir(self, base: Path) -> Path:
+        """This run's session temp dir under *base*, created on first use."""
+        existing = self.session_dirs.get(base)
+        if existing is not None and existing.is_dir():
+            return existing
+        path = self.register_temp_dir(create_session_dir(base))
+        self.session_dirs[base] = path
         return path
 
     def register_temp_file(self, path: Path) -> Path:
@@ -812,13 +977,17 @@ class RuntimeCleanup:
         return path
 
     def cleanup(self, *, interrupt: bool = False) -> None:
-        """Delete tracked resources; interrupt mode never prompts for sudo."""
-        for directory in dict.fromkeys(self.temp_dirs):
-            shutil.rmtree(directory, ignore_errors=True)
-        for file_path in dict.fromkeys(self.temp_files):
-            _remove_temp_file(file_path)
+        """Delete tracked resources; interrupt mode never prompts for sudo.
+
+        Mounts go first: their mount points live inside the session temp
+        dir, which is only deleted once nothing is mounted in it.
+        """
         for mountpoint in dict.fromkeys(self.direct_mounts):
             _unmount_direct_mount(mountpoint, interrupt=interrupt)
+        for file_path in dict.fromkeys(self.temp_files):
+            _remove_temp_file(file_path)
+        for directory in dict.fromkeys(self.temp_dirs):
+            _remove_temp_dir(directory)
         for symlink in dict.fromkeys(self.symlinks):
             _remove_temp_file(symlink)
 

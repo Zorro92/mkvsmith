@@ -433,20 +433,42 @@ def _disk_temp_base(config: Config | None = None) -> Path:
     return default_temp_dir()
 
 
+def temp_base_candidates(config: Config | None = None) -> list[Path]:
+    """Every base dir a run may put its session temp dir in.
+
+    The stale-session sweep checks these: the effective temp dir plus each
+    disk-spill candidate considered by ``_disk_temp_base``.
+    """
+    effective_config = config or RUNTIME_STATE.config
+    candidates: list[Path] = []
+    if effective_config.temp_dir:
+        candidates.append(effective_config.temp_dir)
+    candidates += [default_temp_dir(), Path("/var/tmp"), Path(tempfile.gettempdir())]
+    if effective_config.output_dir:
+        candidates.append(Path(effective_config.output_dir))
+    candidates.append(Path.home())
+    return [path for path in dict.fromkeys(candidates) if _is_usable_dir(path)]
+
+
 def temp_base_for_title(
     estimated_bytes: int, config: Config | None = None
 ) -> Path | None:
     """Temp-file base dir for a title's extraction, or ``None`` for the default.
 
-    Returns a disk-backed path when the title is expected to exceed the RAM
-    budget (so it spills off tmpfs), otherwise ``None`` to use the normal
-    (possibly RAM-backed) temp dir. Emits a single warning per spill.
+    Returns this run's session dir on a disk-backed path when the title is
+    expected to exceed the RAM budget (so it spills off tmpfs), otherwise
+    ``None`` to use the normal (possibly RAM-backed) temp dir. Emits a single
+    warning per spill.
     """
     effective_config = config or RUNTIME_STATE.config
     reason = _should_spill_to_disk(estimated_bytes, effective_config)
     if not reason:
         return None
-    base = _disk_temp_base(effective_config)
+    disk_base = _disk_temp_base(effective_config)
+    try:
+        base = RUNTIME_STATE.cleanup.session_dir(disk_base)
+    except OSError:
+        base = disk_base
     budget = effective_config.ram_budget_bytes or 0
     if reason == "budget":
         log_warn(

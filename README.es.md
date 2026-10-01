@@ -194,6 +194,13 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   Usa `--split-episodes`, o el comando interactivo `se N`, para obtener un
   título por episodio (más cualquier extra final), cada uno recortado a su
   propio rango y con sus propios capítulos.
+  El vídeo de Blu-ray suele tener un fotograma IDR solo al inicio de cada clip,
+  así que los episodios cortados a mitad de clip empiezan en un fotograma de
+  punto de recuperación. Los decodificadores por software lo manejan, pero
+  algunos por hardware (p. ej. los de Android, que usa mpv-android) muestran la
+  pantalla en negro con audio. `mkvsmith` avisa cuando una extracción empieza
+  así; reproduce esos archivos con decodificación por software (corregirlo
+  requeriría recodificar).
 - **Dolby Vision no ha sido probado a fondo.** HDR10 y HDR10+ no requieren
   tratamiento especial (sus metadatos viajan dentro del bitstream de vídeo y
   sobreviven intactos a un remux), y la señalización de color BT.2020/PQ para

@@ -187,6 +187,12 @@ not expose DVD cell IDs.
   hint; nothing is split by default. Pass `--split-episodes`, or use the
   interactive `se N` command, to turn it into one title per episode (plus any
   trailing extra), each cut to its own range with its own chapters.
+  Blu-ray video usually has an IDR frame only at the start of each disc clip,
+  so episodes cut mid-clip start on a recovery-point frame instead. Software
+  decoders handle that, but some hardware decoders (e.g. Android's, as used by
+  mpv-android) show a black screen with audio. `mkvsmith` warns when a rip
+  starts this way; play those files with software decoding (fixing it would
+  need re-encoding).
 - **Dolby Vision has not been fully tested.** HDR10 and HDR10+ need no special
   handling (their metadata travels inside the video bitstream and survives a
   remux untouched), and the BT.2020/PQ colour signalling for HDR and DV

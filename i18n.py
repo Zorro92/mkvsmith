@@ -69,6 +69,7 @@ _ES: dict[str, str] = {
     "Titles {idxs} look like editions of the same movie - combine them with: me {idxs}": "Los títulos {idxs} parecen ediciones de la misma película: combínalos con: me {idxs}",
     "me N N ...=multi-edition rip (no args = auto-detect)": "me N N ...=extracción multi-edición (sin argumentos = detección automática)",
     "me N N ...=multi-edition rip": "me N N ...=extracción multi-edición",
+    "{name} starts on a non-IDR video frame: some hardware decoders (e.g. on Android) show a black screen with audio. Play it with software decoding.": "{name} empieza en un fotograma de vídeo que no es IDR: algunos decodificadores por hardware (p. ej. en Android) muestran la pantalla en negro con audio. Reprodúcelo con decodificación por software.",
     "se [N]=split packed episodes into one title each": "se [N]=dividir episodios empaquetados en un título cada uno",
     "Title {idx} holds {n} episodes in one playlist - split it with: se {idx}": "El título {idx} contiene {n} episodios en una sola playlist: divídelo con: se {idx}",
     "Title {idx} holds {n} episodes in one playlist - split it with --split-episodes": "El título {idx} contiene {n} episodios en una sola playlist: divídelo con --split-episodes",

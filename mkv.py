@@ -1519,6 +1519,27 @@ def _append_art_attachments(
         ]
 
 
+def _warn_if_starts_without_idr(out_file: Path) -> None:
+    """Warn when a rip's first H.264 frame is not an IDR picture.
+
+    Happens when a cut starts mid-clip (packed-episode splits): Blu-ray AVC
+    usually has an IDR only at each clip start, and some hardware decoders
+    won't start from a recovery-point I-frame. Fixing it needs re-encoding,
+    so this only tells the user what to expect.
+    """
+    from mkvread import first_video_frame_is_idr
+
+    if first_video_frame_is_idr(out_file) is False:
+        log_warn(
+            tr(
+                "{name} starts on a non-IDR video frame: some hardware decoders "
+                "(e.g. on Android) show a black screen with audio. Play it with "
+                "software decoding.",
+                name=out_file.name,
+            )
+        )
+
+
 def _mkvmerge_timestamp(seconds: float) -> str:
     """``HH:MM:SS.nnnnnnnnn`` for mkvmerge's ``--split parts:`` ranges."""
     nanoseconds = round(seconds * 1_000_000_000)
@@ -2427,6 +2448,7 @@ class MKVCreator:
         from tagger import _write_tag_xml
 
         self._log_created(out_file)
+        _warn_if_starts_without_idr(out_file)
         if (
             metadata is not None
             and self.tag_opts is not None

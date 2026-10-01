@@ -1470,6 +1470,7 @@ class Scanner:
         if self.titles:
             self._apply_disc_name()
         self._offer_packed_episodes()
+        self._runtime_state.refresh_series_disc(self.titles)
         return self.titles
 
     def _offer_packed_episodes(self) -> None:

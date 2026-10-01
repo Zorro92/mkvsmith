@@ -107,11 +107,7 @@ def _title_list_name(title: Title, width: int) -> str:
 
 
 def _is_episode_title(title: Title) -> bool:
-    return (
-        title.dvd_episode_number is not None
-        or title.discdb_episode_number is not None
-        or title.packed_episode_number is not None
-    )
+    return title.is_episode
 
 
 def display_titles(
@@ -404,6 +400,7 @@ class _InteractiveRipper:
                 return
             indices.append(int(arg))
         self.titles[:] = expand_packed_titles(self.titles, indices or None)
+        self.creator.runtime_state.refresh_series_disc(self.titles)
         display_titles(self.titles, self.disc_metadata, self.creator.config)
 
     def rip_index(self, idx: int, stream_ids: list[str] | None = None) -> None:
@@ -1304,6 +1301,8 @@ def _apply_discdb_lookup(
             count=len(applied.title_indexes),
         )
     )
+    # A match can label titles as episodes.
+    state.refresh_series_disc(titles)
 
 
 def _prepare_discdb_contribution(

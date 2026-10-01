@@ -786,6 +786,16 @@ class Title:
     editions: list[EditionSpec] = field(default_factory=list[EditionSpec])
 
     @property
+    def is_episode(self) -> bool:
+        """An episode of a series: detected on a DVD, matched by TheDiscDB,
+        or split out of a packed Blu-ray playlist."""
+        return (
+            self.dvd_episode_number is not None
+            or self.discdb_episode_number is not None
+            or self.packed_episode_number is not None
+        )
+
+    @property
     def video_streams(self) -> list[Stream]:
         return [s for s in self.streams if s.stream_type == StreamType.VIDEO]
 
@@ -1072,9 +1082,21 @@ class RuntimeState:
     cleanup: RuntimeCleanup = field(default_factory=RuntimeCleanup)
     active_processes: ActiveProcesses = field(default_factory=ActiveProcesses)
     prompts: UserPrompts = field(default_factory=UserPrompts)
+    # True once any title on the current disc is an episode. Movie-only
+    # TMDB tagging is skipped for every title of a series disc (see
+    # ``refresh_series_disc``).
+    series_disc: bool = False
 
     def __post_init__(self) -> None:
         self.logger.configure(self.config)
+
+    def refresh_series_disc(self, titles: Sequence[Title]) -> None:
+        """Re-derive ``series_disc`` after anything labels episodes.
+
+        Call after scanning, after TheDiscDB matching, and after splitting
+        packed episodes: each can turn a disc into a series disc.
+        """
+        self.series_disc = any(title.is_episode for title in titles)
 
 
 RUNTIME_STATE = RuntimeState()

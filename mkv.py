@@ -671,8 +671,21 @@ def _prepare_mux_tags(
     temp_files: list[Path],
     disc_metadata: DiscMetadata | None = None,
     prompts: UserPrompts | None = None,
+    *,
+    series_disc: bool = False,
 ) -> tuple[MovieMetadata | None, list[ArtAttachment]]:
     if tag_opts is None or not tag_opts.enabled:
+        return None, []
+    if series_disc or title.is_episode or title.dvd_play_all:
+        # Tagging searches TMDB for a *movie* named after the disc; on a
+        # series disc that tags episodes and extras with a wrong film.
+        log_info(
+            tr(
+                "Skipping TMDB tagging for {name}: series discs aren't "
+                "supported by movie tagging",
+                name=title.name,
+            )
+        )
         return None, []
 
     from tagger import _prepare_tagging
@@ -2278,6 +2291,7 @@ class MKVCreator:
         runtime_state: RuntimeState | None = None,
     ):
         state = runtime_state or RUNTIME_STATE
+        self.runtime_state = state
         self.out = out
         self.tag_opts = tag_opts
         self.disc_metadata = state.disc_metadata
@@ -2579,6 +2593,7 @@ class MKVCreator:
             self.cleanup.temp_files,
             self.disc_metadata,
             self.prompts,
+            series_disc=self.runtime_state.series_disc,
         )
 
         kept_inputs, dropped_inputs = _drop_incompatible_append_inputs(

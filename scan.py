@@ -1469,7 +1469,32 @@ class Scanner:
         _sort_and_reindex_titles(self.titles)
         if self.titles:
             self._apply_disc_name()
+        self._offer_packed_episodes()
         return self.titles
+
+    def _offer_packed_episodes(self) -> None:
+        """Flag playlists holding back-to-back episodes; split them on request.
+
+        Runs after naming so the episode titles inherit the disc name.
+        """
+        from packed_episodes import (
+            annotate_packed_titles,
+            expand_packed_titles,
+            packed_episode_count,
+        )
+
+        annotate_packed_titles(self.titles)
+        packed = [t for t in self.titles if t.packed_segments]
+        if not packed:
+            return
+        for title in packed:
+            log_debug(
+                f"Title {title.index} holds {packed_episode_count(title)} "
+                "packed episodes"
+            )
+        if self.config.split_episodes:
+            self.titles = expand_packed_titles(self.titles)
+            log_info(tr("Split packed playlists into one title per episode"))
 
     def _apply_disc_name(self) -> None:
         """Name titles after the disc/folder.

@@ -104,6 +104,7 @@ mkvsmith> q          # salir
 | `-m, --main` | Extrae la película principal detectada (todos los episodios en series) |
 | `-a, --all` | Extrae todos los títulos |
 | `-i, --info` | Solo escanea y lista los títulos |
+| `--split-episodes` | Divide las playlists que contienen varios episodios seguidos en un título por episodio (desactivado por defecto) |
 | `-s, --streams` | Selecciona pistas (p. ej. `v:0 a:eng s:all`) |
 | `-l, --lang` | Idiomas preferidos (por defecto `eng,en,und`) |
 | `--all-audio` / `--no-all-audio` | Conserva todo el audio (activado por defecto) |
@@ -186,6 +187,13 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   `me`) combina playlists con ramificación continua en un solo archivo con
   uniones sin pausas y capítulos exactos. Requiere un reproductor con
   soporte de capítulos ordenados (p. ej. mpv, VLC) para cambiar de edición.
+- **Episodios empaquetados.** Algunos Blu-ray de series (p. ej. Sgt. Frog)
+  reproducen todos los episodios del disco desde una sola playlist de 15-20
+  horas. `mkvsmith` los detecta a partir de las marcas de capítulo y lista la
+  playlist como de costumbre, con un aviso; por defecto no se divide nada.
+  Usa `--split-episodes`, o el comando interactivo `se N`, para obtener un
+  título por episodio (más cualquier extra final), cada uno recortado a su
+  propio rango y con sus propios capítulos.
 - **Dolby Vision no ha sido probado a fondo.** HDR10 y HDR10+ no requieren
   tratamiento especial (sus metadatos viajan dentro del bitstream de vídeo y
   sobreviven intactos a un remux), y la señalización de color BT.2020/PQ para

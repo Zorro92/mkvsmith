@@ -100,6 +100,7 @@ mkvsmith> q          # quit
 | `-m, --main` | Rip the detected main feature (all episodes on series discs) |
 | `-a, --all` | Rip all titles |
 | `-i, --info` | Just scan and list titles |
+| `--split-episodes` | Split playlists holding several back-to-back episodes into one title per episode (default off) |
 | `-s, --streams` | Select streams (e.g. `v:0 a:eng s:all`) |
 | `-l, --lang` | Preferred languages (default `eng,en,und`) |
 | `--all-audio` / `--no-all-audio` | Keep all audio (default on) |
@@ -180,6 +181,12 @@ not expose DVD cell IDs.
   command) combines seamless-branching playlists into one file with
   gapless joins and exact chapter placement. It needs a player with
   ordered-chapters support (e.g. mpv, VLC) to switch editions.
+- **Packed episodes.** Some series Blu-rays (e.g. Sgt. Frog) play a whole
+  disc's episodes from one 15-20 hour playlist. `mkvsmith` detects these
+  from the playlist's chapter marks and lists the playlist as usual, with a
+  hint; nothing is split by default. Pass `--split-episodes`, or use the
+  interactive `se N` command, to turn it into one title per episode (plus any
+  trailing extra), each cut to its own range with its own chapters.
 - **Dolby Vision has not been fully tested.** HDR10 and HDR10+ need no special
   handling (their metadata travels inside the video bitstream and survives a
   remux untouched), and the BT.2020/PQ colour signalling for HDR and DV
@@ -230,6 +237,9 @@ done
 uv run python scripts/iso_extract.py disc.iso tests/fixtures "BDMV/PLAYLIST/00307.mpls"   # Monsters University
 cp SGT_FROG_S1_D1/BDMV/PLAYLIST/00000.mpls tests/fixtures/sgtfrog_s1d1_00000.mpls
 cp SGT_FROG_S7/BDMV/PLAYLIST/00001.mpls tests/fixtures/sgtfrog_s7_00001.mpls
+
+# Packed-episode detection (tests/test_packed_episodes.py):
+cp SGT_FROG_S2_D1/BDMV/PLAYLIST/00003.mpls tests/fixtures/sgtfrog_s2d1_00003.mpls
 
 # Built-in ISO reader (tests/test_isofs.py). Sparse captures holding only the
 # filesystem sectors plus a few small files; no essence:

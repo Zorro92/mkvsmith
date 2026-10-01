@@ -654,6 +654,20 @@ class EditionSpec:
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class PackedSegment:
+    """One episode (or trailing extra) inside a packed-episode playlist.
+
+    Some TV-series Blu-rays play a whole disc's episodes back to back from a
+    single playlist; ``packed_episodes.detect_packed_episodes`` finds them
+    from the chapter marks.
+    """
+
+    start: float  # seconds on the parent playlist's timeline
+    end: float
+    episode: int | None  # 1-based episode number; None for a trailing extra
+
+
 @dataclass
 class Title:
     index: int
@@ -756,6 +770,15 @@ class Title:
     discdb_season_number: int | None = None
     discdb_episode_number: int | None = None
     discdb_is_main_movie: bool = False
+    # Episodes packed back to back in this one playlist. Offered as a split
+    # (``--split-episodes`` / the interactive ``se`` command), never applied
+    # by default.
+    packed_segments: list[PackedSegment] = field(default_factory=list[PackedSegment])
+    # Set on a title split out of a packed playlist: the (start, end) seconds
+    # to keep, on the timeline of this title's own clips. The muxer cuts it
+    # with ``mkvmerge --split parts:``.
+    packed_range: tuple[float, float] | None = None
+    packed_episode_number: int | None = None
     # Multi-edition chapter specs (one per playlist cut). When non-empty the
     # muxer writes an ordered-chapters XML with one edition per spec plus
     # edition TITLE tags instead of the flat single-edition chapter table.
@@ -825,6 +848,9 @@ class Config:
     min_duration: float = 60.0
     debug: bool = False
     show_all: bool = False
+    # Split playlists holding several back-to-back episodes into one title
+    # per episode (see packed_episodes.py). Off by default.
+    split_episodes: bool = False
     # Extract EIA-608 closed captions as a text subtitle track (SRT or ASS
     # sidecar, see cc608_format) — opt-in via --cc-srt, since the captions
     # usually duplicate the VobSub tracks.

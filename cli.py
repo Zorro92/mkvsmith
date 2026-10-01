@@ -108,7 +108,9 @@ def _title_list_name(title: Title, width: int) -> str:
 
 def _is_episode_title(title: Title) -> bool:
     return (
-        title.dvd_episode_number is not None or title.discdb_episode_number is not None
+        title.dvd_episode_number is not None
+        or title.discdb_episode_number is not None
+        or title.packed_episode_number is not None
     )
 
 
@@ -329,6 +331,34 @@ class _InteractiveTagState:
             self.options.art = _prompt_art_choice(self.prompts)
 
 
+def _print_packed_episode_hints(titles: list[Title], *, interactive: bool) -> None:
+    """Point out playlists holding back-to-back episodes (split on request)."""
+    from packed_episodes import packed_episode_count
+
+    for title in titles:
+        if not title.packed_segments:
+            continue
+        n = packed_episode_count(title)
+        if interactive:
+            print(
+                tr(
+                    "Title {idx} holds {n} episodes in one playlist - "
+                    "split it with: se {idx}",
+                    idx=title.index,
+                    n=n,
+                )
+            )
+        else:
+            print(
+                tr(
+                    "Title {idx} holds {n} episodes in one playlist - "
+                    "split it with --split-episodes",
+                    idx=title.index,
+                    n=n,
+                )
+            )
+
+
 def _interactive_edition_groups(titles: list[Title]) -> list[list[Title]]:
     edition_groups = _detect_edition_groups(titles)
     for group in edition_groups:
@@ -351,11 +381,30 @@ class _InteractiveRipper:
         creator: MKVCreator,
         tagging: _InteractiveTagState,
         edition_groups: list[list[Title]],
+        disc_metadata: DiscMetadata | None = None,
     ):
         self.titles = titles
         self.creator = creator
         self.tagging = tagging
         self.edition_groups = edition_groups
+        self.disc_metadata = disc_metadata
+
+    def split_packed_episodes(self, args: list[str]) -> None:
+        """Split title N (or every packed playlist) into one title per episode."""
+        from packed_episodes import expand_packed_titles
+
+        packed = [t.index for t in self.titles if t.packed_segments]
+        if not packed:
+            log_warn(tr("No playlist on this disc holds packed episodes"))
+            return
+        indices: list[int] = []
+        for arg in args:
+            if not arg.isdigit() or int(arg) not in packed:
+                log_warn(tr("Title {idx} holds no packed episodes", idx=arg))
+                return
+            indices.append(int(arg))
+        self.titles[:] = expand_packed_titles(self.titles, indices or None)
+        display_titles(self.titles, self.disc_metadata, self.creator.config)
 
     def rip_index(self, idx: int, stream_ids: list[str] | None = None) -> None:
         if not 0 <= idx < len(self.titles):
@@ -497,6 +546,8 @@ class _InteractiveRipper:
                 self.rip_multi_edition(indices)
         elif command == "ra":
             self._handle_all()
+        elif command == "se":
+            self.split_packed_episodes(args)
         else:
             log_warn(tr("Unknown: {cmd}", cmd=command))
         return True
@@ -514,11 +565,13 @@ class _InteractiveRipper:
             print(tr("me N N ...=multi-edition rip (no args = auto-detect)"))
         else:
             print(tr("me N N ...=multi-edition rip"))
+        if any(title.packed_segments for title in self.titles):
+            print(tr("se [N]=split packed episodes into one title each"))
 
     def run(self) -> None:
-        has_episodes = any(_is_episode_title(title) for title in self.titles)
         while True:
-            self._print_prompt(has_episodes)
+            # Re-checked each round: "se" can turn a packed playlist into episodes.
+            self._print_prompt(any(_is_episode_title(t) for t in self.titles))
             try:
                 command_line = input("mkvsmith> ").strip()
             except (EOFError, KeyboardInterrupt):
@@ -538,6 +591,7 @@ def interactive_mode(
 ) -> None:
     state = runtime_state or RUNTIME_STATE
     display_titles(titles, disc_metadata, state.config)
+    _print_packed_episode_hints(titles, interactive=True)
     creator = MKVCreator(
         state.config.output_dir,
         state.tag_options,
@@ -551,6 +605,7 @@ def interactive_mode(
         creator,
         tagging,
         _interactive_edition_groups(titles),
+        disc_metadata,
     ).run()
 
 
@@ -586,6 +641,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="N,N,...",
         default=None,
         help=tr("combine playlist titles into one multi-edition MKV"),
+    )
+    p.add_argument(
+        "--split-episodes",
+        action="store_true",
+        help=tr(
+            "split playlists holding several back-to-back episodes into one "
+            "title per episode"
+        ),
     )
     p.add_argument("-i", "--info", action="store_true")
     p.add_argument("-d", "--details", type=int)
@@ -855,6 +918,7 @@ def _apply_parsed_args(
     config.ram_limit = a.ram_limit
     config.force_overwrite = a.force
     config.show_all = a.show_all
+    config.split_episodes = a.split_episodes
     config.extract_cc608 = a.cc_srt
     config.cc608_format = a.cc_format
     config.ui_lang = a.ui_lang
@@ -1378,6 +1442,7 @@ def _show_action_info(
     titles: list[Title], disc_metadata: DiscMetadata | None, state: RuntimeState
 ) -> None:
     display_titles(titles, disc_metadata, state.config)
+    _print_packed_episode_hints(titles, interactive=False)
 
 
 def _show_action_details(titles: list[Title], number: int | None, action: str) -> None:

@@ -289,11 +289,13 @@ def test_interactive_mode_uses_injected_runtime_state(
             creator: cli.MKVCreator,
             tagging: _InteractiveTagState,
             edition_groups: list[list[Title]],
+            disc_metadata: DiscMetadata | None = None,
         ) -> None:
             self.titles = titles
             self.creator = creator
             self.tagging = tagging
             self.edition_groups = edition_groups
+            self.disc_metadata = disc_metadata
             self.completed = False
             rippers.append(self)
 

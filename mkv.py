@@ -1519,6 +1519,15 @@ def _append_art_attachments(
         ]
 
 
+def _mkvmerge_timestamp(seconds: float) -> str:
+    """``HH:MM:SS.nnnnnnnnn`` for mkvmerge's ``--split parts:`` ranges."""
+    nanoseconds = round(seconds * 1_000_000_000)
+    whole, fraction = divmod(nanoseconds, 1_000_000_000)
+    hours, rest = divmod(whole, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{fraction:09d}"
+
+
 def _build_mkvmerge_command(
     title: Title,
     out_file: Path,
@@ -1561,6 +1570,15 @@ def _build_mkvmerge_command(
         chapters_file = _create_chapters_file(title, cleanup, temp_files)
         if chapters_file is not None:
             cmd += ["--chapters", str(chapters_file)]
+
+    if title.packed_range is not None:
+        # One episode out of a packed playlist: keep just its time range of
+        # the (appended) input clips. A single range writes to the -o name.
+        start, end = title.packed_range
+        cmd += [
+            "--split",
+            f"parts:{_mkvmerge_timestamp(start)}-{_mkvmerge_timestamp(end)}",
+        ]
 
     track_filter_opts = _track_filter_options(ident_tracks, mapped, title)
     cmd += track_filter_opts
@@ -1830,8 +1848,11 @@ def _create_chapters_file(
         return None
 
     chapters = list(title.chapters)
-    if len(chapters) > 1 and title.duration_seconds > 0:
-        if chapters[-1] >= title.duration_seconds - 0.5:
+    # An episode cut from a packed playlist keeps its chapters on its clips'
+    # timeline (mkvmerge rebases them when it cuts), so it ends at the cut.
+    end = title.packed_range[1] if title.packed_range else title.duration_seconds
+    if len(chapters) > 1 and end > 0:
+        if chapters[-1] >= end - 0.5:
             chapters = chapters[:-1]
             log_debug(f"Filtered trailing end-of-movie chapter; {len(chapters)} remain")
     if not chapters:

@@ -388,6 +388,6 @@ def test_default_edition_names_numbers_non_default_editions() -> None:
     first.disc_name = "Movie"
     second = make_title(1)
     assert cli._default_edition_names([first, second], [0, 1]) == [
-        "Movie",
+        "Edition 1",
         "Edition 2",
     ]

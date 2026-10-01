@@ -608,17 +608,11 @@ def _union_edition_clips(edition_titles: list[Title]) -> _EditionClipUnion:
 
 
 def _edition_name(
-    title: Title,
-    first: Title,
     edition_index: int,
     edition_names: list[str] | None,
 ) -> str:
     if edition_names is not None:
         return edition_names[edition_index]
-    if edition_index == 0:
-        # The default edition carries the movie/disc name, not the scanner's
-        # generic " - Title N" list label.
-        return first.disc_name or first.name
     return tr("Edition {n}", n=edition_index + 1)
 
 
@@ -656,7 +650,7 @@ def _build_edition_specs(
         editions.append(
             EditionSpec(
                 uid=edition_index + 1,
-                name=_edition_name(title, first, edition_index, edition_names),
+                name=_edition_name(edition_index, edition_names),
                 is_default=(edition_index == 0),
                 atoms=atoms,
             )

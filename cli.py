@@ -1070,15 +1070,8 @@ def _prepare_multi_edition(
 
 
 def _default_edition_names(titles: list[Title], indices: list[int]) -> list[str]:
-    """Default edition labels: movie name first, numbered editions after."""
-    names: list[str] = []
-    for pos, idx in enumerate(indices):
-        t = titles[idx]
-        if pos == 0:
-            names.append(t.disc_name or t.name)
-        else:
-            names.append(tr("Edition {n}", n=pos + 1))
-    return names
+    """Default edition labels: uniform Edition 1/2/... numbering."""
+    return [tr("Edition {n}", n=pos + 1) for pos in range(len(indices))]
 
 
 def _prompt_edition_names(titles: list[Title], indices: list[int]) -> list[str]:

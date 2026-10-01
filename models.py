@@ -826,6 +826,20 @@ class Title:
 
 
 @dataclass(frozen=True)
+class SeriesInfo:
+    """Show / season / disc read from a series disc's names.
+
+    Episode numbers are only known per disc (a disc can't see how many
+    episodes earlier discs held), so episode titles carry the season and
+    disc instead; see ``episode_naming``.
+    """
+
+    show: str
+    season: int | None = None
+    disc: int | None = None
+
+
+@dataclass(frozen=True)
 class DiscMetadata:
     """Disc-level identity parsed from disc metadata."""
 
@@ -843,6 +857,9 @@ class DiscMetadata:
     # video-file sizes in listing order).
     disc_hash: str | None = None
     matrix256_fingerprint: str | None = None
+    # Show / season / disc parsed from the disc and folder names, used to name
+    # episodes on series discs. None when no season or disc number was found.
+    series_info: SeriesInfo | None = None
 
 
 # =============================================================================

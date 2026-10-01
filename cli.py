@@ -399,7 +399,8 @@ class _InteractiveRipper:
                 log_warn(tr("Title {idx} holds no packed episodes", idx=arg))
                 return
             indices.append(int(arg))
-        self.titles[:] = expand_packed_titles(self.titles, indices or None)
+        series = self.disc_metadata.series_info if self.disc_metadata else None
+        self.titles[:] = expand_packed_titles(self.titles, indices or None, series)
         self.creator.runtime_state.refresh_series_disc(self.titles)
         display_titles(self.titles, self.disc_metadata, self.creator.config)
 

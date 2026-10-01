@@ -1,0 +1,155 @@
+"""Tests for season/disc-aware episode titles on series discs."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from episode_naming import episode_title, parse_series_info, play_all_title
+from models import PackedSegment, RuntimeState, SeriesInfo, Stream, StreamType, Title
+from packed_episodes import split_packed_title
+
+
+@pytest.mark.parametrize(
+    ("names", "expected"),
+    [
+        (
+            ["THE BIG BANG THEORY SEASON 1 DISC 2", "THE_BIG_BANG_THEORY_S1_D2"],
+            SeriesInfo("THE BIG BANG THEORY", 1, 2),
+        ),
+        # Season only in the release folder; disc only on the disc itself.
+        (
+            [
+                "EARTH FROM SPACE D1",
+                "EARTH_FROM_SPACE_D1",
+                "Earth.from.Space.S01.1080i",
+            ],
+            SeriesInfo("EARTH FROM SPACE", 1, 1),
+        ),
+        (["Sgt. Frog - Season 3", "SGT_FROG_S3"], SeriesInfo("Sgt. Frog", 3, None)),
+        (["Show.S01D02.1080p"], SeriesInfo("Show", 1, 2)),
+        (["Some Show Disk 3"], SeriesInfo("Some Show", None, 3)),
+        # Movies and look-alikes: DVD9 is a format, years and sequels aren't
+        # seasons.
+        (["Treasure Planet", "Treasure.Planet.2002.NTSC.USA.DVD9-AndreMor"], None),
+        (["Spider-Man 3", "Spider-Man.3.2007.1080p.BluRay.x264"], None),
+        (["Monster High - Welcome to Monster High"], None),
+        ([None, ""], None),
+    ],
+)
+def test_parse_series_info(
+    names: list[str | None], expected: SeriesInfo | None
+) -> None:
+    assert parse_series_info(names) == expected
+
+
+@pytest.mark.parametrize(
+    ("info", "episode", "play_all"),
+    [
+        (
+            SeriesInfo("Show", 1, 2),
+            "Show - S01 Disc 2 - Episode 3",
+            "Show - S01 Disc 2 - Play All",
+        ),
+        (
+            SeriesInfo("Show", 3, None),
+            "Show - S03 - Episode 3",
+            "Show - S03 - Play All",
+        ),
+        (
+            SeriesInfo("Show", None, 4),
+            "Show - Disc 4 - Episode 3",
+            "Show - Disc 4 - Play All",
+        ),
+        (None, "Disc Name - Episode 3", "Disc Name - Play All"),
+        (SeriesInfo("", 1, 1), "Disc Name - Episode 3", "Disc Name - Play All"),
+    ],
+)
+def test_titles(info: SeriesInfo | None, episode: str, play_all: str) -> None:
+    assert episode_title(info, "Disc Name", 3) == episode
+    assert play_all_title(info, "Disc Name") == play_all
+
+
+def test_part_suffix_is_kept() -> None:
+    assert episode_title(SeriesInfo("Show", 1, 1), "x", 4, "b") == (
+        "Show - S01 Disc 1 - Episode 4b"
+    )
+
+
+def _title(index: int, *, episode: int | None = None, play_all: bool = False) -> Title:
+    title = Title(
+        index=index,
+        source_file=Path(f"{index}.m2ts"),
+        name="x",
+        duration_seconds=1300.0,
+    )
+    title.streams = [Stream(index=0, stream_type=StreamType.VIDEO, codec="h264")]
+    title.episode_number = episode
+    title.play_all = play_all
+    return title
+
+
+def test_scanner_names_episodes_from_disc_and_folder(tmp_path: Path) -> None:
+    from scan import Scanner
+
+    source = tmp_path / "Earth.from.Space.S01.1080i" / "EARTH_FROM_SPACE_D1"
+    source.mkdir(parents=True)
+    state = RuntimeState()
+    scanner = Scanner(source, runtime_state=state)
+    scanner.disc_name = "EARTH FROM SPACE D1"
+    scanner.titles = [
+        _title(0, episode=1),
+        _title(1, episode=2),
+        _title(2, play_all=True),
+    ]
+
+    scanner._apply_disc_name()
+
+    assert [t.name for t in scanner.titles] == [
+        "EARTH FROM SPACE - S01 Disc 1 - Episode 1",
+        "EARTH FROM SPACE - S01 Disc 1 - Episode 2",
+        "EARTH FROM SPACE - S01 Disc 1 - Play All",
+    ]
+    assert scanner.disc_metadata.series_info == SeriesInfo("EARTH FROM SPACE", 1, 1)
+
+
+def test_scanner_keeps_plain_episode_names_without_season_or_disc(
+    tmp_path: Path,
+) -> None:
+    from scan import Scanner
+
+    source = tmp_path / "Peanuts Collection"
+    source.mkdir()
+    scanner = Scanner(source, runtime_state=RuntimeState())
+    scanner.disc_name = "Peanuts Collection"
+    scanner.titles = [_title(0, episode=1)]
+
+    scanner._apply_disc_name()
+
+    assert scanner.titles[0].name == "Peanuts Collection - Episode 1"
+    assert scanner.disc_metadata.series_info is None
+
+
+def test_split_packed_episodes_use_series_info() -> None:
+    parent = _title(0)
+    parent.name = "Sgt. Frog Season 1 Disc 1"
+    parent.clip_durations = [3000.0]
+    parent.packed_segments = [
+        PackedSegment(0.0, 1400.0, 1),
+        PackedSegment(1400.0, 2800.0, 2),
+        PackedSegment(2800.0, 3000.0, None),
+    ]
+
+    named = [t.name for t in split_packed_title(parent, SeriesInfo("Sgt. Frog", 1, 1))]
+    plain = [t.name for t in split_packed_title(parent)]
+
+    assert named == [
+        "Sgt. Frog - S01 Disc 1 - Episode 1",
+        "Sgt. Frog - S01 Disc 1 - Episode 2",
+        "Sgt. Frog Season 1 Disc 1 - Extra 1",
+    ]
+    assert plain[:2] == [
+        "Sgt. Frog Season 1 Disc 1 - Episode 1",
+        "Sgt. Frog Season 1 Disc 1 - Episode 2",
+    ]

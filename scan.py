@@ -1474,6 +1474,8 @@ class Scanner:
             self._apply_disc_name()
         self._offer_packed_episodes()
         self._runtime_state.refresh_series_disc(self.titles)
+        # Naming adds the fallback name and series info after the early copy.
+        self._runtime_state.disc_metadata = self.disc_metadata
         return self.titles
 
     def _offer_packed_episodes(self) -> None:
@@ -1497,7 +1499,9 @@ class Scanner:
                 "packed episodes"
             )
         if self.config.split_episodes:
-            self.titles = expand_packed_titles(self.titles)
+            self.titles = expand_packed_titles(
+                self.titles, series_info=self.disc_metadata.series_info
+            )
             log_info(tr("Split packed playlists into one title per episode"))
 
     def _apply_disc_name(self) -> None:
@@ -1510,7 +1514,11 @@ class Scanner:
 
         TV-series episodes (``episode_number``) are labelled "Episode N"
         regardless of main-feature status, and the "play all" chain is
-        explicitly marked so it isn't mistaken for the series itself.
+        explicitly marked so it isn't mistaken for the series itself. When the
+        disc, folder or release names carry a season and/or disc number, those
+        prefix the label ("Show - S01 Disc 2 - Episode 3"; see
+        ``episode_naming``), since a disc can't know its episodes' numbers
+        across the whole set.
 
         One-episode-per-VTS series (each episode its own title, invisible to
         the within-VTS PGC detection) are labelled before the title sort in
@@ -1523,6 +1531,13 @@ class Scanner:
                 return
             self.disc_name = disc
             self.disc_metadata = replace(self.disc_metadata, name=disc)
+        from episode_naming import episode_title, parse_series_info, play_all_title
+
+        source_name = self.source.name if self.source.is_dir() else self.source.stem
+        series = parse_series_info(
+            [self.disc_name, source_name, self.source.parent.name]
+        )
+        self.disc_metadata = replace(self.disc_metadata, series_info=series)
         main_idx = pick_main_feature(self.titles, self.config)
         for t in self.titles:
             if t.hddvd_title_number is not None:
@@ -1532,9 +1547,9 @@ class Scanner:
                 continue
             if t.episode_number is not None:
                 part = t.dvd_episode_part or ""
-                t.name = f"{self.disc_name} - Episode {t.episode_number}{part}"
+                t.name = episode_title(series, self.disc_name, t.episode_number, part)
             elif t.play_all:
-                t.name = f"{self.disc_name} - Play All"
+                t.name = play_all_title(series, self.disc_name)
             elif t.index == main_idx:
                 t.name = self.disc_name
             elif t.dvd_edition_label:

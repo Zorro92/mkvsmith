@@ -189,6 +189,12 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   `me`) combina playlists con ramificación continua en un solo archivo con
   uniones sin pausas y capítulos exactos. Requiere un reproductor con
   soporte de capítulos ordenados (p. ej. mpv, VLC) para cambiar de edición.
+- **Nombres de episodios.** Un disco no puede saber cuántos episodios
+  tenían los discos anteriores del set, así que los episodios se numeran por
+  disco y se nombran con la temporada y el número de disco cuando el nombre
+  del disco, de la carpeta o de la release los incluye
+  (`Serie - S01 Disc 2 - Episode 3`); si no, `<nombre del disco> - Episode N`.
+  Una coincidencia de TheDiscDB (`--discdb`) aporta sus propios nombres.
 - **Episodios empaquetados.** Algunos Blu-ray de series (p. ej. Sgt. Frog)
   reproducen todos los episodios del disco desde una sola playlist de 15-20
   horas. `mkvsmith` los detecta a partir de las marcas de capítulo y lista la

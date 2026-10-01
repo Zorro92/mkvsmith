@@ -34,7 +34,8 @@ import statistics
 from collections.abc import Collection, Sequence
 from dataclasses import replace
 
-from models import PackedSegment, Title
+from episode_naming import episode_title
+from models import PackedSegment, SeriesInfo, Title
 
 _SHORT = 180.0  # seconds; a segment shorter than this can be an anchor
 _BUCKET = 5.0  # short segments within this many seconds are the same kind
@@ -168,7 +169,9 @@ def _clip_count(title: Title) -> int:
     return 1 + len(title.append_clips)
 
 
-def split_packed_title(parent: Title) -> list[Title]:
+def split_packed_title(
+    parent: Title, series_info: SeriesInfo | None = None
+) -> list[Title]:
     """One title per packed segment of *parent*, cut from the clips it spans.
 
     Each child keeps only the clips overlapping its segment; its chapters and
@@ -193,10 +196,10 @@ def split_packed_title(parent: Title) -> list[Title]:
         )
         base = offsets[first]
         if segment.episode is not None:
-            label = f"Episode {segment.episode}"
+            name = episode_title(series_info, parent.name, segment.episode)
         else:
             extra_number += 1
-            label = f"Extra {extra_number}"
+            name = f"{parent.name} - Extra {extra_number}"
         # ISO titles name their clips by internal path; folder titles by file.
         iso_paths = list(parent.iso_internal_paths[first : last + 1])
         clips = [parent.source_file, *parent.append_clips]
@@ -207,7 +210,7 @@ def split_packed_title(parent: Title) -> list[Title]:
             replace(
                 parent,
                 source_file=source_file,
-                name=f"{parent.name} - {label}",
+                name=name,
                 duration_seconds=segment.end - segment.start,
                 streams=list(parent.streams),
                 iso_internal_paths=iso_paths,
@@ -230,7 +233,9 @@ def split_packed_title(parent: Title) -> list[Title]:
 
 
 def expand_packed_titles(
-    titles: Sequence[Title], indices: Collection[int] | None = None
+    titles: Sequence[Title],
+    indices: Collection[int] | None = None,
+    series_info: SeriesInfo | None = None,
 ) -> list[Title]:
     """*titles* with packed playlists replaced in place by their episodes.
 
@@ -241,7 +246,7 @@ def expand_packed_titles(
     expanded: list[Title] = []
     for title in titles:
         if title.packed_segments and (indices is None or title.index in indices):
-            expanded.extend(split_packed_title(title))
+            expanded.extend(split_packed_title(title, series_info))
         else:
             expanded.append(title)
     for position, title in enumerate(expanded):

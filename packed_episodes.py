@@ -34,7 +34,7 @@ import statistics
 from collections.abc import Collection, Sequence
 from dataclasses import replace
 
-from episode_naming import episode_title
+from episode_naming import episode_number_width, episode_title
 from models import PackedSegment, SeriesInfo, Title
 
 _SHORT = 180.0  # seconds; a segment shorter than this can be an anchor
@@ -185,6 +185,9 @@ def split_packed_title(
         elapsed += clip_duration
     children: list[Title] = []
     extra_number = 0
+    width = episode_number_width(
+        max((s.episode or 0 for s in parent.packed_segments), default=0)
+    )
     for segment in parent.packed_segments:
         first = max(
             i for i, off in enumerate(offsets) if off <= segment.start + _EPSILON
@@ -196,7 +199,7 @@ def split_packed_title(
         )
         base = offsets[first]
         if segment.episode is not None:
-            name = episode_title(series_info, parent.name, segment.episode)
+            name = episode_title(series_info, parent.name, segment.episode, width=width)
         else:
             extra_number += 1
             name = f"{parent.name} - Extra {extra_number}"

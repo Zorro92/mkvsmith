@@ -1531,13 +1531,21 @@ class Scanner:
                 return
             self.disc_name = disc
             self.disc_metadata = replace(self.disc_metadata, name=disc)
-        from episode_naming import episode_title, parse_series_info, play_all_title
+        from episode_naming import (
+            episode_number_width,
+            episode_title,
+            parse_series_info,
+            play_all_title,
+        )
 
         source_name = self.source.name if self.source.is_dir() else self.source.stem
         series = parse_series_info(
             [self.disc_name, source_name, self.source.parent.name]
         )
         self.disc_metadata = replace(self.disc_metadata, series_info=series)
+        width = episode_number_width(
+            max((t.episode_number or 0 for t in self.titles), default=0)
+        )
         main_idx = pick_main_feature(self.titles, self.config)
         for t in self.titles:
             if t.hddvd_title_number is not None:
@@ -1547,7 +1555,9 @@ class Scanner:
                 continue
             if t.episode_number is not None:
                 part = t.dvd_episode_part or ""
-                t.name = episode_title(series, self.disc_name, t.episode_number, part)
+                t.name = episode_title(
+                    series, self.disc_name, t.episode_number, part, width
+                )
             elif t.play_all:
                 t.name = play_all_title(series, self.disc_name)
             elif t.index == main_idx:

@@ -9,6 +9,9 @@ names, and episode titles say exactly what is known:
     Sgt. Frog - S03 - Episode 5                     (season only)
     EARTH FROM SPACE - Disc 1 - Episode 2           (disc only)
     <disc name> - Episode N                         (neither)
+
+Episode numbers are zero-padded to the width of the disc's highest one
+(``Episode 001`` … ``Episode 101``), so they line up and sort correctly.
 """
 
 from __future__ import annotations
@@ -20,8 +23,9 @@ from models import SeriesInfo
 
 # "S01", "S1", "Season 1" (optionally glued to a disc token: "S01D02").
 _SEASON = re.compile(r"(?<![a-z0-9])s(?:eason)?\s*0*(\d{1,2})(?=d\d|[^a-z0-9]|$)")
-# "D2", "Disc 2", "Disk 2". Not "DVD9" / "BD25" (formats, not disc numbers).
-_DISC = re.compile(r"(?<![a-z])(?:dis[ck]|d)\s*0*(\d{1,2})(?![a-z0-9])")
+# "D2", "Disc 2", "Disk 2". Not "DVD9" / "BD25" (formats, not disc numbers),
+# and never disc 0: discs count from 1 ("..._disc_0" folders aren't discs).
+_DISC = re.compile(r"(?<![a-z])(?:dis[ck]|d)\s*0*([1-9]\d?)(?![a-z0-9])")
 
 
 def _normalise(name: str) -> str:
@@ -83,11 +87,23 @@ def _prefix(info: SeriesInfo | None, fallback: str) -> str:
     return " - ".join(parts)
 
 
+def episode_number_width(highest: int) -> int:
+    """Digits needed for the disc's highest episode number."""
+    return len(str(max(highest, 1)))
+
+
 def episode_title(
-    info: SeriesInfo | None, fallback: str, number: int, part: str = ""
+    info: SeriesInfo | None,
+    fallback: str,
+    number: int,
+    part: str = "",
+    width: int = 1,
 ) -> str:
-    """Title for episode *number* (*fallback* is the plain disc name)."""
-    return f"{_prefix(info, fallback)} - Episode {number}{part}"
+    """Title for episode *number* (*fallback* is the plain disc name).
+
+    *width* zero-pads the number (see ``episode_number_width``).
+    """
+    return f"{_prefix(info, fallback)} - Episode {number:0{width}d}{part}"
 
 
 def play_all_title(info: SeriesInfo | None, fallback: str) -> str:

@@ -30,6 +30,7 @@ from packed_episodes import split_packed_title
         (["Sgt. Frog - Season 3", "SGT_FROG_S3"], SeriesInfo("Sgt. Frog", 3, None)),
         (["Show.S01D02.1080p"], SeriesInfo("Show", 1, 2)),
         (["Some Show Disk 3"], SeriesInfo("Some Show", None, 3)),
+        (["Show S02", "test_disc_0"], SeriesInfo("Show", 2, None)),  # no disc 0
         # Movies and look-alikes: DVD9 is a format, years and sequels aren't
         # seasons.
         (["Treasure Planet", "Treasure.Planet.2002.NTSC.USA.DVD9-AndreMor"], None),
@@ -152,4 +153,45 @@ def test_split_packed_episodes_use_series_info() -> None:
     assert plain[:2] == [
         "Sgt. Frog Season 1 Disc 1 - Episode 1",
         "Sgt. Frog Season 1 Disc 1 - Episode 2",
+    ]
+
+
+def test_episode_numbers_are_padded_to_the_highest() -> None:
+    from episode_naming import episode_number_width
+
+    assert [episode_number_width(n) for n in (0, 9, 10, 99, 101)] == [1, 1, 2, 2, 3]
+    info = SeriesInfo("Show", 1, 1)
+    assert episode_title(info, "x", 1, width=3) == "Show - S01 Disc 1 - Episode 001"
+    assert episode_title(None, "Disc", 3, "b", width=2) == "Disc - Episode 03b"
+
+
+def test_packed_split_pads_episode_numbers() -> None:
+    parent = _title(0)
+    parent.name = "Sgt. Frog - Season 3"
+    parent.clip_durations = [12 * 1400.0]
+    parent.packed_segments = [
+        PackedSegment(n * 1400.0, (n + 1) * 1400.0, n + 1) for n in range(12)
+    ]
+
+    names = [t.name for t in split_packed_title(parent, SeriesInfo("Sgt. Frog", 3))]
+
+    assert names[0] == "Sgt. Frog - S03 - Episode 01"
+    assert names[-1] == "Sgt. Frog - S03 - Episode 12"
+
+
+def test_scanner_pads_to_the_disc_highest_episode(tmp_path: Path) -> None:
+    from scan import Scanner
+
+    source = tmp_path / "Show.S01"
+    source.mkdir()
+    scanner = Scanner(source, runtime_state=RuntimeState())
+    scanner.disc_name = "Show S01"
+    scanner.titles = [_title(i, episode=n) for i, n in enumerate((1, 10, 101))]
+
+    scanner._apply_disc_name()
+
+    assert [t.name for t in scanner.titles] == [
+        "Show - S01 - Episode 001",
+        "Show - S01 - Episode 010",
+        "Show - S01 - Episode 101",
     ]

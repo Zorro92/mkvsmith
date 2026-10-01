@@ -185,8 +185,10 @@ not expose DVD cell IDs.
 - **Episode names.** A disc can't know how many episodes earlier discs of
   a set held, so episodes are numbered per disc and named with the season
   and disc number when the disc, folder or release name carries them
-  (`Show - S01 Disc 2 - Episode 3`), else `<disc name> - Episode N`. A
-  TheDiscDB match (`--discdb`) supplies its own names instead.
+  (`Show - S01 Disc 2 - Episode 3`), else `<disc name> - Episode N`.
+  Numbers are zero-padded to the disc's highest (`Episode 001` …
+  `Episode 101`) so they line up and sort. A TheDiscDB match (`--discdb`)
+  supplies its own names instead.
 - **Packed episodes.** Some series Blu-rays (e.g. Sgt. Frog) play a whole
   disc's episodes from one 15-20 hour playlist. `mkvsmith` detects these
   from the playlist's chapter marks and lists the playlist as usual, with a

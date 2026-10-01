@@ -595,9 +595,9 @@ def _folder_hash_files(source: Path) -> list[FileHashInfo]:
 
 
 def _iso_hash_files(source: Path) -> list[FileHashInfo]:
-    from disc_reader import _list_iso_file_metadata_7z
+    from disc_reader import _list_iso_file_metadata
 
-    entries = _list_iso_file_metadata_7z(source)
+    entries = _list_iso_file_metadata(source)
     selected: list[tuple[str, int, str | None]] = []
     for entry in entries:
         normalized = entry.path.replace("\\", "/")
@@ -640,9 +640,9 @@ def _folder_fingerprint_files(source: Path) -> list[DiscFingerprintFileInfo]:
 
 
 def _iso_fingerprint_files(source: Path) -> list[DiscFingerprintFileInfo]:
-    from disc_reader import _list_iso_files_7z
+    from disc_reader import _list_iso_files
 
-    paths, sizes = _list_iso_files_7z(source)
+    paths, sizes = _list_iso_files(source)
     return [
         DiscFingerprintFileInfo(path=path, size=sizes.get(path, 0))
         for path in sorted(paths)

@@ -512,7 +512,7 @@ def test_iso_hash_files_preserve_7z_internal_timestamps(
             disc_reader._IsoFileMetadata("VIDEO_TS/VIDEO_TS.IFO", 456, None),
         ]
 
-    monkeypatch.setattr("disc_reader._list_iso_file_metadata_7z", fake_list_metadata)
+    monkeypatch.setattr("disc_reader._list_iso_file_metadata", fake_list_metadata)
 
     files = discdb.collect_hash_files(source)
 
@@ -572,7 +572,7 @@ def test_iso_fingerprint_files_include_every_iso_member(
             {"BDMV/META/dl/bdmt_eng.xml": 10, "BDMV/STREAM/01000.m2ts": 20},
         )
 
-    monkeypatch.setattr("disc_reader._list_iso_files_7z", fake_list_files)
+    monkeypatch.setattr("disc_reader._list_iso_files", fake_list_files)
 
     assert discdb.collect_fingerprint_files(source) == [
         {"path": "BDMV/META/dl/bdmt_eng.xml", "size": 10},
@@ -957,7 +957,7 @@ def test_iso_aacs_identifier_uses_bounded_extraction(
         extracted.append((iso_path, internal_path, kwargs))
         return unit_key
 
-    monkeypatch.setattr("disc_reader._extract_partial_7z", extract)
+    monkeypatch.setattr("disc_reader._extract_iso_prefix", extract)
 
     scanner._add_iso_aacs_disc_id(["AACS/Unit_Key_RO.inf"])
 

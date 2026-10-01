@@ -31,7 +31,7 @@ def test_dvd_iso_vob_maps_first_file_and_sorts_parts() -> None:
     }
 
 
-def test_scan_iso_7z_dispatches_bluray_by_playlist(
+def test_scan_iso_image_dispatches_bluray_by_playlist(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     scanner = Scanner(tmp_path / "movie.iso")
@@ -59,9 +59,9 @@ def test_scan_iso_7z_dispatches_bluray_by_playlist(
     ) -> tuple[list[str], dict[str, int]]:
         return (paths, sizes)
 
-    monkeypatch.setattr(disc_reader, "_list_iso_files_7z", list_iso_files)
+    monkeypatch.setattr(disc_reader, "_list_iso_files", list_iso_files)
 
-    scanner._scan_iso_7z()
+    scanner._scan_iso_image()
 
     assert scanner.disc_metadata.matrix256_fingerprint == (
         "ae1488c3a6e58c1b5854dd51b8625028d49433b14dd4f8304766aeaa438c0fdc"
@@ -76,7 +76,7 @@ def test_scan_iso_7z_dispatches_bluray_by_playlist(
     ]
 
 
-def test_scan_iso_7z_omits_matrix256_when_size_is_missing(
+def test_scan_iso_image_omits_matrix256_when_size_is_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     scanner = Scanner(tmp_path / "movie.iso")
@@ -91,9 +91,9 @@ def test_scan_iso_7z_omits_matrix256_when_size_is_missing(
         return (paths, {})
 
     monkeypatch.setattr(scanner, "_scan_iso_bluray", scan_bluray)
-    monkeypatch.setattr(disc_reader, "_list_iso_files_7z", list_iso_files)
+    monkeypatch.setattr(disc_reader, "_list_iso_files", list_iso_files)
 
-    scanner._scan_iso_7z()
+    scanner._scan_iso_image()
 
     assert scanner.disc_metadata.matrix256_fingerprint is None
 
@@ -173,8 +173,8 @@ def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     def parse_vmg_ifo(_path: Path) -> VmgInfo:
         return vmg
 
-    monkeypatch.setattr(disc_reader, "_extract_with_7z", extract_with_7z)
-    monkeypatch.setattr(disc_reader, "_extract_partial_7z", extract_partial_7z)
+    monkeypatch.setattr(disc_reader, "_extract_iso_files", extract_with_7z)
+    monkeypatch.setattr(disc_reader, "_extract_iso_prefix", extract_partial_7z)
     monkeypatch.setattr(scan, "_parse_vmg_ifo", parse_vmg_ifo)
 
     def build_title(
@@ -278,8 +278,8 @@ def test_scan_iso_dvd_exposes_episode_pgc_titles(
     def parse_vmg_ifo(_path: Path) -> VmgInfo:
         return vmg
 
-    monkeypatch.setattr(disc_reader, "_extract_with_7z", extract_with_7z)
-    monkeypatch.setattr(disc_reader, "_extract_partial_7z", extract_partial_7z)
+    monkeypatch.setattr(disc_reader, "_extract_iso_files", extract_with_7z)
+    monkeypatch.setattr(disc_reader, "_extract_iso_prefix", extract_partial_7z)
     monkeypatch.setattr(scan, "_parse_vmg_ifo", parse_vmg_ifo)
 
     def build_title(

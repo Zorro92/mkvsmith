@@ -89,8 +89,8 @@ _ES: dict[str, str] = {
     "AACS Disc ID: {value}": "Disc ID de AACS: {value}",
     "TheDiscDB Disc Hash: {value}": "Disc Hash de TheDiscDB: {value}",
     "Matrix256 fingerprint: {value}": "Huella Matrix256: {value}",
-    "Matrix256 fingerprint unavailable: 7z did not report every file size": (
-        "Huella Matrix256 no disponible: 7z no informó todos los tamaños de archivo"
+    "Matrix256 fingerprint unavailable: the ISO listing did not report every file size": (
+        "Huella Matrix256 no disponible: el listado de la ISO no informó todos los tamaños de archivo"
     ),
     "Total: {n} title(s)": "Total: {n} título(s)",
     "({n} episode(s) detected)": "({n} episodio(s) detectado(s))",
@@ -136,9 +136,9 @@ _ES: dict[str, str] = {
     "Using ISO file in directory: {name}": "Usando archivo ISO del directorio: {name}",
     "No ISO file found in {path}": "No se encontró ningún archivo ISO en {path}",
     "{path} is not a valid disc image (no ISO9660 or UDF filesystem found)": "{path} no es una imagen de disco válida (no se encontró sistema de archivos ISO9660 o UDF)",
-    "Scanning ISO with 7z...": "Escaneando ISO con 7z...",
+    "Scanning ISO...": "Escaneando ISO...",
     "7z could not find any .mpls, .m2ts, or .vob files inside the ISO.": "7z no pudo encontrar ningún archivo .mpls, .m2ts o .vob dentro de la ISO.",
-    "7z could not find any .mpls, .m2ts, .vob, or .evo files inside the ISO.": "7z no pudo encontrar ningún archivo .mpls, .m2ts, .vob o .evo dentro de la ISO.",
+    "Could not find any .mpls, .m2ts, .vob, or .evo files inside the ISO.": "No se encontró ningún archivo .mpls, .m2ts, .vob o .evo dentro de la ISO.",
     "HD DVD playlist: {name} ({n} title(s))": "Lista HD DVD: {name} ({n} título(s))",
     "Mounted {path} but found neither BDMV, VIDEO_TS, nor HVDVD_TS at the top level.": "Se montó {path} pero no se encontró ni BDMV, ni VIDEO_TS ni HVDVD_TS en el nivel superior.",
     "Disc name from bdmt.xml: {name}": "Nombre del disco desde bdmt.xml: {name}",
@@ -190,6 +190,9 @@ _ES: dict[str, str] = {
     "{budget:.1f} GB pero el sistema de archivos temporal tiene poco espacio "
     "({avail:.1f} GB libres); usando el directorio temporal en disco '{dir}' "
     "para este título.",
+    "Built-in ISO reader could not read {path} ({err}); falling back to 7z.": "El lector de ISO integrado no pudo leer {path} ({err}); se usará 7z.",
+    "File not found inside the ISO: {path}": "Archivo no encontrado dentro de la ISO: {path}",
+    "Could not extract {path} from the ISO: {err}": "No se pudo extraer {path} de la ISO: {err}",
     "7z missing. Install with: sudo apt install p7zip-full": "Falta 7z. Instálalo con: sudo apt install p7zip-full",
     "7z failed: {err}": "7z falló: {err}",
     "7z extraction failed: {err}": "la extracción con 7z falló: {err}",
@@ -198,7 +201,7 @@ _ES: dict[str, str] = {
     # --- misc ------------------------------------------------------------------
     "Not found: {path}": "No encontrado: {path}",
     # --- argparse / --help -----------------------------------------------------
-    "DVD/Blu-ray ripper using mkvmerge (MKVToolNix) + 7z": "Extractor de DVD/Blu-ray usando mkvmerge (MKVToolNix) + 7z",
+    "DVD/Blu-ray ripper using mkvmerge (MKVToolNix)": "Extractor de DVD/Blu-ray usando mkvmerge (MKVToolNix)",
     "output directory (default: current directory)": "directorio de salida (predeterminado: directorio actual)",
     "rip only the detected main feature": "extraer solo la película principal detectada",
     "rip the detected main feature (all episodes on series discs)": "extraer la película principal detectada (todos los episodios en discos de series)",

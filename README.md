@@ -231,7 +231,21 @@ done
 7z e disc.iso "BDMV/PLAYLIST/00307.mpls" -otests/fixtures -y   # Monsters University
 cp SGT_FROG_S1_D1/BDMV/PLAYLIST/00000.mpls tests/fixtures/sgtfrog_s1d1_00000.mpls
 cp SGT_FROG_S7/BDMV/PLAYLIST/00001.mpls tests/fixtures/sgtfrog_s7_00001.mpls
+
+# Built-in ISO reader (tests/test_isofs.py). Sparse captures holding only the
+# filesystem sectors plus a few small files; no essence:
+uv run python scripts/capture_iso_fixture.py monster_high_welcome.iso \
+  tests/fixtures/monster_high_udf250.isofix.gz BDMV/index.bdmv \
+  BDMV/MovieObject.bdmv BDMV/PLAYLIST/00800.mpls BDMV/CLIPINF/00800.clpi \
+  BDMV/STREAM/00800.m2ts   # Monster High: Welcome to Monster High (2016) BD
+uv run python scripts/capture_iso_fixture.py treasure_planet.iso \
+  tests/fixtures/treasure_planet_dvd.isofix.gz VIDEO_TS/VIDEO_TS.IFO \
+  VIDEO_TS/VTS_01_0.IFO VIDEO_TS/VTS_01_1.VOB
 ```
+
+To cross-check the reader against 7z on whole images, point
+`MKVSMITH_TEST_ISOS` at one or more ISOs (`:`-separated) and run
+`uv run pytest tests/test_isofs.py -k real_iso`.
 
 `scripts/inspect_fixtures.py` re-parses whatever is in `tests/fixtures/` and
 prints the values the tests expect, which is handy when swapping in a new disc.

@@ -2,8 +2,8 @@
 Disc-reading helpers for mkvsmith.
 
 Provides functions for detecting source types, listing and extracting files
-from ISO images using 7z, direct loop-mount mounting via sudo, and other
-low-level disc I/O.  Extracted / mounted resources are tracked in the global
+from ISO images (natively via ``isofs``, with 7z as a fallback), direct
+loop-mount mounting via sudo, and other low-level disc I/O.  Extracted / mounted resources are tracked in the global
 runtime cleanup registries. Callers may inject registry lists; standalone
 calls fall back to the process-wide ``RUNTIME_STATE``.
 """
@@ -33,6 +33,7 @@ from models import (
     log_warn,
 )
 from i18n import tr
+from isofs import IsoImage, IsoImageError
 
 
 # Loop-mounting an ISO with sudo is a Linux-only fallback; macOS mounts
@@ -727,6 +728,68 @@ def _list_iso_files_7z(
 
 
 # =============================================================================
+# Native listing (isofs), falling back to 7z
+# =============================================================================
+
+
+def _open_native_iso(iso_path: Path) -> IsoImage | None:
+    """Open *iso_path* with the native reader, or ``None`` to use 7z."""
+    try:
+        return IsoImage(iso_path)
+    except (IsoImageError, OSError) as exc:
+        log_warn(
+            tr(
+                "Built-in ISO reader could not read {path} ({err}); falling back to 7z.",
+                path=iso_path.name,
+                err=exc,
+            )
+        )
+        return None
+
+
+def _list_iso_files(
+    iso_path: Path, symlinks: list[Path] | None = None
+) -> tuple[list[str], dict[str, int]]:
+    """List the regular files inside an ISO as ``(paths, sizes)``.
+
+    Same contract as ``_list_iso_files_7z``: ``([], {})`` on failure.
+    """
+    image = _open_native_iso(iso_path)
+    if image is None:
+        return _list_iso_files_7z(iso_path, symlinks)
+    with image:
+        entries = image.files()
+    return [entry.path for entry in entries], {e.path: e.size for e in entries}
+
+
+def _list_iso_file_metadata(
+    iso_path: Path, symlinks: list[Path] | None = None
+) -> list[_IsoFileMetadata]:
+    """List ISO files with sizes and local-time modification timestamps.
+
+    The timestamp uses 7z's ``Modified`` string format so both sources feed
+    ``discdb._iso_datetime_from_7z`` alike. The native value is converted
+    with the DST offset in effect at that date, whereas 7z applies today's
+    offset, so the native path is the correct one for dates across DST.
+    """
+    image = _open_native_iso(iso_path)
+    if image is None:
+        return _list_iso_file_metadata_7z(iso_path, symlinks)
+    with image:
+        entries = image.files()
+    return [
+        _IsoFileMetadata(
+            entry.path,
+            entry.size,
+            entry.modified.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            if entry.modified
+            else None,
+        )
+        for entry in entries
+    ]
+
+
+# =============================================================================
 # Extraction
 # =============================================================================
 
@@ -867,6 +930,87 @@ def _extract_partial_7z(
         return None
 
 
+def _copy_native_member(
+    image: IsoImage, internal_path: str, dest: Path, limit: int | None = None
+) -> bool:
+    """Copy one ISO member to *dest*; on failure log it and leave no file."""
+    entry = image.entries.get(internal_path)
+    if entry is None:
+        log_error(
+            tr(
+                "File not found inside the ISO: {path}",
+                path=internal_path,
+            )
+        )
+        return False
+    try:
+        image.copy_to(entry, dest, limit)
+    except (IsoImageError, OSError) as exc:
+        dest.unlink(missing_ok=True)
+        log_error(
+            tr(
+                "Could not extract {path} from the ISO: {err}",
+                path=internal_path,
+                err=exc,
+            )
+        )
+        return False
+    return True
+
+
+def _extract_iso_files(
+    iso_path: Path,
+    internal_paths: list[str],
+    out_dir: Path,
+    symlinks: list[Path] | None = None,
+    expected_bytes: int = 0,
+) -> list[Path]:
+    """Extract *internal_paths* into *out_dir*, flattened to their basenames.
+
+    Same contract as ``_extract_with_7z``: returns the files that exist.
+    """
+    if not internal_paths:
+        return []
+    image = _open_native_iso(iso_path)
+    if image is None:
+        return _extract_with_7z(
+            iso_path, internal_paths, out_dir, symlinks, expected_bytes
+        )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    extracted: list[Path] = []
+    with image:
+        for internal_path in internal_paths:
+            dest = out_dir / Path(internal_path).name
+            if _copy_native_member(image, internal_path, dest):
+                extracted.append(dest)
+    return extracted
+
+
+def _extract_iso_prefix(
+    iso_path: Path,
+    internal_path: str,
+    size_mb: int = 256,
+    *,
+    temp_files: list[Path] | None = None,
+    symlinks: list[Path] | None = None,
+) -> Path | None:
+    """Extract the first *size_mb* MiB of one ISO member to a temp file."""
+    image = _open_native_iso(iso_path)
+    if image is None:
+        return _extract_partial_7z(
+            iso_path,
+            internal_path,
+            size_mb,
+            temp_files=temp_files,
+            symlinks=symlinks,
+        )
+    with image:
+        temp_path = _registered_temp_file(temp_files)
+        if _copy_native_member(image, internal_path, temp_path, size_mb * 1024 * 1024):
+            return temp_path
+    return None
+
+
 # =============================================================================
 # Direct mounting via sudo
 # =============================================================================
@@ -977,10 +1121,10 @@ def _extract_full_for_muxing(
     """Extract the full set of internal ISO files for muxing into a temp dir.
 
     Creates a temp directory (registered in the supplied registry) and extracts
-    *internals* into it via ``_extract_with_7z``. *temp_base*, when given,
+    *internals* into it via ``_extract_iso_files``. *temp_base*, when given,
     overrides the parent of the temp directory — used to spill oversized
     titles off a RAM-backed temp dir onto disk (see ``temp_base_for_title``).
-    *expected_bytes* sizes the 7z timeout for the whole extraction.
+    *expected_bytes* sizes the 7z timeout when 7z is the fallback.
     """
     out_dir = Path(
         tempfile.mkdtemp(
@@ -992,6 +1136,6 @@ def _extract_full_for_muxing(
         RUNTIME_STATE.cleanup.register_temp_dir(out_dir)
     else:
         temp_dirs.append(out_dir)
-    return _extract_with_7z(
+    return _extract_iso_files(
         iso_path, list(internals), out_dir, symlinks, expected_bytes
     )

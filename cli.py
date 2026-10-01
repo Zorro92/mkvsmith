@@ -555,7 +555,7 @@ def interactive_mode(
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description=tr("DVD/Blu-ray ripper using mkvmerge (MKVToolNix) + 7z")
+        description=tr("DVD/Blu-ray ripper using mkvmerge (MKVToolNix)")
     )
     p.add_argument("source", type=Path, nargs="?")
     p.add_argument(

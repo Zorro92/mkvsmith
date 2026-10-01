@@ -1,7 +1,7 @@
 """
 Source scanning and title ranking.
 
-Extracted from main.py: the Scanner class (ISO 7z / loop-mount handling),
+Extracted from main.py: the Scanner class (ISO image / loop-mount handling),
 per-source-type scan functions (DVD VIDEO_TS, Blu-ray BDMV, raw M2TS, video
 files, optical devices), duplicate-playlist collapsing, and the
 notable-title / main-feature ranking heuristics used by the display.
@@ -1067,7 +1067,7 @@ def _build_hddvd_title(
     """Build one Title from an XPL title entry.
 
     *probe_files* are probed with mkvmerge (real EVOs for folder sources,
-    bounded 7z prefixes for ISO sources); *record_files* are what the muxer
+    bounded prefixes for ISO sources); *record_files* are what the muxer
     will use (same paths for folders, internal ISO paths for ISOs).
     """
     min_duration = (config or RUNTIME_STATE.config).min_duration
@@ -1526,20 +1526,20 @@ class Scanner:
                 )
             )
             return
-        self._scan_iso_7z()
+        self._scan_iso_image()
         if not self.titles:
             self._scan_iso_mount()
 
-    def _scan_iso_7z(self) -> None:
-        from disc_reader import _is_iso_media_path, _list_iso_files_7z
+    def _scan_iso_image(self) -> None:
+        from disc_reader import _is_iso_media_path, _list_iso_files
 
-        log_info(tr("Scanning ISO with 7z..."))
-        paths, sizes = _list_iso_files_7z(self.source, self.cleanup.symlinks)
+        log_info(tr("Scanning ISO..."))
+        paths, sizes = _list_iso_files(self.source, self.cleanup.symlinks)
         media_paths = [path for path in paths if _is_iso_media_path(path)]
         if not media_paths:
             log_error(
                 tr(
-                    "7z could not find any .mpls, .m2ts, .vob, or .evo files inside the ISO."
+                    "Could not find any .mpls, .m2ts, .vob, or .evo files inside the ISO."
                 )
             )
             return
@@ -1553,7 +1553,7 @@ class Scanner:
         else:
             log_warn(
                 tr(
-                    "Matrix256 fingerprint unavailable: 7z did not report every file size"
+                    "Matrix256 fingerprint unavailable: the ISO listing did not report every file size"
                 )
             )
         self._add_iso_aacs_disc_id(paths)
@@ -1590,13 +1590,13 @@ class Scanner:
     def _scan_iso_hddvd(
         self, media_paths: list[str], sizes: dict[str, int], xpl_files: list[str]
     ) -> None:
-        """Scan an HD DVD ISO via its XPL playlist (7z extraction)."""
-        from disc_reader import _extract_partial_7z, _extract_with_7z
+        """Scan an HD DVD ISO via its XPL playlist."""
+        from disc_reader import _extract_iso_prefix, _extract_iso_files
         from hddvd import parse_xpl
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
         self.cleanup.register_temp_dir(tmp_dir)
-        extracted = _extract_with_7z(
+        extracted = _extract_iso_files(
             self.source, [xpl_files[0]], tmp_dir, self.cleanup.symlinks
         )
         if not extracted:
@@ -1633,7 +1633,7 @@ class Scanner:
                 ht = replace(ht, clips=kept)
             probes: list[Path] = []
             for path in internal:
-                tmp = _extract_partial_7z(
+                tmp = _extract_iso_prefix(
                     self.source,
                     path,
                     temp_files=self.cleanup.temp_files,
@@ -1664,10 +1664,10 @@ class Scanner:
             self.titles.append(title)
 
     def _scan_iso_raw_m2ts(self, m2ts_files: list[str], sizes: dict[str, int]) -> None:
-        from disc_reader import _extract_partial_7z
+        from disc_reader import _extract_iso_prefix
 
         for internal_path in m2ts_files:
-            if tmp := _extract_partial_7z(
+            if tmp := _extract_iso_prefix(
                 self.source,
                 internal_path,
                 temp_files=self.cleanup.temp_files,
@@ -1687,7 +1687,7 @@ class Scanner:
         mpls_files: list[str],
         m2ts_files: list[str],
     ) -> None:
-        from disc_reader import _extract_with_7z
+        from disc_reader import _extract_iso_files
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
         self.cleanup.register_temp_dir(tmp_dir)
@@ -1708,7 +1708,7 @@ class Scanner:
         files_to_extract = list(mpls_files)
         files_to_extract.extend(clpi_internal.values())
         files_to_extract.extend(bdmt_files)
-        extracted_paths = _extract_with_7z(
+        extracted_paths = _extract_iso_files(
             self.source, files_to_extract, tmp_dir, self.cleanup.symlinks
         )
         extracted_clpi = {
@@ -1775,7 +1775,7 @@ class Scanner:
 
     def _add_iso_aacs_disc_id(self, paths: list[str]) -> None:
         """Extract and hash Unit_Key_RO.inf without unpacking the whole ISO."""
-        from disc_reader import _extract_partial_7z
+        from disc_reader import _extract_iso_prefix
 
         wanted = ("AACS/UNIT_KEY_RO.INF", "AACS/DUPLICATE/UNIT_KEY_RO.INF")
         internal_path = next(
@@ -1789,7 +1789,7 @@ class Scanner:
         )
         if internal_path is None:
             return
-        extracted = _extract_partial_7z(
+        extracted = _extract_iso_prefix(
             self.source,
             internal_path,
             size_mb=16,
@@ -1823,7 +1823,7 @@ class Scanner:
         log_debug(f"TheDiscDB Disc Hash: {disc_hash}")
 
     def _scan_iso_dvd(self, paths: list[str], sizes: dict[str, int]) -> None:
-        from disc_reader import _extract_with_7z
+        from disc_reader import _extract_iso_files
 
         vob_files = sorted(
             path
@@ -1837,7 +1837,7 @@ class Scanner:
         )
         if not vob_files or not ifo_files:
             log_debug(
-                "7z listed files from the ISO, but none matched BDMV/VIDEO_TS "
+                "The ISO listing has files, but none matched BDMV/VIDEO_TS "
                 "paths (.mpls, .m2ts, or .vob). The ISO may not be a video disc."
             )
             return
@@ -1846,7 +1846,7 @@ class Scanner:
         tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
         self.cleanup.register_temp_dir(tmp_dir)
         vts_first_vob, vts_all_vobs = self._dvd_iso_vob_maps(vob_files)
-        extracted = _extract_with_7z(
+        extracted = _extract_iso_files(
             self.source, ifo_files, tmp_dir, self.cleanup.symlinks
         )
         vmg_info = self._parse_iso_vmg(extracted)
@@ -1957,7 +1957,7 @@ class Scanner:
         vts_to_title_num: dict[int, int],
         sizes: dict[str, int],
     ) -> None:
-        from disc_reader import _extract_partial_7z
+        from disc_reader import _extract_iso_prefix
 
         for ifo_path in sorted(extracted):
             match = re.search(r"VTS_(\d+)_0\.IFO$", ifo_path.name, re.IGNORECASE)
@@ -1968,7 +1968,7 @@ class Scanner:
             if not first_vob_internal:
                 continue
 
-            first_vob_extracted = _extract_partial_7z(
+            first_vob_extracted = _extract_iso_prefix(
                 self.source,
                 first_vob_internal,
                 temp_files=self.cleanup.temp_files,

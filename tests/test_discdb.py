@@ -824,7 +824,7 @@ def test_cli_episode_actions_include_remote_episodes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     local_episode = make_title(0, tmp_path / "01.VOB", 3600, dvd_title_id=1)
-    local_episode.dvd_episode_number = 1
+    local_episode.episode_number = 1
     remote_episode = make_title(1, tmp_path / "02.VOB", 3601, dvd_title_id=2)
     remote_episode.discdb_episode_number = 2
     state = RuntimeState()

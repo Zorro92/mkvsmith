@@ -320,9 +320,9 @@ def test_scan_iso_dvd_exposes_episode_pgc_titles(
         "Title 7 (VTS 1) - Play All",
         "Title 7 (VTS 1) - Extra",
     ]
-    assert [title.dvd_episode_number for title in scanner.titles] == [1, 2, None, None]
+    assert [title.episode_number for title in scanner.titles] == [1, 2, None, None]
     assert [title.dvd_pgc_number for title in scanner.titles] == [None, 2, 3, 4]
-    assert scanner.titles[2].dvd_play_all is True
+    assert scanner.titles[2].play_all is True
     for title in scanner.titles:
         assert title.source_file == scanner.source
         assert title.dvd_title_id == 7

@@ -676,7 +676,7 @@ def _prepare_mux_tags(
 ) -> tuple[MovieMetadata | None, list[ArtAttachment]]:
     if tag_opts is None or not tag_opts.enabled:
         return None, []
-    if series_disc or title.is_episode or title.dvd_play_all:
+    if series_disc or title.is_episode or title.play_all:
         # Tagging searches TMDB for a *movie* named after the disc; on a
         # series disc that tags episodes and extras with a wrong film.
         log_info(

@@ -724,19 +724,22 @@ class Title:
     # the generic "<disc> - Title N" label instead of discarding it, so
     # alternate PGCs stay visually distinguishable in the title listing.
     dvd_edition_label: str | None = None
-    # 1-indexed episode number for TV-series discs detected by
-    # ``_detect_episode_pgcs``. When set, ``_apply_disc_name`` labels the
+    # 1-indexed episode number for TV-series discs, detected on the disc
+    # itself: DVD PGCs (``_detect_episode_pgcs``), one-episode-per-VTS DVDs
+    # (``_label_cross_vts_episodes``) or Blu-ray episode playlists
+    # (``_label_bluray_episodes``). When set, ``_apply_disc_name`` labels the
     # title "<disc> - Episode N" instead of the generic title suffix.
-    dvd_episode_number: int | None = None
+    episode_number: int | None = None
     # Part suffix for episodes authored as two separately-ripped segments
     # (Superman 1988: each DVD episode = a ~19-minute part "a" plus a
     # ~5-minute short "b", in alternating PGCs). Together with
-    # ``dvd_episode_number`` the title is labelled "Episode Na"/"Episode Nb".
+    # ``episode_number`` the title is labelled "Episode Na"/"Episode Nb".
     dvd_episode_part: str | None = None
-    # True when this title is the "play all" chain on a TV-series disc (a
-    # PGC whose duration ≈ the sum of all episodes). Demoted in the sort
-    # order so episodes and extras appear before it.
-    dvd_play_all: bool = False
+    # True when this title is the "play all" chain on a TV-series disc (a DVD
+    # PGC whose duration ≈ the sum of all episodes, or a Blu-ray playlist
+    # chaining the episode playlists' clips). Demoted in the sort order so
+    # episodes and extras appear before it.
+    play_all: bool = False
     # Logical DVD title number from VMG TT_SRPT. TheDiscDB and the reference ripper use
     # this as a DVD title's source identifier (for example "01").
     dvd_title_id: int | None = None
@@ -790,7 +793,7 @@ class Title:
         """An episode of a series: detected on a DVD, matched by TheDiscDB,
         or split out of a packed Blu-ray playlist."""
         return (
-            self.dvd_episode_number is not None
+            self.episode_number is not None
             or self.discdb_episode_number is not None
             or self.packed_episode_number is not None
         )

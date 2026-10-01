@@ -163,7 +163,7 @@ def display_titles(
         playlist = t.playlist_name or ""
         playlist_value = f"{playlist:<{playlist_width}}  " if show_playlist else ""
         if series_disc:
-            is_episode = _is_episode_title(t) and not t.dvd_play_all
+            is_episode = _is_episode_title(t) and not t.play_all
             marker = " \u25cb" if is_episode else ""
         else:
             marker = " \u2605" if t.index == main_idx else ""

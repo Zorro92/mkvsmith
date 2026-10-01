@@ -49,6 +49,8 @@ from bluray import (
 )
 
 from dvdifo import (
+    _EPISODE_DURATION_TOL,
+    _EPISODE_DWARF_RATIO,
     DvdIfoError,
     VmgInfo,
     _read_u16,
@@ -1310,15 +1312,15 @@ def _build_iso_bluray_playlist_title(
 def _scanned_title_sort_key(title: Title) -> tuple[int, int, str, float]:
     # Episodes first (part "a" before part "b" within one episode), other
     # titles by duration, then the play-all chain last.
-    if title.dvd_play_all:
+    if title.play_all:
         group = 2
-    elif title.dvd_episode_number is not None:
+    elif title.episode_number is not None:
         group = 0
     else:
         group = 1
     return (
         group,
-        title.dvd_episode_number if title.dvd_episode_number is not None else 0,
+        title.episode_number if title.episode_number is not None else 0,
         title.dvd_episode_part or "",
         -title.duration_seconds,
     )
@@ -1466,6 +1468,7 @@ class Scanner:
         # do).
         _demote_dwarfed_episode_groups(self.titles, self.config)
         _label_cross_vts_episodes(self.titles, self.config)
+        _label_bluray_episodes(self.titles, self.config)
         _sort_and_reindex_titles(self.titles)
         if self.titles:
             self._apply_disc_name()
@@ -1505,7 +1508,7 @@ class Scanner:
         used as the disc name. Menu indices and output ``_tNN`` suffixes keep
         same-named extras distinct; meaningful edition labels are retained.
 
-        TV-series episodes (``dvd_episode_number``) are labelled "Episode N"
+        TV-series episodes (``episode_number``) are labelled "Episode N"
         regardless of main-feature status, and the "play all" chain is
         explicitly marked so it isn't mistaken for the series itself.
 
@@ -1527,10 +1530,10 @@ class Scanner:
                 # already meaningful per-title names used for segment
                 # titles and filenames — never overwrite them.
                 continue
-            if t.dvd_episode_number is not None:
+            if t.episode_number is not None:
                 part = t.dvd_episode_part or ""
-                t.name = f"{self.disc_name} - Episode {t.dvd_episode_number}{part}"
-            elif t.dvd_play_all:
+                t.name = f"{self.disc_name} - Episode {t.episode_number}{part}"
+            elif t.play_all:
                 t.name = f"{self.disc_name} - Play All"
             elif t.index == main_idx:
                 t.name = self.disc_name
@@ -2185,6 +2188,140 @@ def _is_hddvd_secondary_experience(title: Title) -> bool:
     return bool(words & _SECONDARY_EXPERIENCE_TOKENS)
 
 
+def _split_into_parts(
+    sequence: tuple[str, ...], parts: set[tuple[str, ...]]
+) -> list[tuple[str, ...]] | None:
+    """*sequence* as a concatenation of whole *parts*, or ``None``."""
+    if not sequence:
+        return []
+    for part in sorted(parts, key=len, reverse=True):
+        if part and sequence[: len(part)] == part:
+            rest = _split_into_parts(sequence[len(part) :], parts)
+            if rest is not None:
+                return [part, *rest]
+    return None
+
+
+def _track_layout(title: Title) -> tuple[int, int, tuple[str, ...]]:
+    """Audio count, subtitle count and audio languages: episodes share it."""
+    return (
+        len(title.audio_streams),
+        len(title.subtitle_streams),
+        tuple(stream.language for stream in title.audio_streams),
+    )
+
+
+def _label_bluray_episodes(titles: list[Title], config: Config | None = None) -> None:
+    """Label one-playlist-per-episode Blu-ray series titles as episodes.
+
+    Series Blu-rays commonly give each episode its own playlist plus a
+    "play all" playlist chaining them. The rules mirror the DVD ones
+    (``_detect_episode_pgcs`` / ``_label_cross_vts_episodes``), on clip
+    lists instead of cell tables:
+
+    1. Candidates: notable, non-looped Blu-ray playlists of at least
+       ``min_duration``, one per distinct clip sequence (duplicates of the
+       same clips collapse).
+    2. Play-all: a candidate whose clips are exactly two or more other
+       candidates' clip sequences in a row.
+    3. Episodes: a duration cluster (``_EPISODE_DURATION_TOL``) of the
+       remaining candidates whose clips are pairwise disjoint; shared clips
+       mean editions of one movie, not episodes.
+    4. At least three episodes, or exactly two when a play-all chains them.
+       Two same-length titles alone are the classic two-cuts-of-a-movie
+       pair; a play-all of two distinct clip sets is not. (Earth from Space
+       puts two ~58-minute episodes and their play-all on each disc.)
+    5. Episodes share one track layout (audio/subtitle counts and audio
+       languages): cluster members with a different layout are extras that
+       merely run episode length. (The Big Bang Theory S1 D2: a 17-minute
+       featurette with 1 audio / 4 subtitle tracks beside 8 episodes with
+       3 / 5.)
+    6. Nothing else on the disc (play-alls and loops aside) runs
+       ``_EPISODE_DWARF_RATIO`` times the longest episode.
+
+    Episodes are numbered in play-all order when one covers them, else by
+    playlist number. Packed-episode playlists are left to
+    ``packed_episodes`` (offered, never applied by default).
+    """
+    minimum = (config or RUNTIME_STATE.config).min_duration
+    by_clips: dict[tuple[str, ...], Title] = {}
+    for title in titles:
+        if (
+            not title.playlist_name
+            or title.hddvd_title_number is not None
+            or title.episode_number is not None
+            or title.play_all
+            or title.packed_segments
+            or title.duration_seconds < minimum
+            or _is_looped_playlist(title)
+            or not _is_notable_title(title)
+        ):
+            continue
+        by_clips.setdefault(tuple(_title_clip_keys(title)), title)
+
+    play_alls: dict[tuple[str, ...], list[tuple[str, ...]]] = {}
+    for key in by_clips:
+        parts = _split_into_parts(key, set(by_clips) - {key})
+        if parts is not None and len(parts) >= 2:
+            play_alls[key] = parts
+    singles = [key for key in by_clips if key not in play_alls]
+
+    group: list[tuple[str, ...]] = []
+    for key in singles:
+        duration = by_clips[key].duration_seconds
+        cluster = [
+            other
+            for other in singles
+            if abs(by_clips[other].duration_seconds - duration)
+            / max(by_clips[other].duration_seconds, duration, 1.0)
+            <= _EPISODE_DURATION_TOL
+        ]
+        clips_seen: set[str] = set()
+        disjoint = True
+        for member in cluster:
+            if clips_seen & set(member):
+                disjoint = False
+                break
+            clips_seen |= set(member)
+        if not disjoint:
+            continue
+        layouts = Counter(_track_layout(by_clips[member]) for member in cluster)
+        dominant = layouts.most_common(1)[0][0]
+        cluster = [m for m in cluster if _track_layout(by_clips[m]) == dominant]
+        if len(cluster) > len(group):
+            group = cluster
+    if len(group) < 2:
+        return
+    group_set = set(group)
+    chains = {key: parts for key, parts in play_alls.items() if set(parts) <= group_set}
+    covering = next(
+        (parts for parts in chains.values() if set(parts) == group_set), None
+    )
+    if len(group) < 3 and covering is None:
+        return
+
+    longest = max(by_clips[key].duration_seconds for key in group)
+    for title in titles:
+        key = tuple(_title_clip_keys(title)) if title.playlist_name else None
+        if (
+            key in group_set
+            or key in chains
+            or title.play_all
+            or _is_looped_playlist(title)
+            or not _is_notable_title(title)
+        ):
+            continue
+        if title.duration_seconds >= longest * _EPISODE_DWARF_RATIO:
+            return
+
+    order = covering or sorted(group, key=lambda key: by_clips[key].playlist_name or "")
+    for number, key in enumerate(order, start=1):
+        by_clips[key].episode_number = number
+    for key in chains:
+        by_clips[key].play_all = True
+    log_info(tr("Detected {n} episode playlist(s)", n=len(order)))
+
+
 def _is_looped_playlist(title: Title) -> bool:
     """True when one clip dominates the title's play items (menu loop).
 
@@ -2348,8 +2485,20 @@ _AUTHORIAL_MAIN_FEATURE_TOKENS = frozenset({"mainmovie", "mainfeature", "feature
 
 
 def pick_main_feature(titles: list[Title], config: Config | None = None) -> int:
-    """Return the index of the best main-feature candidate, or -1 if empty."""
+    """Return the index of the best main-feature candidate, or -1 if empty.
+
+    Only notable titles compete (see ``_is_notable_title``), plus any title
+    TheDiscDB designates as the main movie, falling back to every title when
+    none qualifies. Hidden junk can otherwise win the tie-breaks: Earth from
+    Space's 8-hour looped menu playlist (one tiny clip replayed 501 times)
+    out-chaptered the real episodes.
+    """
     if not titles:
         return -1
-    best = max(titles, key=lambda title: _main_feature_score(title, config))
+    candidates = [
+        title
+        for title in titles
+        if title.discdb_is_main_movie or _is_notable_title(title)
+    ] or titles
+    best = max(candidates, key=lambda title: _main_feature_score(title, config))
     return best.index

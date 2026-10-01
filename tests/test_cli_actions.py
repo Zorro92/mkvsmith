@@ -66,7 +66,7 @@ def test_run_action_rips_only_detected_episodes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     episode = make_title(0)
-    episode.dvd_episode_number = 1
+    episode.episode_number = 1
     regular = make_title(1)
     state = models.RuntimeState()
     batch_calls: list[tuple[list[Title], models.RuntimeState]] = []
@@ -205,7 +205,7 @@ def test_run_main_feature_rip_falls_back_to_episodes_on_series_discs(
     """-m on a series disc rips the episodes: there is no single main
     feature, and the star-scoring can land on an unrelated bonus title."""
     episode = make_title(0)
-    episode.dvd_episode_number = 1
+    episode.episode_number = 1
     bonus = make_title(1)
     state = models.RuntimeState()
     batch_calls: list[tuple[list[Title], models.RuntimeState]] = []

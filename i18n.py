@@ -71,6 +71,7 @@ _ES: dict[str, str] = {
     "me N N ...=multi-edition rip": "me N N ...=extracción multi-edición",
     "{name} starts on a non-IDR video frame: some hardware decoders (e.g. on Android) show a black screen with audio. Play it with software decoding.": "{name} empieza en un fotograma de vídeo que no es IDR: algunos decodificadores por hardware (p. ej. en Android) muestran la pantalla en negro con audio. Reprodúcelo con decodificación por software.",
     "Skipping TMDB tagging for {name}: series discs aren't supported by movie tagging": "Se omite el etiquetado de TMDB para {name}: el etiquetado de películas no admite discos de series",
+    "Detected {n} episode playlist(s)": "Se detectaron {n} playlist(s) de episodios",
     "Marked {name} as interlaced ({order})": "{name} marcado como entrelazado ({order})",
     "top field first": "campo superior primero",
     "bottom field first": "campo inferior primero",

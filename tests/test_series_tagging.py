@@ -29,7 +29,7 @@ def _title(index: int = 0, **episode: int) -> Title:
 
 
 @pytest.mark.parametrize(
-    "field", ["dvd_episode_number", "discdb_episode_number", "packed_episode_number"]
+    "field", ["episode_number", "discdb_episode_number", "packed_episode_number"]
 )
 def test_any_episode_source_marks_an_episode(field: str) -> None:
     assert _title(**{field: 3}).is_episode
@@ -40,7 +40,7 @@ def test_refresh_series_disc() -> None:
     state = RuntimeState()
     state.refresh_series_disc([_title(0), _title(1)])
     assert state.series_disc is False
-    state.refresh_series_disc([_title(0), _title(1, dvd_episode_number=1)])
+    state.refresh_series_disc([_title(0), _title(1, episode_number=1)])
     assert state.series_disc is True
 
 
@@ -68,7 +68,7 @@ def test_movie_disc_is_tagged(tagging_calls: list[str]) -> None:
 @pytest.mark.parametrize(
     ("title", "series_disc"),
     [
-        (_title(dvd_episode_number=2), False),  # an episode
+        (_title(episode_number=2), False),  # an episode
         (_title(), True),  # an extra on a series disc
     ],
     ids=["episode", "extra-on-series-disc"],
@@ -90,14 +90,14 @@ def test_series_titles_are_not_tagged(
 
 def test_play_all_chain_is_not_tagged(tagging_calls: list[str]) -> None:
     title = _title()
-    title.dvd_play_all = True
+    title.play_all = True
 
     assert mkv._prepare_mux_tags(title, TagOptions(enabled=True), []) == (None, [])
     assert tagging_calls == []
 
 
 def test_disabled_tagging_stays_silent(capsys: pytest.CaptureFixture[str]) -> None:
-    mkv._prepare_mux_tags(_title(dvd_episode_number=1), TagOptions(), [])
+    mkv._prepare_mux_tags(_title(episode_number=1), TagOptions(), [])
 
     assert capsys.readouterr().out == ""
 

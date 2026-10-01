@@ -203,9 +203,9 @@ def test_display_titles_marks_episodes_on_series_discs(
             name=f"Show - Episode {index + 1}",
             duration_seconds=1200.0 + index,
         )
-        title.dvd_episode_number = episode
+        title.episode_number = episode
         if index == 3:
-            title.dvd_play_all = True
+            title.play_all = True
         titles.append(title)
 
     cli.display_titles(titles, config=cli.Config(show_all=True))

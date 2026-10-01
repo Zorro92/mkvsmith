@@ -159,8 +159,8 @@ def test_scan_dvd_source_builds_episodes_play_all_and_extra(
         "Title 7 (VTS 1) - Play All",
         "Title 7 (VTS 1) - Extra",
     ]
-    assert [title.dvd_episode_number for title in titles] == [1, 2, None, None]
-    assert titles[2].dvd_play_all is True
+    assert [title.episode_number for title in titles] == [1, 2, None, None]
+    assert titles[2].play_all is True
     assert metadata.upc_ean == "12345"
     assert metadata.dvd_disc_id is not None
     assert titles[0].append_clips == [
@@ -935,7 +935,7 @@ def test_label_cross_vts_episodes_labels_one_per_vts_series(
 
     dvdbuild._label_cross_vts_episodes(titles, config=Config(min_duration=60))
 
-    assert {t.dvd_title_id: t.dvd_episode_number for t in titles} == {
+    assert {t.dvd_title_id: t.episode_number for t in titles} == {
         1: None,
         2: None,
         3: 1,
@@ -960,7 +960,7 @@ def test_label_cross_vts_episodes_requires_three_titles(tmp_path: Path) -> None:
 
     dvdbuild._label_cross_vts_episodes(titles, config=Config(min_duration=60))
 
-    assert all(title.dvd_episode_number is None for title in titles)
+    assert all(title.episode_number is None for title in titles)
 
 
 def test_label_cross_vts_episodes_skips_labelled_playall_and_editions(
@@ -970,9 +970,9 @@ def test_label_cross_vts_episodes_skips_labelled_playall_and_editions(
     join a cross-VTS cluster."""
     titles: list[Title] = []
     specs: list[tuple[int, float, dict[str, object]]] = [
-        (1, 1460.0, {"dvd_episode_number": 1}),
-        (2, 1461.0, {"dvd_episode_number": 2}),
-        (3, 8800.0, {"dvd_play_all": True}),
+        (1, 1460.0, {"episode_number": 1}),
+        (2, 1461.0, {"episode_number": 2}),
+        (3, 8800.0, {"play_all": True}),
         (4, 2000.0, {"dvd_edition_label": "Edition 2"}),
         (5, 1254.0, {}),
         (6, 1253.0, {}),
@@ -987,7 +987,7 @@ def test_label_cross_vts_episodes_skips_labelled_playall_and_editions(
 
     dvdbuild._label_cross_vts_episodes(titles, config=Config(min_duration=60))
 
-    assert {t.dvd_title_id: t.dvd_episode_number for t in titles} == {
+    assert {t.dvd_title_id: t.episode_number for t in titles} == {
         1: 1,  # within-VTS labels untouched
         2: 2,
         3: None,
@@ -1015,7 +1015,7 @@ def test_label_cross_vts_episodes_suppressed_when_dwarfed(tmp_path: Path) -> Non
 
     dvdbuild._label_cross_vts_episodes(titles, config=Config(min_duration=60))
 
-    assert all(title.dvd_episode_number is None for title in titles)
+    assert all(title.episode_number is None for title in titles)
 
 
 def test_demote_dwarfed_episode_groups_strips_movie_disc_labels(
@@ -1035,14 +1035,14 @@ def test_demote_dwarfed_episode_groups_strips_movie_disc_labels(
     ):
         title = Title(index, tmp_path / "v.vob", f"Title {index}", duration)
         title.dvd_title_id = index
-        title.dvd_episode_number = episode
+        title.episode_number = episode
         if index == 1:
-            title.dvd_play_all = True
+            title.play_all = True
         titles.append(title)
 
     dvdbuild._demote_dwarfed_episode_groups(titles, config=Config(min_duration=60))
 
-    assert all(title.dvd_episode_number is None for title in titles)
+    assert all(title.episode_number is None for title in titles)
 
 
 def test_demote_dwarfed_episode_groups_keeps_series_discs(tmp_path: Path) -> None:
@@ -1057,14 +1057,14 @@ def test_demote_dwarfed_episode_groups_keeps_series_discs(tmp_path: Path) -> Non
     ):
         title = Title(index, tmp_path / "v.vob", f"Title {index}", duration)
         title.dvd_title_id = index
-        title.dvd_episode_number = episode
+        title.episode_number = episode
         title.dvd_episode_part = part
         if index == 3:
-            title.dvd_play_all = True
+            title.play_all = True
         titles.append(title)
 
     dvdbuild._demote_dwarfed_episode_groups(titles, config=Config(min_duration=60))
 
-    assert [title.dvd_episode_number for title in titles] == [1, 1, None, None]
+    assert [title.episode_number for title in titles] == [1, 1, None, None]
     assert titles[0].dvd_episode_part == "a"
     assert titles[1].dvd_episode_part == "b"

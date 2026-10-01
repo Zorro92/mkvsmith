@@ -343,15 +343,13 @@ def _classify_default_episode_title(default_title: Title, plan: _DvdPgcPlan) -> 
     if plan.default_pgc_num is not None and plan.default_pgc_num in set(
         plan.episode_pgcs
     ):
-        default_title.dvd_episode_number = (
-            plan.episode_pgcs.index(plan.default_pgc_num) + 1
-        )
+        default_title.episode_number = plan.episode_pgcs.index(plan.default_pgc_num) + 1
         if plan.episode_parts is not None:
             part = plan.episode_parts.get(plan.default_pgc_num)
             if part is not None:
-                default_title.dvd_episode_number, default_title.dvd_episode_part = part
+                default_title.episode_number, default_title.dvd_episode_part = part
     elif plan.play_all_pgc is not None and plan.default_pgc_num == plan.play_all_pgc:
-        default_title.dvd_play_all = True
+        default_title.play_all = True
 
 
 def _demote_dwarfed_episode_groups(
@@ -373,20 +371,20 @@ def _demote_dwarfed_episode_groups(
     episode_titles = [
         title
         for title in titles
-        if title.dvd_episode_number is not None and not title.dvd_play_all
+        if title.episode_number is not None and not title.play_all
     ]
     if not episode_titles:
         return
     group_max = max(title.duration_seconds for title in episode_titles)
     for title in titles:
         if (
-            title.dvd_episode_number is not None
-            or title.dvd_play_all
+            title.episode_number is not None
+            or title.play_all
             or title.duration_seconds < group_max * _EPISODE_DWARF_RATIO
         ):
             continue
         for episode in episode_titles:
-            episode.dvd_episode_number = None
+            episode.episode_number = None
             episode.dvd_episode_part = None
         log_info(
             tr(
@@ -421,8 +419,8 @@ def _label_cross_vts_episodes(
     for title in titles:
         if (
             title.dvd_title_id is None
-            or title.dvd_episode_number is not None
-            or title.dvd_play_all
+            or title.episode_number is not None
+            or title.play_all
             or title.dvd_edition_label is not None
             or title.duration_seconds < minimum_duration
         ):
@@ -458,7 +456,7 @@ def _label_cross_vts_episodes(
     for title in titles:
         if (
             title.dvd_title_id in group_ids
-            or title.dvd_play_all
+            or title.play_all
             or title.duration_seconds < minimum_duration
         ):
             continue
@@ -468,7 +466,7 @@ def _label_cross_vts_episodes(
     for episode_index, title in enumerate(
         sorted(best_group, key=lambda t: t.dvd_title_id or 0), start=1
     ):
-        title.dvd_episode_number = episode_index
+        title.episode_number = episode_index
     log_info(
         tr(
             "Detected {n} episode(s) across {m} title(s)",
@@ -528,7 +526,7 @@ def _append_dvd_episode_titles(
         title = build_title(pgc_num, f"{title_name} - {label}")
         if title is None:
             continue
-        title.dvd_episode_number = part_number
+        title.episode_number = part_number
         title.dvd_episode_part = part_letter
         titles.append(title)
         log_debug(f"  {label}: PGC {pgc_num} ({title.duration_seconds:.0f}s)")
@@ -536,7 +534,7 @@ def _append_dvd_episode_titles(
     if plan.play_all_pgc is not None and plan.play_all_pgc != plan.default_pgc_num:
         title = build_title(plan.play_all_pgc, f"{title_name} - Play All")
         if title is not None:
-            title.dvd_play_all = True
+            title.play_all = True
             titles.append(title)
             log_debug(
                 f"  Play all: PGC {plan.play_all_pgc} ({title.duration_seconds:.0f}s)"

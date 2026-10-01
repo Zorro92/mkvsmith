@@ -73,7 +73,8 @@ uv run ./main.py /path/to/disc -t 1
 uv run ./main.py /path/to/disc -a
 
 # -m is smart: main feature on movies, all episodes on series discs
-# (within-VTS PGC clusters and one-episode-per-VTS authoring both supported)
+# (DVD: within-VTS PGC clusters and one-episode-per-VTS authoring;
+#  Blu-ray: one playlist per episode, e.g. with a "play all" playlist)
 uv run ./main.py /path/to/disc -m
 
 # write output to a specific directory (second positional argument)

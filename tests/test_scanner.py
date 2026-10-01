@@ -25,9 +25,9 @@ def make_title(index: int, duration: float, **attributes: object) -> Title:
 
 
 def test_sort_and_reindex_titles_prioritizes_episodes_and_demotes_play_all() -> None:
-    episode_2 = make_title(0, 100.0, dvd_episode_number=2)
-    episode_1 = make_title(1, 100.0, dvd_episode_number=1)
-    play_all = make_title(2, 300.0, dvd_play_all=True)
+    episode_2 = make_title(0, 100.0, episode_number=2)
+    episode_1 = make_title(1, 100.0, episode_number=1)
+    play_all = make_title(2, 300.0, play_all=True)
     long_extra = make_title(3, 200.0)
     short_extra = make_title(4, 100.0)
 

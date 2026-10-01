@@ -42,7 +42,7 @@ def make_title(index: int, *, episode: int | None = None) -> Title:
     title.streams = [
         Stream(index=0, stream_type=StreamType.VIDEO, codec="h264", pid=4113)
     ]
-    title.dvd_episode_number = episode
+    title.episode_number = episode
     return title
 
 

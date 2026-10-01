@@ -1073,6 +1073,18 @@ def _apply_stn_languages(
 # =============================================================================
 
 
+# Placeholder bdmt.xml names some authoring tools leave behind (compared
+# lowercase, letters and digits only). Treated as no name, so the folder
+# name is used instead: The Big Bang Theory S1 calls both discs "Blu-ray".
+_GENERIC_DISC_NAMES = frozenset(
+    {"bluray", "bluraydisc", "bd", "bdrom", "bdmv", "disc", "untitled", "noname"}
+)
+
+
+def _is_generic_disc_name(name: str) -> bool:
+    return re.sub(r"[^a-z0-9]", "", name.lower()) in _GENERIC_DISC_NAMES
+
+
 def _parse_bdmv_disc_name(bdmv_root: Path) -> str | None:
     meta_dir = bdmv_root / "META" / "DL"
     if not meta_dir.is_dir():
@@ -1082,6 +1094,8 @@ def _parse_bdmv_disc_name(bdmv_root: Path) -> str | None:
             for elem in ET.parse(xml_file).iter():
                 if elem.tag.endswith("name") and elem.text and elem.text.strip():
                     raw = elem.text.strip()
+                    if _is_generic_disc_name(raw):
+                        continue
                     # Preserve spaces but convert newlines to " - "
                     return (
                         raw.replace("\r\n", " - ")

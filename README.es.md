@@ -78,6 +78,8 @@ uv run ./main.py /ruta/al/disco -t 1
 uv run ./main.py /ruta/al/disco -a
 
 # -m es inteligente: película principal en cine, episodios en series
+# (DVD: grupos de PGC y un episodio por VTS; Blu-ray: una playlist por
+#  episodio, p. ej. con una playlist «reproducir todo»)
 uv run ./main.py /ruta/al/disco -m
 
 # escribe la salida en un directorio concreto (segundo argumento posicional)

@@ -138,7 +138,7 @@ def test_build_combines_clip_union_in_first_appearance_order() -> None:
     assert combined.clip_durations == [5.0, 5.0, 5.0, 2.0, 2.0]
     assert combined.duration_seconds == 19.0
     assert combined.estimated_size_bytes == 5000
-    assert [e.name for e in combined.editions] == ["T", "Playlist 00801"]
+    assert [e.name for e in combined.editions] == ["T", "Edition 2"]
     assert combined.editions[0].is_default and not combined.editions[1].is_default
     assert [e.uid for e in combined.editions] == [1, 2]
     # Edition 1 = A,B,C = 15s; edition 2 = A,X,B,C,Y = 19s.

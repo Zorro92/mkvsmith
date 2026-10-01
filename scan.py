@@ -619,7 +619,7 @@ def _edition_name(
         # The default edition carries the movie/disc name, not the scanner's
         # generic " - Title N" list label.
         return first.disc_name or first.name
-    return f"Playlist {title.playlist_name}"
+    return tr("Edition {n}", n=edition_index + 1)
 
 
 def _build_edition_specs(

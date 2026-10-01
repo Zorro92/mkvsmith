@@ -12,7 +12,6 @@ import pytest
 
 import cli
 import models
-import scan
 import tagger
 from cli import _InteractiveRipper, _InteractiveTagState
 from models import Config, DiscMetadata, RuntimeState, Stream, StreamType, Title
@@ -54,7 +53,6 @@ def make_ripper(tmp_path: Path) -> _InteractiveRipper:
         creator,
         _InteractiveTagState(False, False, None),
         [],
-        debug=False,
     )
 
 
@@ -122,7 +120,7 @@ def test_interactive_tag_flag_skips_prompts(monkeypatch: pytest.MonkeyPatch) -> 
     assert prompts == []
 
 
-def test_interactive_edition_groups_only_detects_in_debug(
+def test_interactive_edition_groups_detects_without_debug(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     titles = [make_title(0), make_title(1)]
@@ -132,11 +130,8 @@ def test_interactive_edition_groups_only_detects_in_debug(
         calls.append(detected)
         return [titles]
 
-    monkeypatch.setattr(scan, "_detect_edition_groups", record_detect)
-    assert cli._interactive_edition_groups(titles, debug=False) == []
-    assert calls == []
-
-    assert cli._interactive_edition_groups(titles, debug=True) == [titles]
+    monkeypatch.setattr(cli, "_detect_edition_groups", record_detect)
+    assert cli._interactive_edition_groups(titles) == [titles]
     assert calls == [titles]
     assert "Titles 0, 1 look like editions" in capsys.readouterr().out
 
@@ -294,13 +289,11 @@ def test_interactive_mode_uses_injected_runtime_state(
             creator: cli.MKVCreator,
             tagging: _InteractiveTagState,
             edition_groups: list[list[Title]],
-            debug: bool,
         ) -> None:
             self.titles = titles
             self.creator = creator
             self.tagging = tagging
             self.edition_groups = edition_groups
-            self.debug = debug
             self.completed = False
             rippers.append(self)
 
@@ -349,7 +342,6 @@ def test_interactive_mode_uses_injected_runtime_state(
     assert rippers[0].titles == [title]
     assert rippers[0].tagging.options is runtime_state.tag_options
     assert rippers[0].edition_groups == []
-    assert rippers[0].debug is False
     assert rippers[0].completed is True
 
 
@@ -374,3 +366,28 @@ def test_interactive_main_feature_falls_back_to_episodes(
     ripper._handle_main_feature()
 
     assert ripped == [episode]
+
+
+def test_print_prompt_always_lists_multi_edition(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ripper = make_ripper(tmp_path)
+    ripper.edition_groups = []
+    ripper._print_prompt(False)
+    without = capsys.readouterr().out
+    assert "me N N ...=multi-edition rip" in without
+    assert "auto-detect" not in without
+
+    ripper.edition_groups = [[make_title(0), make_title(1)]]
+    ripper._print_prompt(False)
+    assert "auto-detect" in capsys.readouterr().out
+
+
+def test_default_edition_names_numbers_non_default_editions() -> None:
+    first = make_title(0)
+    first.disc_name = "Movie"
+    second = make_title(1)
+    assert cli._default_edition_names([first, second], [0, 1]) == [
+        "Movie",
+        "Edition 2",
+    ]

@@ -638,6 +638,7 @@ def _verify_edition_append_pids(
     """
     if not title.editions or len(inputs) < 2:
         return
+    log_info(tr("Verifying track layouts across {n} clips...", n=len(inputs)))
     wanted: dict[int, str] = {}
     for entry in mapped:
         stream = entry["stream"]
@@ -1029,6 +1030,7 @@ def _drop_incompatible_append_inputs(
     """
     if len(inputs) < 2:
         return inputs, []
+    log_info(tr("Checking {n} clips for append compatibility...", n=len(inputs)))
     expected = _audio_channels_by_track_id(ident_tracks)
     wanted_ids = {
         entry["input_id"]
@@ -1374,6 +1376,7 @@ def _prepare_seamless_append(
         log_debug("Seamless append: muxed audio tracks lack unique BD PIDs")
         return None
     try:
+        log_info(tr("Scanning seamless joints across {n} clips...", n=len(inputs)))
         tails = [scan_clip_tail(path, pids) for path in inputs]
     except OSError as exc:
         log_debug(f"Seamless append: clip scan failed: {exc}")
@@ -2173,6 +2176,24 @@ class MKVCreator:
 
         extract_temp_base = temp_base_for_title(estimated_size, self.config)
         if is_iso:
+            n_files = len(title.iso_internal_paths)
+            if estimated_size:
+                size_gb = f"{estimated_size / 1e9:.1f}"
+                log_info(
+                    tr(
+                        "Extracting {n} files from ISO ({size} GB); "
+                        "this may take a while...",
+                        n=n_files,
+                        size=size_gb,
+                    )
+                )
+            else:
+                log_info(
+                    tr(
+                        "Extracting {n} files from ISO; this may take a while...",
+                        n=n_files,
+                    )
+                )
             inputs = _extract_full_for_muxing(
                 title.source_file,
                 title.iso_internal_paths,

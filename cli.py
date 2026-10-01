@@ -67,7 +67,7 @@ from i18n import (
     detect_locale_language,
 )
 from settings import SETTINGS_PATH, load_settings, save_settings
-from scan import Scanner, _get_notable_titles, pick_main_feature
+from scan import Scanner, _detect_edition_groups, _get_notable_titles, pick_main_feature
 from mkv import MKVCreator
 from discdb import DiscDbError
 
@@ -328,13 +328,7 @@ class _InteractiveTagState:
             self.options.art = _prompt_art_choice(self.prompts)
 
 
-def _interactive_edition_groups(titles: list[Title], debug: bool) -> list[list[Title]]:
-    edition_groups: list[list[Title]] = []
-    if not debug:
-        return edition_groups
-
-    from scan import _detect_edition_groups
-
+def _interactive_edition_groups(titles: list[Title]) -> list[list[Title]]:
     edition_groups = _detect_edition_groups(titles)
     for group in edition_groups:
         indices = ", ".join(str(titles.index(title)) for title in group)
@@ -356,13 +350,11 @@ class _InteractiveRipper:
         creator: MKVCreator,
         tagging: _InteractiveTagState,
         edition_groups: list[list[Title]],
-        debug: bool,
     ):
         self.titles = titles
         self.creator = creator
         self.tagging = tagging
         self.edition_groups = edition_groups
-        self.debug = debug
 
     def rip_index(self, idx: int, stream_ids: list[str] | None = None) -> None:
         if not 0 <= idx < len(self.titles):
@@ -519,6 +511,8 @@ class _InteractiveRipper:
             )
         if self.edition_groups:
             print(tr("me N N ...=multi-edition rip (no args = auto-detect)"))
+        else:
+            print(tr("me N N ...=multi-edition rip"))
 
     def run(self) -> None:
         has_episodes = any(_is_episode_title(title) for title in self.titles)
@@ -555,8 +549,7 @@ def interactive_mode(
         titles,
         creator,
         tagging,
-        _interactive_edition_groups(titles, state.logger.debug_enabled),
-        state.logger.debug_enabled,
+        _interactive_edition_groups(titles),
     ).run()
 
 
@@ -1077,14 +1070,14 @@ def _prepare_multi_edition(
 
 
 def _default_edition_names(titles: list[Title], indices: list[int]) -> list[str]:
-    """Default edition labels: movie name first, playlist names after."""
+    """Default edition labels: movie name first, numbered editions after."""
     names: list[str] = []
     for pos, idx in enumerate(indices):
         t = titles[idx]
         if pos == 0:
             names.append(t.disc_name or t.name)
         else:
-            names.append(f"Playlist {t.playlist_name}" if t.playlist_name else t.name)
+            names.append(tr("Edition {n}", n=pos + 1))
     return names
 
 

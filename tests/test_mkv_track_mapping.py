@@ -627,10 +627,12 @@ def test_prepare_inputs_uses_iso_and_injected_registries(
         temp_base: Path | None,
         temp_dirs: list[Path] | None,
         symlinks: list[Path] | None,
+        expected_bytes: int,
     ) -> list[Path]:
         calls["temp_base"] = temp_base
         calls["temp_dirs"] = temp_dirs
         calls["symlinks"] = symlinks
+        calls["expected_bytes"] = expected_bytes
         return [extracted]
 
     def fake_temp_base(_size: int, _config: models.Config | None) -> Path | None:
@@ -648,6 +650,7 @@ def test_prepare_inputs_uses_iso_and_injected_registries(
         "temp_base": tmp_path / "spill",
         "temp_dirs": runtime_state.cleanup.temp_dirs,
         "symlinks": runtime_state.cleanup.symlinks,
+        "expected_bytes": 456,
     }
 
 

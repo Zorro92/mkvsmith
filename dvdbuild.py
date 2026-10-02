@@ -553,6 +553,7 @@ def _append_dvd_episode_titles(
 
 def _append_dvd_alternate_editions(
     titles: list[Title],
+    default_title: Title,
     title_name: str,
     plan: _DvdPgcPlan,
     build_title: Callable[[int, str], Title | None],
@@ -561,8 +562,10 @@ def _append_dvd_alternate_editions(
 
     Shared driver for every DVD source mode (see
     ``_append_dvd_episode_titles``): genuine re-cuts of the default title are
-    labelled "Edition N" (numbered by editions only); unrelated substantial
-    PGCs such as bonus features sharing the VTS get a neutral "PGC N" label.
+    labelled "Edition N" (numbered by editions only), and once there is one
+    the default title is "Edition 1", so every version reads as an edition.
+    Unrelated substantial PGCs such as bonus features sharing the VTS get a
+    neutral "PGC N" label.
     """
     edition_offset = 2
     for pgc_num, is_edition in plan.editions:
@@ -571,8 +574,13 @@ def _append_dvd_alternate_editions(
         if title is None:
             continue
         title.dvd_edition_label = label
+        title.dvd_is_edition = is_edition
         titles.append(title)
         if is_edition:
+            if edition_offset == 2:
+                default_title.dvd_edition_label = "Edition 1"
+                default_title.dvd_is_edition = True
+                default_title.name = f"{title_name} - Edition 1"
             edition_offset += 1
         log_debug(
             f"  {'Alternate edition' if is_edition else 'Additional PGC'}: "
@@ -613,7 +621,9 @@ def _append_dvd_pgc_titles(
             titles, plan, default_title, layout.title_name, layout.vts, build_title
         )
     else:
-        _append_dvd_alternate_editions(titles, layout.title_name, plan, build_title)
+        _append_dvd_alternate_editions(
+            titles, default_title, layout.title_name, plan, build_title
+        )
 
 
 def _ensure_dvd_subtitle_streams(title: "Title", sub_by_id: dict[int, str]) -> None:
@@ -1116,6 +1126,8 @@ def _build_title_from_ifo(
             f"No streams from IFO for {ifo_path.name}, falling back to mkvmerge probe"
         )
         return _create_title(titles, first_vob, name, config=config)
+    title.dvd_vts_number = vts
+    title.dvd_chain_pgc = pgc_number or _default_pgc_number(ifo_data)
 
     _append_undeclared_dvd_subpictures(
         title, ifo_data, vob_parts, duration, config, scan_cache

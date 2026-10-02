@@ -204,13 +204,13 @@ def test_scan_dvd_source_builds_alternate_editions(
 
     assert metadata.name is None
     assert [title.name for title in titles] == [
-        "Title 1",
+        "Title 1 - Edition 1",
         "Title 1 - Edition 2",
         "Title 1 - Edition 3",
     ]
     assert [title.disc_name for title in titles] == [None, None, None]
     assert [title.dvd_edition_label for title in titles] == [
-        None,
+        "Edition 1",
         "Edition 2",
         "Edition 3",
     ]
@@ -476,16 +476,17 @@ def test_scan_dvd_source_labels_plain_pgcs_not_editions(
 
     titles, _metadata = dvdbuild._scan_dvd_source(source)
 
-    # Edition numbering counts only genuine re-cuts; unrelated substantial
-    # PGCs (bonus features sharing the VTS) get a neutral "PGC N" label.
+    # Every genuine re-cut is an edition, the default version included
+    # ("Edition 1"); unrelated substantial PGCs (bonus features sharing the
+    # VTS) get a neutral "PGC N" label.
     assert [title.name for title in titles] == [
-        "Title 1",
+        "Title 1 - Edition 1",
         "Title 1 - Edition 2",
         "Title 1 - PGC 3",
         "Title 1 - Edition 3",
     ]
     assert [title.dvd_edition_label for title in titles] == [
-        None,
+        "Edition 1",
         "Edition 2",
         "PGC 3",
         "Edition 3",

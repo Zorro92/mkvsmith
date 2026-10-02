@@ -251,14 +251,68 @@ def test_title_list_hides_the_series_base(capsys: pytest.CaptureFixture[str]) ->
     other = _title(1)
     other.name = "Sgt. Frog - S01D01"
 
-    base = cli._series_list_base([episode, other], metadata)
+    base = cli._list_name_base([episode, other], metadata)
 
     assert base == "Sgt. Frog - S01D01"
     assert cli._title_list_name(episode, 40, base) == "Episode 01"
     assert cli._title_list_name(other, 40, base) == "Sgt. Frog - S01D01"
-    # Movie discs (no episodes) keep their names as they are.
-    assert cli._series_list_base([other], metadata) is None
+    # Without episodes the disc name is the base.
+    assert cli._list_name_base([other], metadata) == "Sgt. Frog Season 1 Disc 1"
     cli.display_titles([episode, other], metadata, Config(show_all=True))
     out = capsys.readouterr().out
     assert "SCANNED TITLES - Sgt. Frog - S01D01" in out
     assert "Episode 01" in out and "S01D01 - Episode" not in out
+
+
+def test_title_list_tells_editions_apart(capsys: pytest.CaptureFixture[str]) -> None:
+    import cli
+    from models import DiscMetadata
+
+    metadata = DiscMetadata(name="Beauty and the Beast Se 1991")
+    titles = [_title(i) for i in range(3)]
+    titles[0].name = "Beauty and the Beast Se 1991 - Edition 3"
+    titles[1].name = "Beauty and the Beast Se 1991 - Edition 2"
+    titles[2].name = "Beauty and the Beast Se 1991"
+
+    base = cli._list_name_base(titles, metadata)
+
+    assert [cli._title_list_name(t, 20, base) for t in titles] == [
+        "Edition 3",
+        "Edition 2",
+        "Beauty and the Bea..",
+    ]
+
+
+def test_main_feature_keeps_its_edition_label(tmp_path: Path) -> None:
+    from scan import Scanner
+
+    source = tmp_path / "BEAUTY"
+    source.mkdir()
+    scanner = Scanner(source, runtime_state=RuntimeState())
+    scanner.disc_name = "Beauty and the Beast"
+    titles = [_title(i) for i in range(2)]
+    titles[0].duration_seconds = 5500.0  # the main feature
+    titles[0].dvd_edition_label = "Edition 1"
+    titles[1].dvd_edition_label = "Edition 2"
+    scanner.titles = titles
+
+    scanner._apply_disc_name()
+
+    assert [t.name for t in scanner.titles] == [
+        "Beauty and the Beast - Edition 1",
+        "Beauty and the Beast - Edition 2",
+    ]
+
+
+def test_source_column_shows_playlist_or_dvd_chain() -> None:
+    import cli
+
+    bluray, dvd, unknown = _title(0), _title(1), _title(2)
+    bluray.playlist_name = "00800"
+    dvd.dvd_vts_number, dvd.dvd_chain_pgc = 9, 2
+
+    assert [cli._title_source_id(t) for t in (bluray, dvd, unknown)] == [
+        "00800",
+        "9/2",
+        "",
+    ]

@@ -8,7 +8,7 @@ import pytest
 
 import disc_reader
 import scan
-from models import DiscMetadata, Stream, StreamType, Title
+from models import DiscMetadata, RuntimeState, Stream, StreamType, Title
 
 
 def make_title(index: int, duration: float, **attributes: object) -> Title:
@@ -457,3 +457,104 @@ def test_playlist_preference_neutral_without_numbers() -> None:
     second = _playlist_title(1, None, 8600.0)
 
     assert scan.pick_main_feature([first, second]) == 0
+
+
+def _feature(index: int, duration: float = 5400.0, **attributes: object) -> Title:
+    title = make_title(index, duration, **attributes)
+    title.streams += [
+        Stream(index=1, stream_type=StreamType.AUDIO, codec="ac3", language="eng"),
+        Stream(index=2, stream_type=StreamType.AUDIO, codec="ac3", language="fra"),
+    ]
+    return title
+
+
+def test_titles_list_in_disc_order() -> None:
+    bluray = [
+        _feature(i, 3000.0 + i * 100, playlist_name=name)
+        for i, name in enumerate(["00802", "00800", "00801"])
+    ]
+    scan._sort_and_reindex_titles(bluray)
+    assert [t.playlist_name for t in bluray] == ["00800", "00801", "00802"]
+
+    dvd = [
+        _feature(0, 5704.0, dvd_vts_number=9, dvd_chain_pgc=3),
+        _feature(1, 5507.0, dvd_vts_number=9, dvd_chain_pgc=2),
+        _feature(2, 5466.0, dvd_vts_number=9, dvd_chain_pgc=1),
+        _feature(3, 0.0, dvd_vts_number=1, dvd_chain_pgc=1),  # hidden stub
+    ]
+    scan._sort_and_reindex_titles(dvd)
+    # Listed titles number from 0; the hidden stub goes last.
+    assert [(t.dvd_vts_number, t.dvd_chain_pgc) for t in dvd] == [
+        (9, 1),
+        (9, 2),
+        (9, 3),
+        (1, 1),
+    ]
+
+
+def test_editions_only_for_the_main_features_vts(tmp_path: Path) -> None:
+    main = _feature(0, 5600.0, dvd_vts_number=1, dvd_chain_pgc=1)
+    main.dvd_edition_label, main.dvd_is_edition = "Edition 1", True
+    cut = _feature(1, 5500.0, dvd_vts_number=1, dvd_chain_pgc=2, dvd_pgc_number=2)
+    cut.dvd_edition_label, cut.dvd_is_edition = "Edition 2", True
+    bonus = _feature(2, 2500.0, dvd_vts_number=2, dvd_chain_pgc=1)
+    bonus.streams = bonus.streams[:2]
+    bonus.name = "Disc - Edition 1"
+    bonus.dvd_edition_label, bonus.dvd_is_edition = "Edition 1", True
+    part = _feature(3, 2500.0, dvd_vts_number=2, dvd_chain_pgc=4, dvd_pgc_number=4)
+    part.streams = part.streams[:2]
+    part.name = "Disc - Edition 2"
+    part.dvd_edition_label, part.dvd_is_edition = "Edition 2", True
+    scanner = scan.Scanner(tmp_path, runtime_state=RuntimeState())
+    scanner.titles = [main, cut, bonus, part]
+
+    scanner._settle_dvd_editions()
+
+    assert [t.dvd_edition_label for t in scanner.titles] == [
+        "Edition 1",
+        "Edition 2",
+        None,
+        "PGC 4",
+    ]
+    assert (bonus.name, part.name) == ("Disc", "Disc - PGC 4")
+
+
+@pytest.mark.parametrize(
+    ("attributes", "label"),
+    [
+        ({"duration_seconds": 0.0}, "Empty"),
+        ({"duration_seconds": 12.0, "estimated_size_bytes": 10_240}, "Empty"),
+        ({"duration_seconds": 12.0, "estimated_size_bytes": 9_000_000}, "Short clip"),
+        ({"duration_seconds": 29.0}, "Short clip"),
+        ({"duration_seconds": 30.0}, None),
+        (
+            {
+                "duration_seconds": 18000.0,
+                "playlist_name": "00028",
+                "iso_internal_paths": ["BDMV/STREAM/00005.m2ts"] * 6,
+                "clip_durations": [3000.0] * 6,
+            },
+            "Menu loop",
+        ),
+    ],
+)
+def test_short_title_labels(attributes: dict[str, object], label: str | None) -> None:
+    title = make_title(0, 60.0)
+    for name, value in attributes.items():
+        setattr(title, name, value)
+    assert scan._short_title_label(title) == label
+
+
+def test_placeholders_are_named_by_label(tmp_path: Path) -> None:
+    scanner = scan.Scanner(tmp_path, runtime_state=RuntimeState())
+    scanner.disc_name = "Beauty and the Beast"
+    feature = _feature(0)
+    stub = make_title(1, 0.0)
+    scanner.titles = [feature, stub]
+
+    scanner._apply_disc_name()
+
+    assert [t.name for t in scanner.titles] == [
+        "Beauty and the Beast",
+        "Beauty and the Beast - Empty",
+    ]

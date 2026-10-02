@@ -717,6 +717,12 @@ class Title:
     # multiple substantial PGCs (seamless-branching editions) so each can be
     # exposed and ripped as its own separate title.
     dvd_pgc_number: int | None = None
+    # Where the title plays from, for display: its VTS (VTS_09_*.VOB -> 9)
+    # and the PGC (program chain) it actually plays, which for the default
+    # title (dvd_pgc_number None) is the one VTS_TTN 1 points at. The DVD
+    # counterpart of a Blu-ray title's playlist_name.
+    dvd_vts_number: int | None = None
+    dvd_chain_pgc: int | None = None
     # Human-readable label for a substantial PGC exposed as its own title,
     # set alongside ``dvd_pgc_number``: "Edition N" when the PGC re-cuts the
     # default title's footage (seamless branching), or "PGC N" for an
@@ -725,6 +731,10 @@ class Title:
     # the generic "<disc> - Title N" label instead of discarding it, so
     # alternate PGCs stay visually distinguishable in the title listing.
     dvd_edition_label: str | None = None
+    # Set with an "Edition N" label: one of several versions of the same
+    # film in a VTS. Only the main feature's VTS keeps it (see
+    # ``Scanner._settle_dvd_editions``); elsewhere it reverts to "PGC N".
+    dvd_is_edition: bool = False
     # 1-indexed episode number for TV-series discs, detected on the disc
     # itself: DVD PGCs (``_detect_episode_pgcs``), one-episode-per-VTS DVDs
     # (``_label_cross_vts_episodes``) or Blu-ray episode playlists

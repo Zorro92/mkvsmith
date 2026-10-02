@@ -124,6 +124,8 @@ _ES: dict[str, str] = {
     "Choice": "Opción",
     "Using language: {name} ({code})": "Usando idioma: {name} ({code})",
     "Settings: {problem}": "Ajustes: {problem}",
+    "PGC": "PGC",
+    "VTS/PGC": "VTS/PGC",
     "SOURCE": "ORIGEN",
     "OUTPUT": "SALIDA",
     "%(prog)s [options] SOURCE [OUTPUT]": "%(prog)s [opciones] ORIGEN [SALIDA]",

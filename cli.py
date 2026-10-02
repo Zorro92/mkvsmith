@@ -113,25 +113,35 @@ def _truncate_display_text(text: str, width: int) -> str:
     return text[: width - 2].rstrip() + ".."
 
 
-def _series_list_base(
+def _title_source_id(title: Title) -> str:
+    """Blu-ray playlist ("00800") or DVD VTS/PGC ("9/2"); "" when unknown."""
+    if title.playlist_name:
+        return title.playlist_name
+    if title.dvd_vts_number is not None and title.dvd_chain_pgc is not None:
+        return f"{title.dvd_vts_number}/{title.dvd_chain_pgc}"
+    return ""
+
+
+def _list_name_base(
     titles: list[Title], disc_metadata: DiscMetadata | None
 ) -> str | None:
-    """A series disc's shared name base ("Show - S01D01"), else None.
+    """The name base the disc's titles share, or None when unknown.
 
-    The title list shows it once in its header and drops it from each row,
-    so narrow screens see "Episode 3" rather than a truncated prefix.
+    "Show - S01D01" on a series disc, the disc name otherwise. The title
+    list shows it once in its header and drops it from each row, so narrow
+    screens see "Episode 3" or "Edition 2" rather than a truncated prefix.
     """
     from episode_naming import series_name
 
     if disc_metadata is None or not disc_metadata.name:
         return None
-    if not any(t.is_episode or t.play_all or t.packed_segments for t in titles):
-        return None
-    return series_name(disc_metadata.series_info, disc_metadata.name)
+    if any(t.is_episode or t.play_all or t.packed_segments for t in titles):
+        return series_name(disc_metadata.series_info, disc_metadata.name)
+    return disc_metadata.name
 
 
 def _title_list_name(title: Title, width: int, base: str | None = None) -> str:
-    """*title*'s name for the list, without the series base (see above)."""
+    """*title*'s name for the list, without the shared base (see above)."""
     name = title.name
     if base and name.startswith(base + " - "):
         name = name[len(base) + 3 :]
@@ -166,11 +176,15 @@ def display_titles(
     summary_width = max(
         [len("Streams"), *(len(title.streams_summary) for title in visible)]
     )
-    playlists = [title.playlist_name for title in visible if title.playlist_name]
+    # Where each title plays from: its Blu-ray playlist, or on DVDs its
+    # VTS/PGC (program chain), the DVD counterpart of a playlist.
+    playlists = [_title_source_id(title) for title in visible]
+    playlists = [value for value in playlists if value]
     show_playlist = bool(playlists)
-    hdr_playlist = tr("PL")
+    dvd_chains = not any(title.playlist_name for title in visible)
+    hdr_playlist = tr("PGC") if dvd_chains else tr("PL")
     playlist_width = max([len(hdr_playlist), *(len(value) for value in playlists)])
-    full_playlist_header = tr("Playlist")
+    full_playlist_header = tr("VTS/PGC") if dvd_chains else tr("Playlist")
     full_playlist_width = max(playlist_width, len(full_playlist_header))
     if (
         show_playlist
@@ -183,8 +197,8 @@ def display_titles(
     else:
         nw = max(w - summary_width - index_width - 16, 8)
     rule_w = w
-    series_base = _series_list_base(titles, disc_metadata)
-    disc_name = series_base or (disc_metadata.name if disc_metadata else None)
+    name_base = _list_name_base(titles, disc_metadata)
+    disc_name = name_base
     print("\n" + "═" * rule_w)
     print(tr("  SCANNED TITLES") + (f" - {disc_name}" if disc_name else ""))
     for identifier_line in _disc_identifier_lines(disc_metadata):
@@ -199,8 +213,8 @@ def display_titles(
         f"{playlist_header}{hdr_streams}\n" + "─" * rule_w
     )
     for t in visible:
-        n = _title_list_name(t, nw, series_base)
-        playlist = t.playlist_name or ""
+        n = _title_list_name(t, nw, name_base)
+        playlist = _title_source_id(t)
         playlist_value = f"{playlist:<{playlist_width}}  " if show_playlist else ""
         if series_disc:
             is_episode = _is_episode_title(t) and not t.play_all

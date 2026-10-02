@@ -1309,9 +1309,27 @@ def _build_iso_bluray_playlist_title(
     return title
 
 
-def _scanned_title_sort_key(title: Title) -> tuple[int, int, str, float]:
-    # Episodes first (part "a" before part "b" within one episode), other
-    # titles by duration, then the play-all chain last.
+def _source_order(title: Title) -> tuple[int, int, int]:
+    """Where *title* sits on the disc: Blu-ray playlist number, DVD VTS/PGC,
+    or HD DVD title number. Titles without one sort after those with one.
+    """
+    if title.playlist_name and title.playlist_name.isdigit():
+        return (0, int(title.playlist_name), 0)
+    if title.dvd_vts_number is not None:
+        return (0, title.dvd_vts_number, title.dvd_chain_pgc or 0)
+    if title.hddvd_title_number is not None:
+        return (0, title.hddvd_title_number, 0)
+    return (1, 0, 0)
+
+
+def _scanned_title_sort_key(
+    title: Title,
+) -> tuple[int, int, int, str, tuple[int, int, int], float]:
+    # Listed titles before hidden ones (menus, stubs), so the list numbers
+    # from 0. Within each: episodes first, in episode order (part "a" before
+    # part "b"); other titles in disc order (playlist 00800, 00801...; DVD
+    # 9/1, 9/2...), the longest first where the disc gives no order; the
+    # play-all chain last.
     if title.play_all:
         group = 2
     elif title.episode_number is not None:
@@ -1319,9 +1337,11 @@ def _scanned_title_sort_key(title: Title) -> tuple[int, int, str, float]:
     else:
         group = 1
     return (
+        0 if _is_notable_title(title) else 1,
         group,
         title.episode_number if title.episode_number is not None else 0,
         title.dvd_episode_part or "",
+        _source_order(title),
         -title.duration_seconds,
     )
 
@@ -1470,6 +1490,7 @@ class Scanner:
         _label_cross_vts_episodes(self.titles, self.config)
         _label_bluray_episodes(self.titles, self.config)
         _sort_and_reindex_titles(self.titles)
+        self._settle_dvd_editions()
         from packed_episodes import annotate_packed_titles
 
         # Packed playlists make a series disc, which naming needs to know.
@@ -1481,6 +1502,33 @@ class Scanner:
         # Naming adds the fallback name and series info after the early copy.
         self._runtime_state.disc_metadata = self.disc_metadata
         return self.titles
+
+    def _settle_dvd_editions(self) -> None:
+        """Keep "Edition N" only for versions of the main feature.
+
+        A VTS whose chains re-cut each other's footage is labelled as
+        editions while scanning, but only the main feature's VTS holds
+        versions of the film; bonus VTSs that do the same (a featurette in
+        parts) go back to neutral labels: "PGC N", nothing for their
+        default chain.
+        """
+        main_idx = pick_main_feature(self.titles, self.config)
+        main = next((t for t in self.titles if t.index == main_idx), None)
+        main_vts = main.dvd_vts_number if main is not None else None
+        for title in self.titles:
+            if not title.dvd_is_edition or (
+                main_vts is not None and title.dvd_vts_number == main_vts
+            ):
+                continue
+            old = title.dvd_edition_label
+            title.dvd_is_edition = False
+            title.dvd_edition_label = (
+                f"PGC {title.dvd_pgc_number}" if title.dvd_pgc_number else None
+            )
+            if old and title.name.endswith(f" - {old}"):
+                base = title.name[: -len(old) - 3]
+                label = title.dvd_edition_label
+                title.name = f"{base} - {label}" if label else base
 
     def _offer_packed_episodes(self) -> None:
         """Split playlists flagged as holding packed episodes, on request.
@@ -1567,10 +1615,14 @@ class Scanner:
                 )
             elif t.play_all:
                 t.name = play_all_title(series, self.disc_name)
+            elif label := _short_title_label(t):
+                t.name = f"{base} - {label}"
+            elif t.dvd_edition_label:
+                # Before the main-feature case: the main feature is often
+                # one of the editions ("Edition 1").
+                t.name = f"{base} - {t.dvd_edition_label}"
             elif t.index == main_idx:
                 t.name = base
-            elif t.dvd_edition_label:
-                t.name = f"{base} - {t.dvd_edition_label}"
             else:
                 t.name = base
 
@@ -2165,7 +2217,9 @@ class Scanner:
                 self.titles, plan, default_title, title_name, vts, build_title
             )
         else:
-            _append_dvd_alternate_editions(self.titles, title_name, plan, build_title)
+            _append_dvd_alternate_editions(
+                self.titles, default_title, title_name, plan, build_title
+            )
 
     def _build_iso_bluray_title(
         self,
@@ -2352,6 +2406,31 @@ def _label_bluray_episodes(titles: list[Title], config: Config | None = None) ->
     for key in chains:
         by_clips[key].play_all = True
     log_info(tr("Detected {n} episode playlist(s)", n=len(order)))
+
+
+_SHORT_CLIP_SECONDS = 30.0
+# Less video than this is a blank placeholder (DVD-R copies that drop the
+# extras keep their title sets with ~10 KB of video each); even a
+# few-second logo is far bigger.
+_EMPTY_TITLE_BYTES = 200_000
+
+
+def _short_title_label(title: Title) -> str | None:
+    """ "Menu loop", "Empty" or "Short clip" for titles that aren't content.
+
+    Detected, not guessed: a Blu-ray playlist replaying one clip is a menu
+    background; no duration or almost no video is a blank placeholder;
+    anything under 30 seconds is a logo, warning or trailer-length clip.
+    """
+    if _is_looped_playlist(title):
+        return "Menu loop"
+    if title.duration_seconds <= 0 or (
+        0 < title.estimated_size_bytes < _EMPTY_TITLE_BYTES
+    ):
+        return "Empty"
+    if title.duration_seconds < _SHORT_CLIP_SECONDS:
+        return "Short clip"
+    return None
 
 
 def _is_looped_playlist(title: Title) -> bool:

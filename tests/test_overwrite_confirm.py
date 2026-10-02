@@ -90,10 +90,23 @@ def test_force_overwrite_skips_prompt(
 ) -> None:
     out = tmp_path / "Movie_t00.mkv"
     out.write_bytes(b"existing")
-    config = Config(force_overwrite=True)
+    config = Config(overwrite="always")
     creator = mkv.MKVCreator(tmp_path, config=config, runtime_state=RuntimeState())
     monkeypatch.setattr(builtins, "input", _forbidden_input)
     creator._ensure_overwrite_allowed(out)
+
+
+def test_never_overwrite_skips_without_asking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    out = tmp_path / "Movie_t00.mkv"
+    out.write_bytes(b"existing")
+    config = Config(overwrite="never")
+    creator = mkv.MKVCreator(tmp_path, config=config, runtime_state=RuntimeState())
+    monkeypatch.setattr(builtins, "input", _forbidden_input)
+
+    with pytest.raises(RipError, match="not overwriting"):
+        creator._ensure_overwrite_allowed(out)
 
 
 def test_declined_overwrite_raises(
@@ -166,7 +179,7 @@ def test_force_flag_reaches_config(
     )
     cli._apply_parsed_args(cli._build_arg_parser().parse_args(), runtime_state)
 
-    assert runtime_state.config.force_overwrite is True
+    assert runtime_state.config.overwrite == "always"
 
 
 def test_force_defaults_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -176,5 +189,5 @@ def test_force_defaults_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     monkeypatch.setattr(sys, "argv", ["mkvsmith", str(tmp_path / "movie.iso")])
     cli._apply_parsed_args(cli._build_arg_parser().parse_args(), runtime_state)
 
-    assert runtime_state.config.force_overwrite is False
-    assert models.Config().force_overwrite is False
+    assert runtime_state.config.overwrite == "ask"
+    assert models.Config().overwrite == "ask"

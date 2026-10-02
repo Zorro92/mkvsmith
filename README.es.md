@@ -124,11 +124,50 @@ mkvsmith> q          # salir
 | `--ui-lang LANG` | Idioma de la interfaz (p. ej. `en`, `es`) |
 | `--debug` | Registro de depuración detallado |
 
+### Ajustes
+
+Tus valores predeterminados viven en `$XDG_CONFIG_HOME/mkvsmith/config.json`
+(por defecto `~/.config/mkvsmith/config.json`; define `MKVSMITH_CONFIG` para
+usar otro archivo, p. ej. desde un script). Cada opción se resuelve como
+**flag > variable de entorno > archivo de ajustes > valor integrado**, así que
+un flag solo cambia la ejecución en la que aparece.
+
+El modo interactivo comprueba que el archivo esté completo cada vez que
+arranca: la primera ejecución pregunta todos los ajustes habituales (Enter
+mantiene la sugerencia) y, tras una actualización, solo los ajustes nuevos.
+Las preguntas de seguimiento aparecen cuando importan (el formato de
+subtítulos ocultos una vez activados, las opciones de etiquetado una vez hay
+clave de TMDB). Los ajustes avanzados (directorio temporal, límite de RAM,
+región y campos de TMDB, servidor de TheDiscDB) nunca se preguntan; sus
+valores predeterminados se escriben en el archivo para editarlos. Las
+ejecuciones CLI simples nunca preguntan: lo que falte usa el valor integrado.
+
+```json
+{
+  "version": 2,
+  "output": {"overwrite": "ask"},
+  "tracks": {"languages": ["spa", "es", "und"], "closed_captions": "ask"},
+  "scan": {"split_episodes": "never"},
+  "tmdb": {"api_key": "...", "tagging": "never", "art": "ask"}
+}
+```
+
+Las opciones por disco aceptan `never`, `ask` (preguntar cada vez) o
+`always`: `output.overwrite`, `tracks.closed_captions`, `scan.split_episodes`,
+`tmdb.tagging` y `tmdb.art` (`none` / `poster` / `backdrop` / `both` / `ask`).
+El modo interactivo las pregunta en cada disco (los subtítulos ocultos solo
+si el disco los tiene); una ejecución CLI simple trata `ask` como el valor
+integrado. Así, una clave de TMDB guardada con `"tagging": "never"` ya no
+requiere `--no-tag` en cada ejecución. La carpeta de salida no es un ajuste:
+la CLI escribe en el directorio actual salvo que se indique otra, y el modo
+interactivo la pregunta antes de la primera extracción. Los valores no
+válidos se notifican y se vuelven a preguntar; los archivos de configuración
+planos antiguos se migran automáticamente.
+
 ### TheDiscDB
 
 La consulta a TheDiscDB está desactivada por defecto. Actívala con `--discdb` o
-persistela en `$XDG_CONFIG_HOME/mkvsmith/config.json` (por defecto `~/.config/...`)
-bajo `"discdb": {"enabled": true}`. La consulta envía solo identificadores del
+persistela en el [archivo de ajustes](#ajustes) bajo `"discdb": {"enabled": true}`. La consulta envía solo identificadores del
 disco; nunca envía datos de playlists ni contenidos multimedia.
 
 ```sh

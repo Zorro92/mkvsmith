@@ -34,6 +34,7 @@ except ImportError:
 
 from dvdifo import _IFOAudioAttrs, _IFOSubpictureAttrs, _IFOVideoAttrs
 from i18n import tr
+from settings import DEFAULT_TAG_METADATA, Settings
 
 HAS_RICH = _rich_console_class is not None
 
@@ -898,24 +899,17 @@ class Config:
     # when the temp dir is disk-backed / RAM could not be detected (no limit
     # enforced).
     ram_budget_bytes: int | None = None
-    # Overwrite existing output files without asking (--force). By default
-    # create_mkv confirms before overwriting an existing .mkv.
-    force_overwrite: bool = False
-
-
-# Default TMDB metadata fetched when --tag is used (matches tagger.py defaults).
-DEFAULT_TAG_METADATA = [
-    "TMDbID",
-    "IMDbID",
-    "Cast",
-    "Writers",
-    "Directors",
-    "Title",
-    "Overview",
-    "Genres",
-    "ReleaseDate",
-    "Runtime",
-]
+    # An existing output file: "ask" (confirm first), "always" (--force), or
+    # "never" (skip the title).
+    overwrite: str = "ask"
+    # Per-disc questions for the interactive prompt, set when the saved
+    # setting is "ask" and no flag decided (see cli._apply_parsed_args). A
+    # plain CLI run never asks. Closed captions are still detected while
+    # asking (extract_cc608 is on), so the question can be skipped on discs
+    # without any.
+    ask_split_episodes: bool = False
+    ask_closed_captions: bool = False
+    ask_output_dir: bool = False
 
 
 @dataclass
@@ -1102,6 +1096,8 @@ class RuntimeState:
     cleanup: RuntimeCleanup = field(default_factory=RuntimeCleanup)
     active_processes: ActiveProcesses = field(default_factory=ActiveProcesses)
     prompts: UserPrompts = field(default_factory=UserPrompts)
+    # The user's saved defaults (settings.py); flags override them per run.
+    settings: Settings = field(default_factory=Settings)
     # True once any title on the current disc is an episode. Movie-only
     # TMDB tagging is skipped for every title of a series disc (see
     # ``refresh_series_disc``).

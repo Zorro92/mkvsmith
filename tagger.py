@@ -33,7 +33,6 @@ from models import (
     log_info,
     log_warn,
 )
-from settings import load_settings
 from i18n import tr
 
 # =============================================================================
@@ -108,24 +107,14 @@ _TAG_FIELDS: list[tuple[str, str, Callable[[Any], str] | None]] = [
 # =============================================================================
 
 
-def _tagger_load_config() -> dict[str, Any]:
-    """Read the tagger config (for the TMDB API key).
-
-    Backwards-compatible: delegates to the unified settings file. Older code
-    that stored the key under ~/.mkv_tagger_config.json is migrated by
-    load_settings() on first access.
-    """
-    return load_settings()
-
-
 def _resolve_tmdb_key(opts: TagOptions) -> str | None:
-    """Return the configured TMDB API key, if any (flag > config > env)."""
-    key = (
-        opts.api_key
-        or _tagger_load_config().get("api_key")
-        or os.environ.get("TMDB_API_KEY")
-    )
-    # Settings are free-form JSON: guard against non-string values.
+    """Return the TMDB API key, if any.
+
+    ``opts.api_key`` is already resolved (flag > TMDB_API_KEY > settings
+    file, see cli._apply_parsed_args); the environment is checked again for
+    callers that build ``TagOptions`` themselves.
+    """
+    key = opts.api_key or os.environ.get("TMDB_API_KEY")
     if not isinstance(key, str) or not key.strip():
         return None
     return key

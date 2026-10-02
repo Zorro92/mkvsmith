@@ -8,7 +8,7 @@ locales.
 
 Language resolution order (first match wins):
     1. --ui-lang flag            (explicit, overrides everything)
-    2. settings file ("language" key in $XDG_CONFIG_HOME/mkvsmith/config.json)
+    2. settings file ("ui.language" in $XDG_CONFIG_HOME/mkvsmith/config.json)
     3. LC_MESSAGES / LANG env    (POSIX locale auto-detection)
     4. "en"                      (default)
 
@@ -123,10 +123,42 @@ _ES: dict[str, str] = {
     "Select language / Seleccione el idioma:": "Seleccione el idioma:",
     "  {n}. {name}": "  {n}. {name}",
     "Choice": "Opción",
-    "Would you like to add a TMDB API key now? (optional, enables tagging)": "¿Deseas añadir una clave de API de TMDB ahora? (opcional, habilita el etiquetado)",
-    "Enter TMDB API key (or press Enter to skip):": "Introduce la clave de API de TMDB (o pulsa Enter para omitir):",
-    "Setup complete. Settings saved to {path}": "Configuración completa. Ajustes guardados en {path}",
     "Using language: {name} ({code})": "Usando idioma: {name} ({code})",
+    "Settings: {problem}": "Ajustes: {problem}",
+    "{n} new setting(s) to choose since your last run": "{n} ajuste(s) nuevo(s) por elegir desde tu última ejecución",
+    "Press Enter to keep the suggested value.": "Pulsa Enter para mantener el valor sugerido.",
+    "Settings saved to {path}": "Ajustes guardados en {path}",
+    "yes/no": "sí/no",
+    "yes": "sí",
+    "no": "no",
+    "Value": "Valor",
+    "Value (Enter to skip)": "Valor (Enter para omitir)",
+    "Invalid value: {err}": "Valor no válido: {err}",
+    "never": "nunca",
+    "ask every time": "preguntar cada vez",
+    "always": "siempre",
+    "none": "ninguno",
+    "poster": "póster",
+    "backdrop": "imagen de fondo",
+    "poster and backdrop": "póster e imagen de fondo",
+    "Interface language": "Idioma de la interfaz",
+    "Overwrite an output file that already exists?": "¿Sobrescribir un archivo de salida que ya existe?",
+    "Preferred audio/subtitle languages, most preferred first": "Idiomas preferidos de audio/subtítulos, el preferido primero",
+    "Keep every audio track, not only the preferred languages?": "¿Conservar todas las pistas de audio, no solo las de los idiomas preferidos?",
+    "Keep subtitle tracks?": "¿Conservar las pistas de subtítulos?",
+    "Keep forced subtitle tracks?": "¿Conservar las pistas de subtítulos forzados?",
+    "Extract DVD closed captions (EIA-608) as a text subtitle track?": "¿Extraer los subtítulos ocultos del DVD (EIA-608) como pista de subtítulos de texto?",
+    "Closed-caption format (srt: plain text; ass: keeps positioning and italics)": "Formato de subtítulos ocultos (srt: texto plano; ass: conserva posición y cursivas)",
+    "Split playlists holding back-to-back episodes into one title each?": "¿Dividir las playlists con episodios consecutivos en un título por episodio?",
+    "TMDB API key (optional, enables tagging)": "Clave de API de TMDB (opcional, habilita el etiquetado)",
+    "Tag rips with TMDB metadata?": "¿Etiquetar las extracciones con metadatos de TMDB?",
+    "Confirm the TMDB match before tagging?": "¿Confirmar la coincidencia de TMDB antes de etiquetar?",
+    "Cover art to attach": "Arte de portada a adjuntar",
+    "Look discs up on TheDiscDB (real episode numbers and titles)?": "¿Buscar los discos en TheDiscDB (números y títulos reales de episodios)?",
+    "Output folder": "Carpeta de salida",
+    "Cannot use {path}: {err}": "No se puede usar {path}: {err}",
+    "Title {idx} holds {n} episodes in one playlist. Split it into one title per episode? [y/N]": "El título {idx} contiene {n} episodios en una playlist. ¿Dividirlo en un título por episodio? [y/N]",
+    "This disc has closed captions. Add them as a subtitle track? [y/N]": "Este disco tiene subtítulos ocultos. ¿Añadirlos como pista de subtítulos? [y/N]",
     # --- tagger prompts --------------------------------------------------------
     "Look up & tag this rip on TMDB?": "¿Buscar y etiquetar esta extracción en TMDB?",
     "Attach artwork?": "¿Adjuntar arte?",

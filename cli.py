@@ -33,9 +33,10 @@ import shutil
 import sys
 import tempfile
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast, final
+from typing import final
 
 import dvdifo
 from models import (
@@ -46,7 +47,6 @@ from models import (
     TagOptions,
     RUNTIME_STATE,
     UserPrompts,
-    DEFAULT_TAG_METADATA,
     Stream,
     StreamType,
     Title,
@@ -67,7 +67,17 @@ from i18n import (
     available_languages,
     detect_locale_language,
 )
-from settings import SETTINGS_PATH, load_settings, save_settings
+from settings import (
+    LoadedSettings,
+    Settings,
+    SettingSpec,
+    accept_advanced_defaults,
+    format_value,
+    load_settings,
+    missing_settings,
+    save_settings,
+    set_setting,
+)
 from scan import Scanner, _detect_edition_groups, _get_notable_titles, pick_main_feature
 from mkv import MKVCreator
 from discdb import DiscDbError
@@ -385,6 +395,49 @@ class _InteractiveRipper:
         self.edition_groups = edition_groups
         self.disc_metadata = disc_metadata
 
+    def ask_output_dir(self) -> None:
+        """Ask where this session's rips go (once, before the first rip)."""
+        config = self.creator.config
+        if not config.ask_output_dir:
+            return
+        prompts = self.creator.prompts
+        while True:
+            raw = prompts.text(tr("Output folder"), str(self.creator.out))
+            path = Path(raw).expanduser()
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                log_warn(tr("Cannot use {path}: {err}", path=path, err=e))
+                continue
+            break
+        self.creator.out = config.output_dir = path
+        config.ask_output_dir = False
+
+    def offer_packed_split(self) -> None:
+        """Ask, per packed playlist, whether to split it into episodes."""
+        from packed_episodes import packed_episode_count
+
+        prompts = self.creator.prompts
+        chosen = [
+            str(title.index)
+            for title in self.titles
+            if title.packed_segments
+            and prompts.confirm(
+                tr(
+                    "Title {idx} holds {n} episodes in one playlist. Split it "
+                    "into one title per episode? [y/N]",
+                    idx=title.index,
+                    n=packed_episode_count(title),
+                )
+            )
+        ]
+        if chosen:
+            self.split_packed_episodes(chosen)
+
+    def _before_rip(self) -> None:
+        self.ask_output_dir()
+        self.tagging.prepare_for_rip()
+
     def split_packed_episodes(self, args: list[str]) -> None:
         """Split title N (or every packed playlist) into one title per episode."""
         from packed_episodes import expand_packed_titles
@@ -408,7 +461,7 @@ class _InteractiveRipper:
         if not 0 <= idx < len(self.titles):
             log_warn(tr("Invalid: {idx}", idx=idx))
             return
-        self.tagging.prepare_for_rip()
+        self._before_rip()
         try:
             self.creator.create_mkv(
                 self.titles[idx],
@@ -456,14 +509,14 @@ class _InteractiveRipper:
         names = _prompt_edition_names(self.titles, indices)
         if names != _default_edition_names(self.titles, indices):
             combined = _prepare_multi_edition(self.titles, indices, names)
-        self.tagging.prepare_for_rip()
+        self._before_rip()
         try:
             self.creator.create_mkv(combined, self.creator.select_streams(combined))
         except RipError as exc:
             print(exc.format_verbose())
 
     def rip_collection(self, selected_titles: list[Title]) -> tuple[int, int]:
-        self.tagging.prepare_for_rip()
+        self._before_rip()
         ok = failed = 0
         for title in selected_titles:
             try:
@@ -588,23 +641,40 @@ def interactive_mode(
     runtime_state: RuntimeState | None = None,
 ) -> None:
     state = runtime_state or RUNTIME_STATE
+    _ask_closed_captions(titles, state)
     display_titles(titles, disc_metadata, state.config)
-    _print_packed_episode_hints(titles, interactive=True)
     creator = MKVCreator(
         state.config.output_dir,
         state.tag_options,
         runtime_state=state,
     )
     tagging = _InteractiveTagState.from_options(state.tag_options, state.prompts)
-    tagging.announce()
-    print()
-    _InteractiveRipper(
+    ripper = _InteractiveRipper(
         titles,
         creator,
         tagging,
         _interactive_edition_groups(titles),
         disc_metadata,
-    ).run()
+    )
+    if state.config.ask_split_episodes:
+        ripper.offer_packed_split()
+    else:
+        _print_packed_episode_hints(titles, interactive=True)
+    tagging.announce()
+    print()
+    ripper.run()
+
+
+def _ask_closed_captions(titles: list[Title], state: RuntimeState) -> None:
+    """Closed captions saved as "ask": keep this disc's captions, or not?"""
+    from dvdbuild import drop_closed_caption_streams, has_closed_captions
+
+    if not state.config.ask_closed_captions or not has_closed_captions(titles):
+        return
+    if not state.prompts.confirm(
+        tr("This disc has closed captions. Add them as a subtitle track? [y/N]")
+    ):
+        drop_closed_caption_streams(titles)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -616,7 +686,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "output",
         type=Path,
         nargs="?",
-        default=Path("."),
+        default=None,
         help=tr("output directory (default: current directory)"),
     )
     p.add_argument("-t", "--title", type=int)
@@ -643,6 +713,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--split-episodes",
         action="store_true",
+        default=None,
         help=tr(
             "split playlists holding several back-to-back episodes into one "
             "title per episode"
@@ -651,15 +722,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("-i", "--info", action="store_true")
     p.add_argument("-d", "--details", type=int)
     p.add_argument("-s", "--streams", nargs="+")
-    p.add_argument("-l", "--lang", default="eng,en,und")
-    p.add_argument("--all-audio", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--no-subs", action="store_true")
-    p.add_argument("--no-forced", action="store_true")
+    # Flags left unset (None) fall back to the settings file (settings.py).
+    p.add_argument("-l", "--lang", default=None)
+    p.add_argument("--all-audio", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--no-subs", action="store_true", default=None)
+    p.add_argument("--no-forced", action="store_true", default=None)
     p.add_argument(
         "--cc-srt",
         "--cc",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=None,
         help=tr(
             "extract EIA-608 closed captions as a text subtitle track "
             "(default: off; --no-cc-srt disables)"
@@ -668,19 +740,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--cc-format",
         choices=["srt", "ass"],
-        default="srt",
+        default=None,
         help=tr(
             "closed-caption sidecar format: srt (portable plain text) or "
             "ass (preserves speaker positioning and italics)"
         ),
     )
-    p.add_argument("--min-duration", type=float, default=60.0)
+    p.add_argument("--min-duration", type=float, default=None)
     p.add_argument(
         "--show-all",
         action="store_true",
+        default=None,
         help=tr("show all titles including low-quality ones (menus, trailers, etc.)"),
     )
-    p.add_argument("--debug", action="store_true")
+    p.add_argument("--debug", action="store_true", default=None)
     p.add_argument(
         "--temp-dir",
         type=Path,
@@ -693,7 +766,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--ram-limit",
         type=float,
-        default=0.8,
+        default=None,
         metavar="FRAC",
         help=tr(
             "max fraction of RAM-backed (tmpfs) temp capacity that extractions may "
@@ -703,16 +776,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--force",
         action="store_true",
+        default=None,
         help=tr("overwrite existing output files without asking"),
     )
     p.add_argument(
         "--no-tag",
         action="store_true",
+        default=None,
         help=tr("do not tag, even in interactive mode when a TMDB key is available"),
     )
     p.add_argument(
         "--tag",
         action="store_true",
+        default=None,
         help=tr("fetch TMDB metadata and tag each rip during muxing"),
     )
     p.add_argument(
@@ -733,7 +809,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--tag-region",
-        default="US",
+        default=None,
         help=tr("ISO 3166-1 region for content rating (default: US)"),
     )
     p.add_argument(
@@ -750,11 +826,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--save-tag-xml",
         action="store_true",
+        default=None,
         help=tr("keep the XML tag file after muxing"),
     )
     p.add_argument(
         "--no-tag-confirm",
         action="store_true",
+        default=None,
         help=tr("skip the per-rip tagging confirmation prompt"),
     )
     p.add_argument(
@@ -836,117 +914,154 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _resolve_discdb_options(a: argparse.Namespace) -> DiscDbOptions:
-    defaults = DiscDbOptions()
-    stored = load_settings().get("discdb")
-    settings: dict[str, Any] = (
-        cast(dict[str, Any], stored) if isinstance(stored, dict) else {}
-    )
+def _pick[T](flag: T | None, saved: T) -> T:
+    """A flag's value when given on the command line, else the saved setting."""
+    return saved if flag is None else flag
 
-    enabled = a.discdb
-    if enabled is None:
-        enabled = bool(settings.get("enabled", defaults.enabled))
 
-    base_url = (
-        a.discdb_url
-        or os.environ.get("THEDISCDB_BASE_URL")
-        or str(settings.get("base_url", defaults.base_url))
-    )
-    timeout = a.discdb_timeout
-    if timeout is None:
-        try:
-            timeout = float(settings.get("timeout_seconds", defaults.timeout_seconds))
-        except (TypeError, ValueError):
-            timeout = defaults.timeout_seconds
-    if timeout <= 0:
-        timeout = defaults.timeout_seconds
-
+def _resolve_discdb_options(a: argparse.Namespace, saved: Settings) -> DiscDbOptions:
+    """TheDiscDB options: flag > environment > settings file > default."""
     contribute_mode = a.discdb_contribute
-    contribute = contribute_mode is not None
-    if not contribute and bool(settings.get("contribute", False)):
-        contribute = True
-        contribute_mode = str(settings.get("contribute_mode", defaults.contribute_mode))
-
-    open_browser = a.discdb_open
-    if open_browser is None:
-        open_browser = bool(settings.get("open_browser", defaults.open_browser))
-
+    if contribute_mode is None and saved.discdb_contribute != "off":
+        contribute_mode = saved.discdb_contribute
+    timeout = _pick(a.discdb_timeout, saved.discdb_timeout)
+    if timeout <= 0:
+        timeout = DiscDbOptions().timeout_seconds
     return DiscDbOptions(
-        enabled=enabled,
-        base_url=base_url,
-        timeout_seconds=timeout,
-        contribute=contribute,
-        contribute_mode=contribute_mode or defaults.contribute_mode,
-        bundle_dir=a.discdb_bundle_dir,
-        open_browser=open_browser,
-        contribution_id=(
-            a.discdb_contribution_id
-            if a.discdb_contribution_id is not None
-            else (
-                str(settings.get("contribution_id"))
-                if settings.get("contribution_id") is not None
-                else None
-            )
+        enabled=_pick(a.discdb, saved.discdb_enabled),
+        base_url=(
+            a.discdb_url
+            or os.environ.get("THEDISCDB_BASE_URL")
+            or saved.discdb_base_url
         ),
+        timeout_seconds=timeout,
+        contribute=contribute_mode is not None,
+        contribute_mode=contribute_mode or DiscDbOptions().contribute_mode,
+        bundle_dir=a.discdb_bundle_dir,
+        open_browser=_pick(a.discdb_open, saved.discdb_open_browser),
+        contribution_id=a.discdb_contribution_id,
         disc_name=a.discdb_disc_name.strip() if a.discdb_disc_name else None,
         cookie=(a.discdb_cookie or os.environ.get("THEDISCDB_COOKIE") or "").strip()
         or None,
     )
 
 
+def _tagging_mode(a: argparse.Namespace, saved: Settings) -> str:
+    """never / ask / always: --no-tag beats --tag beats the saved setting."""
+    if a.no_tag:
+        return "never"
+    if a.tag:
+        return "always"
+    return saved.tagging
+
+
+def _per_disc(flag: bool | None, saved: str, interactive: bool) -> tuple[bool, bool]:
+    """(on, ask) for a never/ask/always setting a flag can override.
+
+    "ask" asks only in the interactive prompt; a plain CLI run takes the
+    built-in default ("never") instead.
+    """
+    if flag is not None:
+        return flag, False
+    if saved == "ask":
+        return False, interactive
+    return saved == "always", False
+
+
+def _is_interactive_run(a: argparse.Namespace) -> bool:
+    """Whether *a* opens the interactive prompt (no action flag given)."""
+    return not (
+        a.details is not None
+        or a.main
+        or a.episodes
+        or a.title is not None
+        or a.all
+        or a.info
+        or a.multi_edition
+        or a.save_key
+    )
+
+
 def _apply_parsed_args(
     a: argparse.Namespace,
     runtime_state: RuntimeState | None = None,
+    interactive: bool = False,
 ) -> tuple[Path | None, list[str] | None, int | None, int | None]:
+    """Fill the run's options from *a*, falling back to the saved settings.
+
+    Every option resolves the same way: flag > environment variable (TMDB
+    key, TheDiscDB URL/cookie) > settings file (``runtime_state.settings``)
+    > built-in default. Settings saved as "ask" become questions only when
+    *interactive* (the interactive prompt); a plain CLI run never asks.
+    """
     state = runtime_state or RUNTIME_STATE
+    saved = state.settings
     config = state.config
     tag_options = state.tag_options
     src: Path | None = a.source
     sids: list[str] | None = a.streams
     details: int | None = a.details
     title_num: int | None = a.title
-    config.output_dir = a.output
-    config.preferred_languages = a.lang.split(",")
-    config.keep_all_audio = a.all_audio
-    config.keep_all_subtitles = not a.no_subs
-    config.include_forced = not a.no_forced
-    config.min_duration = a.min_duration
-    config.debug = a.debug
-    config.temp_dir = a.temp_dir
-    config.ram_limit = a.ram_limit
-    config.force_overwrite = a.force
-    config.show_all = a.show_all
-    config.split_episodes = a.split_episodes
-    config.extract_cc608 = a.cc_srt
-    config.cc608_format = a.cc_format
-    config.ui_lang = a.ui_lang
-    state.discdb_options = _resolve_discdb_options(a)
-    state.logger.configure(config)
-    tag_options.enabled = a.tag
-    tag_options.no_tag = a.no_tag
-    tag_options.api_key = a.tmdb_key
-    tag_options.metadata = (
-        a.tag_metadata if a.tag_metadata else list(DEFAULT_TAG_METADATA)
+    # Not a setting: the CLI writes to the current directory unless told
+    # otherwise; the interactive prompt asks before its first rip.
+    config.output_dir = a.output or Path(".")
+    config.ask_output_dir = interactive and a.output is None
+    config.preferred_languages = (
+        [lang for lang in a.lang.split(",") if lang]
+        if a.lang
+        else list(saved.languages)
     )
-    tag_options.region = a.tag_region
-    tag_options.language = a.tag_language
-    tag_options.art = a.tag_art
-    tag_options.save_xml = a.save_tag_xml
-    tag_options.confirm = not a.no_tag_confirm
+    config.keep_all_audio = _pick(a.all_audio, saved.all_audio)
+    config.keep_all_subtitles = not a.no_subs and saved.subtitles
+    config.include_forced = not a.no_forced and saved.forced_subtitles
+    config.min_duration = _pick(a.min_duration, saved.min_duration)
+    config.debug = bool(a.debug)
+    config.temp_dir = _pick(a.temp_dir, saved.temp_dir)
+    config.ram_limit = _pick(a.ram_limit, saved.ram_limit)
+    config.overwrite = "always" if a.force else saved.overwrite
+    config.show_all = _pick(a.show_all, saved.show_all)
+    config.split_episodes, config.ask_split_episodes = _per_disc(
+        a.split_episodes, saved.split_episodes, interactive
+    )
+    # Asking still detects captions during the scan (on=True), so discs
+    # without any skip the question.
+    cc_on, config.ask_closed_captions = _per_disc(
+        a.cc_srt, saved.closed_captions, interactive
+    )
+    config.extract_cc608 = cc_on or config.ask_closed_captions
+    config.cc608_format = _pick(a.cc_format, saved.cc_format)
+    config.ui_lang = a.ui_lang
+    state.discdb_options = _resolve_discdb_options(a, saved)
+    state.logger.configure(config)
+    # "ask" tags only from the interactive prompt, which asks per rip; a
+    # plain CLI run tags only when the mode is "always".
+    mode = _tagging_mode(a, saved)
+    tag_options.enabled = mode == "always"
+    tag_options.no_tag = mode == "never"
+    tag_options.api_key = (
+        a.tmdb_key or os.environ.get("TMDB_API_KEY") or saved.tmdb_api_key
+    )
+    tag_options.metadata = list(a.tag_metadata or saved.tag_metadata)
+    tag_options.region = a.tag_region or saved.tag_region
+    tag_options.language = a.tag_language or saved.tag_language
+    # The saved "ask" leaves art unset: the interactive prompt asks per rip.
+    tag_options.art = a.tag_art or (None if saved.tag_art == "ask" else saved.tag_art)
+    tag_options.save_xml = _pick(a.save_tag_xml, saved.tag_save_xml)
+    tag_options.confirm = not a.no_tag_confirm and saved.tag_confirm_match
     tag_options.title_override = a.tag_title
     tag_options.year_override = a.tag_year
     return src, sids, details, title_num
 
 
 def _save_tmdb_key_and_exit(api_key: str) -> None:
-    from settings import SETTINGS_PATH, load_settings, save_settings
-
-    cfg = load_settings()
-    cfg["api_key"] = api_key
+    loaded = load_settings()
+    if loaded.unreadable:
+        log_error(tr("Could not write config: {err}", err="; ".join(loaded.problems)))
+        sys.exit(1)
     try:
-        save_settings(cfg)
-        log_info(f"TMDB API key saved to {SETTINGS_PATH}")
-    except OSError as e:
+        path = save_settings(set_setting(loaded.settings, "tmdb.api_key", api_key))
+        log_info(f"TMDB API key saved to {path}")
+    except (OSError, ValueError) as e:
         log_error(tr("Could not write config: {err}", err=e))
         sys.exit(1)
     sys.exit(0)
@@ -978,14 +1093,24 @@ def _select_action(
 
 def parse_args(
     runtime_state: RuntimeState | None = None,
+    before_apply: Callable[[bool], None] | None = None,
 ) -> tuple[Path | None, str, int | None, list[str] | None, list[int] | None]:
+    """Parse argv into the run's action, with options resolved into state.
+
+    *before_apply* is called with whether the run is interactive, before
+    the options are resolved (the startup settings check hooks in here).
+    """
     p = _build_arg_parser()
     a = p.parse_args()
-    src, sids, details, title_num = _apply_parsed_args(a, runtime_state)
 
     # Persist the TMDB API key and exit (no ripping tools needed for this).
     if a.save_key:
         _save_tmdb_key_and_exit(a.save_key)
+
+    interactive = _is_interactive_run(a)
+    if before_apply is not None:
+        before_apply(interactive)
+    src, sids, details, title_num = _apply_parsed_args(a, runtime_state, interactive)
 
     if a.multi_edition:
         try:
@@ -1024,7 +1149,7 @@ def _peek_ui_lang_flag() -> str | None:
     return None
 
 
-def _init_ui_language() -> str:
+def _init_ui_language(saved: Settings) -> str:
     """Resolve and activate the UI language.
 
     Priority: --ui-lang flag > settings file > LC_MESSAGES/LANG env > English.
@@ -1032,54 +1157,118 @@ def _init_ui_language() -> str:
     flag = _peek_ui_lang_flag()
     if flag:
         return set_language(flag)
-    cfg = load_settings()
-    lang = cfg.get("language")
-    if lang:
-        return set_language(lang)
+    if saved.ui_language:
+        return set_language(saved.ui_language)
     env_lang = detect_locale_language()
     if env_lang:
         return set_language(env_lang)
     return set_language("en")
 
 
-def _first_run_setup() -> None:
-    """Interactive first-run wizard: pick language, optionally add TMDB key."""
-    print(tr("First-time setup"))
-    print("=" * 40)
+# Choice values as shown when asking (the saved value stays the English word).
+_CHOICE_LABELS = {
+    "never": "never",
+    "ask": "ask every time",
+    "always": "always",
+    "none": "none",
+    "poster": "poster",
+    "backdrop": "backdrop",
+    "both": "poster and backdrop",
+    "srt": "srt",
+    "ass": "ass",
+}
+# Spanish yes/no answers, accepted alongside the English ones.
+_YES_NO_ALIASES = {"s": "yes", "si": "yes", "sí": "yes"}
 
-    # Language selection.
-    print(tr("Select language / Seleccione el idioma:"))
-    langs = available_languages()
-    for n, (_code, name) in enumerate(langs, 1):
-        print(tr("  {n}. {name}", n=n, name=name))
-    raw = input(tr("Choice") + " [1]: ").strip() or "1"
-    try:
-        idx = int(raw) - 1
-    except ValueError:
-        idx = 0
-    if 0 <= idx < len(langs):
-        chosen = langs[idx][0]
+
+def _read_answer(
+    spec: SettingSpec, saved: Settings, prompts: UserPrompts
+) -> Settings | None:
+    """One answer for *spec*, or None when it doesn't parse (ask again)."""
+    current = getattr(saved, spec.attr)
+    if spec.kind == "language":
+        langs = available_languages()
+        for n, (_code, name) in enumerate(langs, 1):
+            print(tr("  {n}. {name}", n=n, name=name))
+        codes = [code for code, _name in langs]
+        default = codes.index(get_language()) + 1 if get_language() in codes else 1
+        raw = prompts.text(tr("Choice"), str(default))
+        if not raw.isdigit() or not 1 <= int(raw) <= len(codes):
+            return None
+        set_language(codes[int(raw) - 1])
+        return set_setting(saved, spec.key, codes[int(raw) - 1])
+    if spec.kind == "choice":
+        for n, choice in enumerate(spec.choices, 1):
+            print(f"  {n}. {tr(_CHOICE_LABELS.get(choice, choice))}")
+        raw = prompts.text(tr("Choice"), str(spec.choices.index(current) + 1))
+        if raw.isdigit() and 1 <= int(raw) <= len(spec.choices):
+            raw = spec.choices[int(raw) - 1]
+    elif spec.kind == "bool":
+        raw = prompts.text(tr("yes/no"), tr("yes") if current else tr("no"))
+        raw = _YES_NO_ALIASES.get(raw.strip().lower(), raw)
+    elif spec.secret:
+        raw = prompts.text(tr("Value (Enter to skip)"), None)
     else:
-        chosen = "en"
-    set_language(chosen)
-
-    cfg: dict[str, object] = {"language": chosen}
-
-    # Optional TMDB key.
-    print()
-    if _confirm(
-        tr("Would you like to add a TMDB API key now? (optional, enables tagging)")
-    ):
-        key = input(tr("Enter TMDB API key (or press Enter to skip):") + " ").strip()
-        if key:
-            cfg["api_key"] = key
-
+        raw = prompts.text(tr("Value"), format_value(spec, current) or None)
     try:
-        save_settings(cfg)
-        print()
-        log_info(tr("Setup complete. Settings saved to {path}", path=SETTINGS_PATH))
+        return set_setting(saved, spec.key, raw)
+    except ValueError as e:
+        log_warn(tr("Invalid value: {err}", err=e))
+        return None
+
+
+def _ask_setting(spec: SettingSpec, saved: Settings, prompts: UserPrompts) -> Settings:
+    """Ask for *spec* until the answer is valid; returns *saved* with it."""
+    print()
+    print(tr(spec.description))
+    while (answered := _read_answer(spec, saved, prompts)) is None:
+        pass
+    return answered
+
+
+def _complete_settings(
+    loaded: LoadedSettings, prompts: UserPrompts | None = None
+) -> Settings:
+    """Ask for every everyday setting the file is missing, then save.
+
+    Everything on a first run; only the new settings after an update. The
+    answers are saved together with the defaults of any advanced settings
+    the file is missing, so the file is complete. An unreadable file is
+    left alone (its problem was already reported).
+    """
+    saved = loaded.settings
+    if loaded.unreadable:
+        return saved
+    prompts = prompts or RUNTIME_STATE.prompts
+    pending = missing_settings(saved)
+    asked = bool(pending)
+    if pending:
+        if loaded.exists:
+            print(
+                tr(
+                    "{n} new setting(s) to choose since your last run",
+                    n=len(pending),
+                )
+            )
+        else:
+            print(tr("First-time setup"))
+        print("=" * 40)
+        print(tr("Press Enter to keep the suggested value."))
+        while pending:
+            saved = _ask_setting(pending[0], saved, prompts)
+            pending = missing_settings(saved)
+    saved = accept_advanced_defaults(saved)
+    if saved.answered == loaded.settings.answered:
+        return saved
+    try:
+        path = save_settings(saved, loaded.path)
     except OSError as e:
         log_error(tr("Could not write config: {err}", err=e))
+        return saved
+    if asked:
+        print()
+        log_info(tr("Settings saved to {path}", path=path))
+    return saved
 
 
 def _confirm(prompt: str) -> bool:
@@ -1178,21 +1367,24 @@ def _fmt_edition_duration(seconds: float) -> str:
 def _initialize_cli(
     runtime_state: RuntimeState | None = None,
 ) -> tuple[Path | None, str, int | None, list[str] | None, list[int] | None]:
-    _init_ui_language()
+    state = runtime_state or RUNTIME_STATE
+    loaded = load_settings()
+    state.settings = loaded.settings
+    _init_ui_language(state.settings)
+    for problem in loaded.problems:
+        log_warn(tr("Settings: {problem}", problem=problem))
     if not _HAS_MKVMERGE:
         log_error(tr("Missing: mkvmerge (install mkvtoolnix)"))
         sys.exit(1)
 
-    quick_exit = any(
-        argument in sys.argv for argument in ("-h", "--help", "-v", "--version")
-    )
-    saving_key = "--save-key" in sys.argv
-    if not SETTINGS_PATH.exists() and not quick_exit and not saving_key:
-        _first_run_setup()
-        _init_ui_language()
+    def check_settings(interactive: bool) -> None:
+        # Only the interactive prompt asks (and only at a terminal); plain
+        # CLI runs and scripts use the built-in default for anything missing.
+        if interactive and sys.stdin.isatty():
+            state.settings = _complete_settings(loaded, state.prompts)
+            _init_ui_language(state.settings)
 
-    state = runtime_state or RUNTIME_STATE
-    parsed = parse_args(state)
+    parsed = parse_args(state, check_settings)
     if state.config.ui_lang:
         set_language(state.config.ui_lang)
     log_debug(

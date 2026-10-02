@@ -136,7 +136,8 @@ def test_apply_parsed_args_populates_config_and_tag_options(
     assert config.ram_limit == 0.5
     assert config.show_all is True
     assert config.ui_lang == "es"
-    assert tag_options.enabled is True
+    # --no-tag beats --tag.
+    assert tag_options.enabled is False
     assert tag_options.no_tag is True
     assert tag_options.api_key == "secret"
     assert tag_options.metadata == ["Title", "Overview"]

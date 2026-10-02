@@ -346,5 +346,6 @@ def test_interactive_se_splits_in_place(
 
 def test_split_episodes_flag_reaches_config() -> None:
     parser = cli._build_arg_parser()
-    assert parser.parse_args(["disc"]).split_episodes is False
+    # Unset falls back to the saved setting (scan.split_episodes).
+    assert parser.parse_args(["disc"]).split_episodes is None
     assert parser.parse_args(["--split-episodes", "disc"]).split_episodes is True

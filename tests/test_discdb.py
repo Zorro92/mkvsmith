@@ -20,6 +20,7 @@ import discdb
 from discdb import DiscDbClient, DiscDbOptions
 from models import DiscMetadata, Stream, StreamType, Title
 from models import RuntimeState
+from settings import Settings
 from scan import pick_main_feature
 
 
@@ -714,11 +715,6 @@ def test_discdb_cli_options_default_to_opt_in(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     state = RuntimeState()
-
-    def fake_load_settings() -> dict[str, Any]:
-        return {}
-
-    monkeypatch.setattr(cli, "load_settings", fake_load_settings)
     args = cli._build_arg_parser().parse_args([str(tmp_path)])
 
     cli._apply_parsed_args(args, state)
@@ -731,12 +727,7 @@ def test_discdb_cli_options_default_to_opt_in(
 def test_discdb_cli_flags_override_settings_and_environment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    state = RuntimeState()
-    monkeypatch.setattr(
-        cli,
-        "load_settings",
-        lambda: {"discdb": {"enabled": True, "timeout_seconds": "bad"}},
-    )
+    state = RuntimeState(settings=Settings(discdb_enabled=False, discdb_timeout=9.0))
     monkeypatch.setenv("THEDISCDB_BASE_URL", "https://example.test")
     monkeypatch.setenv("THEDISCDB_COOKIE", "environment-cookie")
     args = cli._build_arg_parser().parse_args(
@@ -777,19 +768,14 @@ def test_discdb_cli_flags_override_settings_and_environment(
 def test_discdb_cli_reads_persistent_settings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    state = RuntimeState()
-    monkeypatch.setattr(
-        cli,
-        "load_settings",
-        lambda: {
-            "discdb": {
-                "enabled": True,
-                "base_url": "https://settings.test",
-                "timeout_seconds": 4,
-                "open_browser": False,
-                "contribution_id": "saved",
-            }
-        },
+    state = RuntimeState(
+        settings=Settings(
+            discdb_enabled=True,
+            discdb_base_url="https://settings.test",
+            discdb_timeout=4,
+            discdb_open_browser=False,
+            discdb_contribute="manual",
+        )
     )
     args = cli._build_arg_parser().parse_args([str(tmp_path)])
 
@@ -799,7 +785,9 @@ def test_discdb_cli_reads_persistent_settings(
     assert state.discdb_options.base_url == "https://settings.test"
     assert state.discdb_options.timeout_seconds == 4
     assert state.discdb_options.open_browser is False
-    assert state.discdb_options.contribution_id == "saved"
+    assert state.discdb_options.contribution_id is None  # flag only
+    assert state.discdb_options.contribute is True
+    assert state.discdb_options.contribute_mode == "manual"
 
 
 def test_cli_lookup_failure_is_nonfatal(

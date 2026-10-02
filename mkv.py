@@ -2494,16 +2494,19 @@ class MKVCreator:
     def _ensure_overwrite_allowed(self, out_file: Path) -> None:
         """Raise RipError when *out_file* exists and overwriting is declined.
 
-        Existing outputs are never silently clobbered: unless ``--force`` is
-        set, the user must confirm (a declined or interrupted prompt skips the
-        title, which batch flows report via the usual RipError channel).
+        Existing outputs are never silently clobbered: unless overwriting is
+        "always" (``--force`` or the saved setting), the user must confirm (a
+        declined or interrupted prompt skips the title, which batch flows
+        report via the usual RipError channel); "never" skips without asking.
         """
         if not out_file.exists():
             return
-        if self.config.force_overwrite:
+        if self.config.overwrite == "always":
             log_info(f"Overwriting existing output: {out_file.name}")
             return
-        if not _confirm_overwrite(out_file, self.prompts):
+        if self.config.overwrite == "never" or not _confirm_overwrite(
+            out_file, self.prompts
+        ):
             raise RipError(message=f"Output exists, not overwriting: {out_file.name}")
 
     def _finish_created_output(

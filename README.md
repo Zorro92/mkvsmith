@@ -121,11 +121,47 @@ mkvsmith> q          # quit
 | `--ui-lang LANG` | UI language (e.g. `en`, `es`) |
 | `--debug` | Verbose debug logging |
 
+### Settings
+
+Your defaults live in `$XDG_CONFIG_HOME/mkvsmith/config.json` (default
+`~/.config/mkvsmith/config.json`; set `MKVSMITH_CONFIG` to use another file,
+e.g. from a script). Every option resolves as **flag > environment variable >
+settings file > built-in default**, so a flag only changes the run it's on.
+
+The interactive mode checks the file for completeness each time it starts:
+the first run asks every everyday setting (Enter keeps the suggestion), and
+after an update only the settings that are new. Follow-up questions appear
+once they matter (the caption format once captions are on, tagging choices
+once a TMDB key is set). Advanced settings (temp dir, RAM limit, TMDB region
+and fields, TheDiscDB server) are never asked; their defaults are written to
+the file for editing. Plain CLI runs never ask: anything missing uses the
+built-in default.
+
+```json
+{
+  "version": 2,
+  "output": {"overwrite": "ask"},
+  "tracks": {"languages": ["eng", "en", "und"], "closed_captions": "ask"},
+  "scan": {"split_episodes": "never"},
+  "tmdb": {"api_key": "...", "tagging": "never", "art": "ask"}
+}
+```
+
+Per-disc choices take `never`, `ask` (ask every time), or `always`:
+`output.overwrite`, `tracks.closed_captions`, `scan.split_episodes`,
+`tmdb.tagging`, and `tmdb.art` (`none` / `poster` / `backdrop` / `both` /
+`ask`). The interactive mode asks those on each disc (captions only when the
+disc has them); a plain CLI run treats `ask` as the built-in default. So a
+stored TMDB key with `"tagging": "never"` no longer needs `--no-tag` every
+run. The output folder is not a setting: the CLI writes to the current
+directory unless given one, and the interactive mode asks before its first
+rip. Invalid values are reported and asked again; older flat config files
+are migrated automatically.
+
 ### TheDiscDB
 
 TheDiscDB lookup is opt-in. Enable it per run with `--discdb`, or persist it in
-`$XDG_CONFIG_HOME/mkvsmith/config.json` (default `~/.config/...`) under
-`"discdb": {"enabled": true}`. Lookup sends
+the [settings file](#settings) under `"discdb": {"enabled": true}`. Lookup sends
 only local disc identifiers — never playlist data or media file contents.
 
 ```sh

@@ -77,6 +77,7 @@ from models import (
 from cc608 import (
     CC608_CODEC_ASS,
     CC608_CODEC_SRT,
+    CC608_CODECS,
     _has_cc608_data,
 )
 from probe import _probe_with_mkvmerge, _parse_mkvmerge_streams
@@ -989,6 +990,32 @@ def _append_undeclared_dvd_subpictures(
             f"Extra subpicture detection failed ({exc}); "
             "listing may undercount subtitles"
         )
+
+
+def has_closed_captions(titles: list[Title]) -> bool:
+    """Whether any title carries a detected closed-caption track."""
+    return any(
+        stream.codec in CC608_CODECS
+        for title in titles
+        for stream in title.subtitle_streams
+    )
+
+
+def drop_closed_caption_streams(titles: list[Title]) -> None:
+    """Remove the detected closed-caption tracks (declined for this disc).
+
+    The CC track is always the last stream a title gets (see
+    ``_append_dvd_closed_captions``), so the other streams keep their indices.
+    """
+    for title in titles:
+        title.streams = [
+            stream
+            for stream in title.streams
+            if not (
+                stream.stream_type == StreamType.SUBTITLE
+                and stream.codec in CC608_CODECS
+            )
+        ]
 
 
 def _append_dvd_closed_captions(

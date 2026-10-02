@@ -11,6 +11,7 @@ settings and for per-disc choices saved as "ask".
 from __future__ import annotations
 
 import json
+import os
 import stat
 from dataclasses import replace
 from pathlib import Path
@@ -86,7 +87,8 @@ def test_save_roundtrips_privately(new_path: Path) -> None:
     loaded = settings.load_settings()
     assert (loaded.settings, loaded.exists, loaded.problems) == (saved, True, [])
     assert loaded.settings.answered == saved.answered
-    assert stat.S_IMODE(new_path.stat().st_mode) == 0o600
+    if os.name == "posix":  # Windows has no Unix permission bits
+        assert stat.S_IMODE(new_path.stat().st_mode) == 0o600
     data = json.loads(new_path.read_text(encoding="utf-8"))
     assert data["version"] == settings.SETTINGS_VERSION
     assert data["tmdb"]["tagging"] == "never"

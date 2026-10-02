@@ -345,7 +345,7 @@ def test_settings_listing_marks_unchosen_and_masks_secrets() -> None:
     saved = settings.set_setting(Settings(), "tmdb.api_key", "secret")
     lines = cli._settings_lines(saved, Path("/cfg.json"))
 
-    assert lines[0].endswith("/cfg.json")
+    assert lines[0].endswith(str(Path("/cfg.json")))
     assert "[tmdb]" in lines
     key_line = next(line for line in lines if "api_key" in line)
     assert "secret" not in key_line and "********" in key_line

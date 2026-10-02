@@ -5,14 +5,14 @@ real episode numbers are only known when TheDiscDB matches. Instead, the
 season and disc numbers are read from the disc's own name and its folder
 names, and episode titles say exactly what is known:
 
-    THE BIG BANG THEORY - S01 Disc 2 - Episode 3   (season and disc)
-    Sgt. Frog - S03 - Episode 5                     (season only)
-    EARTH FROM SPACE - Disc 1 - Episode 2           (disc only)
-    <disc name> - Episode N                         (neither)
+    THE BIG BANG THEORY - S01D02 - Episode 3   (season and disc)
+    Sgt. Frog - S03 - Episode 5                (season only)
+    EARTH FROM SPACE - D01 - Episode 2         (disc only)
+    <disc name> - Episode N                    (neither)
 
-The disc's other titles share the same base ("THE BIG BANG THEORY - S01
-Disc 2", "... - Extra 1"), so a series disc never mixes "S01" with the
-disc's own "Season 1".
+Season and disc are two digits each (S01D02). The disc's other titles
+share the same base ("THE BIG BANG THEORY - S01D02", "... - Extra 1"), so
+a series disc never mixes "S01D02" with the disc's own "Season 1 Disc 2".
 
 Episode numbers are zero-padded to the width of the disc's highest one
 (``Episode 001`` … ``Episode 101``), so they line up and sort correctly.
@@ -79,7 +79,7 @@ def parse_series_info(names: Iterable[str | None]) -> SeriesInfo | None:
 
 
 def series_name(info: SeriesInfo | None, fallback: str) -> str:
-    """The disc's base name: "Show - S01 Disc 2", or *fallback* if unknown.
+    """The disc's base name: "Show - S01D02", or *fallback* if unknown.
 
     Every title on a series disc is named from this, so episodes, extras
     and the rest of the disc read alike.
@@ -88,11 +88,11 @@ def series_name(info: SeriesInfo | None, fallback: str) -> str:
         return fallback
     parts = [info.show]
     if info.season is not None and info.disc is not None:
-        parts.append(f"S{info.season:02d} Disc {info.disc}")
+        parts.append(f"S{info.season:02d}D{info.disc:02d}")
     elif info.season is not None:
         parts.append(f"S{info.season:02d}")
     elif info.disc is not None:
-        parts.append(f"Disc {info.disc}")
+        parts.append(f"D{info.disc:02d}")
     return " - ".join(parts)
 
 

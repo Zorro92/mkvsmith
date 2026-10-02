@@ -242,7 +242,7 @@ not expose DVD cell IDs.
 - **Episode names.** A disc can't know how many episodes earlier discs of
   a set held, so episodes are numbered per disc and named with the season
   and disc number when the disc, folder or release name carries them
-  (`Show - S01 Disc 2 - Episode 3`), else `<disc name> - Episode N`.
+  (`Show - S01D02 - Episode 3`), else `<disc name> - Episode N`.
   Numbers are zero-padded to the disc's highest (`Episode 001` …
   `Episode 101`) so they line up and sort. A TheDiscDB match (`--discdb`)
   supplies its own names instead.

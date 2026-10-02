@@ -257,7 +257,7 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   tenían los discos anteriores del set, así que los episodios se numeran por
   disco y se nombran con la temporada y el número de disco cuando el nombre
   del disco, de la carpeta o de la release los incluye
-  (`Serie - S01 Disc 2 - Episode 3`); si no, `<nombre del disco> - Episode N`.
+  (`Serie - S01D02 - Episode 3`); si no, `<nombre del disco> - Episode N`.
   Los números se rellenan con ceros hasta el más alto del disco
   (`Episode 001` … `Episode 101`) para que se alineen y ordenen bien. Una
   coincidencia de TheDiscDB (`--discdb`) aporta sus propios nombres.

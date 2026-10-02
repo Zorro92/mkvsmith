@@ -1515,7 +1515,7 @@ class Scanner:
         regardless of main-feature status, and the "play all" chain is
         explicitly marked so it isn't mistaken for the series itself. When the
         disc, folder or release names carry a season and/or disc number, those
-        prefix the label ("Show - S01 Disc 2 - Episode 3"; see
+        prefix the label ("Show - S01D02 - Episode 3"; see
         ``episode_naming``), since a disc can't know its episodes' numbers
         across the whole set.
 
@@ -1548,7 +1548,7 @@ class Scanner:
         )
         main_idx = pick_main_feature(self.titles, self.config)
         # On a series disc every title shares the episodes' base name
-        # ("Show - S01 Disc 1"), not the disc's own spelling of it.
+        # ("Show - S01D01"), not the disc's own spelling of it.
         series_disc = any(
             t.episode_number is not None or t.play_all or t.packed_segments
             for t in self.titles

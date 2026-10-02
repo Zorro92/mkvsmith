@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from episode_naming import episode_title, parse_series_info, play_all_title
-from models import PackedSegment, RuntimeState, SeriesInfo, Stream, StreamType, Title
+from models import (
+    Config,
+    PackedSegment,
+    RuntimeState,
+    SeriesInfo,
+    Stream,
+    StreamType,
+    Title,
+)
 from packed_episodes import split_packed_title
 
 
@@ -50,8 +58,8 @@ def test_parse_series_info(
     [
         (
             SeriesInfo("Show", 1, 2),
-            "Show - S01 Disc 2 - Episode 3",
-            "Show - S01 Disc 2 - Play All",
+            "Show - S01D02 - Episode 3",
+            "Show - S01D02 - Play All",
         ),
         (
             SeriesInfo("Show", 3, None),
@@ -60,8 +68,8 @@ def test_parse_series_info(
         ),
         (
             SeriesInfo("Show", None, 4),
-            "Show - Disc 4 - Episode 3",
-            "Show - Disc 4 - Play All",
+            "Show - D04 - Episode 3",
+            "Show - D04 - Play All",
         ),
         (None, "Disc Name - Episode 3", "Disc Name - Play All"),
         (SeriesInfo("", 1, 1), "Disc Name - Episode 3", "Disc Name - Play All"),
@@ -74,7 +82,7 @@ def test_titles(info: SeriesInfo | None, episode: str, play_all: str) -> None:
 
 def test_part_suffix_is_kept() -> None:
     assert episode_title(SeriesInfo("Show", 1, 1), "x", 4, "b") == (
-        "Show - S01 Disc 1 - Episode 4b"
+        "Show - S01D01 - Episode 4b"
     )
 
 
@@ -108,9 +116,9 @@ def test_scanner_names_episodes_from_disc_and_folder(tmp_path: Path) -> None:
     scanner._apply_disc_name()
 
     assert [t.name for t in scanner.titles] == [
-        "EARTH FROM SPACE - S01 Disc 1 - Episode 1",
-        "EARTH FROM SPACE - S01 Disc 1 - Episode 2",
-        "EARTH FROM SPACE - S01 Disc 1 - Play All",
+        "EARTH FROM SPACE - S01D01 - Episode 1",
+        "EARTH FROM SPACE - S01D01 - Episode 2",
+        "EARTH FROM SPACE - S01D01 - Play All",
     ]
     assert scanner.disc_metadata.series_info == SeriesInfo("EARTH FROM SPACE", 1, 1)
 
@@ -146,9 +154,9 @@ def test_split_packed_episodes_use_series_info() -> None:
     plain = [t.name for t in split_packed_title(parent)]
 
     assert named == [
-        "Sgt. Frog - S01 Disc 1 - Episode 1",
-        "Sgt. Frog - S01 Disc 1 - Episode 2",
-        "Sgt. Frog - S01 Disc 1 - Extra 1",
+        "Sgt. Frog - S01D01 - Episode 1",
+        "Sgt. Frog - S01D01 - Episode 2",
+        "Sgt. Frog - S01D01 - Extra 1",
     ]
     assert plain[:2] == [
         "Sgt. Frog Season 1 Disc 1 - Episode 1",
@@ -161,7 +169,7 @@ def test_episode_numbers_are_padded_to_the_highest() -> None:
 
     assert [episode_number_width(n) for n in (0, 9, 10, 99, 101)] == [1, 1, 2, 2, 3]
     info = SeriesInfo("Show", 1, 1)
-    assert episode_title(info, "x", 1, width=3) == "Show - S01 Disc 1 - Episode 001"
+    assert episode_title(info, "x", 1, width=3) == "Show - S01D01 - Episode 001"
     assert episode_title(None, "Disc", 3, "b", width=2) == "Disc - Episode 03b"
 
 
@@ -212,8 +220,8 @@ def test_series_disc_titles_share_the_episode_base_name(tmp_path: Path) -> None:
 
     # Not the disc's own "Season 1 Disc 1": the same base as the episodes.
     assert [t.name for t in scanner.titles] == [
-        "Sgt. Frog - S01 Disc 1",
-        "Sgt. Frog - S01 Disc 1",
+        "Sgt. Frog - S01D01",
+        "Sgt. Frog - S01D01",
     ]
 
 
@@ -229,3 +237,28 @@ def test_movie_disc_titles_keep_the_disc_name(tmp_path: Path) -> None:
     scanner._apply_disc_name()
 
     assert {t.name for t in scanner.titles} == {"The Lord of the Rings Disc 1"}
+
+
+def test_title_list_hides_the_series_base(capsys: pytest.CaptureFixture[str]) -> None:
+    import cli
+    from models import DiscMetadata
+
+    metadata = DiscMetadata(
+        name="Sgt. Frog Season 1 Disc 1", series_info=SeriesInfo("Sgt. Frog", 1, 1)
+    )
+    episode = _title(0, episode=1)
+    episode.name = "Sgt. Frog - S01D01 - Episode 01"
+    other = _title(1)
+    other.name = "Sgt. Frog - S01D01"
+
+    base = cli._series_list_base([episode, other], metadata)
+
+    assert base == "Sgt. Frog - S01D01"
+    assert cli._title_list_name(episode, 40, base) == "Episode 01"
+    assert cli._title_list_name(other, 40, base) == "Sgt. Frog - S01D01"
+    # Movie discs (no episodes) keep their names as they are.
+    assert cli._series_list_base([other], metadata) is None
+    cli.display_titles([episode, other], metadata, Config(show_all=True))
+    out = capsys.readouterr().out
+    assert "SCANNED TITLES - Sgt. Frog - S01D01" in out
+    assert "Episode 01" in out and "S01D01 - Episode" not in out

@@ -1136,6 +1136,7 @@ def _build_title_from_ifo(
         title.dvd_cell_fingerprint = layout.fingerprint
         title.dvd_backward_jumps = layout.backward_jumps
         title.dvd_padded = layout.padded
+        title.dvd_cell_durations = layout.cell_durations
 
     _append_undeclared_dvd_subpictures(
         title, ifo_data, vob_parts, duration, config, scan_cache

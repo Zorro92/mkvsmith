@@ -904,7 +904,10 @@ def _build_arg_parser(full: bool = False) -> argparse.ArgumentParser:
         metavar="N,N,...",
         default=None,
         help=more(
-            tr('combine playlist titles into one multi-edition MKV, e.g. 1,2 or "1 2"')
+            tr(
+                "combine versions of one film (Blu-ray playlists or DVD chains) into one mult"
+                'i-edition MKV, e.g. 1,2 or "1 2"'
+            )
         ),
     )
     actions.add_argument(

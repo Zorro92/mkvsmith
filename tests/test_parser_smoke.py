@@ -379,16 +379,17 @@ def test_pgc_program_cell_duration_selects_angle_cell() -> None:
     write_cell(3, 3, 3)
 
     parsed = bytes(data)
+    # NTSC times are 30-frame timecode: 1 "second" plays 1.001 s.
     assert dvdifo._pgc_program_cell_duration(
         parsed, cell_table, 1, 3, angle_index=0
-    ) == pytest.approx(1.0)
+    ) == pytest.approx(1.001)
     assert dvdifo._pgc_program_cell_duration(
         parsed, cell_table, 1, 3, angle_index=1
-    ) == pytest.approx(2.0)
+    ) == pytest.approx(2.002)
     # An angle the block doesn't have plays angle 1, as players do.
     assert dvdifo._pgc_program_cell_duration(
         parsed, cell_table, 1, 3, angle_index=9
-    ) == pytest.approx(1.0)
+    ) == pytest.approx(1.001)
 
 
 def test_pgc_angle_from_commands_reads_setstn_and_defaults_to_one() -> None:
@@ -401,3 +402,18 @@ def test_pgc_angle_from_commands_reads_setstn_and_defaults_to_one() -> None:
 
     assert dvdifo._pgc_angle_from_commands(bytes(data), pgc_abs) == 2
     assert dvdifo._pgc_angle_from_commands(bytes(data), 0x300) == 1
+
+
+@pytest.mark.parametrize(
+    ("raw", "seconds"),
+    [
+        # NTSC (frame code 3): a 30-frame timecode, 1001/30000 s per frame.
+        (bytes([0x01, 0x31, 0x18, 0xC0]), (5478 * 30) * 1001 / 30000),
+        (bytes([0x00, 0x05, 0x04, 0xD7]), (304 * 30 + 17) * 1001 / 30000),
+        # PAL (frame code 1): real seconds plus frames at 25 fps.
+        (bytes([0x01, 0x31, 0x18, 0x40]), 5478.0),
+        (bytes([0x00, 0x00, 0x02, 0x52]), 2 + 12 / 25),
+    ],
+)
+def test_bcd_playback_seconds(raw: bytes, seconds: float) -> None:
+    assert dvdifo._bcd_playback_seconds(raw, 0) == pytest.approx(seconds)

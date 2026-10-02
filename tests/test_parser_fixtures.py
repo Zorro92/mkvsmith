@@ -161,7 +161,7 @@ def test_parse_vts_ifo(fixtures_dir: Path) -> None:
 
     chapters, duration = _parse_vts_pgc_info(data)
     assert len(chapters) == 23
-    assert duration == pytest.approx(4484.0, abs=1.0)
+    assert duration == pytest.approx(4489.0, abs=1.0)
     assert chapters[0] == pytest.approx(0.0)
 
     audio_lang, sub_lang = _parse_vts_ifo_languages(data)
@@ -250,23 +250,23 @@ def test_find_main_pgc_and_enumerate_vts_pgcs(fixtures_dir: Path) -> None:
     data = (fixtures_dir / "dvd_vts_01_0.ifo").read_bytes()
 
     assert _vts_ttn1_pgc_abs(data) == 4408
-    assert _find_main_pgc(data) == (4408, 4484.433766666667, 71)
-    assert _find_main_pgc(data, 1) == (4408, 4484.433766666667, 71)
-    assert _find_main_pgc(data, 2) == (7128, 12.0, 1)
-    assert _find_main_pgc(data, 3) == (7722, 32.033366666666666, 1)
+    assert _find_main_pgc(data) == (4408, 4488.9177666666665, 71)
+    assert _find_main_pgc(data, 1) == (4408, 4488.9177666666665, 71)
+    assert _find_main_pgc(data, 2) == (7128, 12.012, 1)
+    assert _find_main_pgc(data, 3) == (7722, 32.06536666666667, 1)
     assert _find_main_pgc(data, 99) is None
 
     pgcs = _enumerate_vts_pgcs(data)
     assert len(pgcs) == 38
     assert pgcs[:3] == [
-        (1, 4408, 4484.433766666667, 71),
-        (2, 7128, 12.0, 1),
-        (3, 7722, 32.033366666666666, 1),
+        (1, 4408, 4488.9177666666665, 71),
+        (2, 7128, 12.012, 1),
+        (3, 7722, 32.06536666666667, 1),
     ]
     assert pgcs[-3:] == [
-        (36, 19316, 201.16683333333333, 4),
-        (37, 19722, 63.266933333333334, 2),
-        (38, 20072, 1104.4337666666668, 14),
+        (36, 19316, 201.36783333333332, 4),
+        (37, 19722, 63.32993333333334, 2),
+        (38, 20072, 1105.5377666666666, 14),
     ]
 
     # The three ~3-minute cartoons (PGCs 32/35/36) duration-cluster, but the
@@ -283,30 +283,30 @@ def test_find_main_pgc_and_enumerate_vts_pgcs(fixtures_dir: Path) -> None:
 def test_parse_multi_angle_pgc_chapters(fixtures_dir: Path) -> None:
     data = (fixtures_dir / "beauty_vts_09_0.ifo").read_bytes()
 
-    assert _find_main_pgc(data) == (4136, 5478.033366666667, 92)
-    assert _find_main_pgc(data, 2) == (7124, 5507.8341666666665, 108)
-    assert _find_main_pgc(data, 3) == (10534, 5507.8341666666665, 108)
+    assert _find_main_pgc(data) == (4136, 5483.511366666667, 92)
+    assert _find_main_pgc(data, 2) == (7124, 5513.341166666667, 108)
+    assert _find_main_pgc(data, 3) == (10534, 5513.341166666667, 108)
     assert _pgc_angle_from_commands(data, 7124) == 1
     assert _pgc_angle_from_commands(data, 10534) == 2
 
     angle_one_chapters, angle_one_duration = _parse_vts_pgc_info(data, 2)
     assert len(angle_one_chapters) == 21
-    assert angle_one_duration == pytest.approx(5507.367433333334)
+    assert angle_one_duration == pytest.approx(5512.840433333334)
     assert angle_one_chapters[:4] == pytest.approx(
-        [0.0, 167.0, 433.002, 790.44], abs=1e-3
+        [0.0, 167.167, 433.433, 791.224], abs=1e-3
     )
     assert angle_one_chapters[-4:] == pytest.approx(
-        [4543.565, 4716.332, 4989.699, 5241.6], abs=1e-3
+        [4548.077, 4721.016, 4994.656, 5246.808], abs=1e-3
     )
 
     angle_two_chapters, angle_two_duration = _parse_vts_pgc_info(data, 3)
     assert len(angle_two_chapters) == 21
-    assert angle_two_duration == pytest.approx(5704.533433333333)
+    assert angle_two_duration == pytest.approx(5710.204433333333)
     assert angle_two_chapters[:4] == pytest.approx(
-        [0.0, 97.334, 288.236, 971.439], abs=1e-3
+        [0.0, 97.431, 288.522, 972.405], abs=1e-3
     )
     assert angle_two_chapters[-4:] == pytest.approx(
-        [4740.731, 4913.498, 5186.865, 5438.766], abs=1e-3
+        [4745.441, 4918.38, 5192.02, 5444.172], abs=1e-3
     )
 
 
@@ -550,7 +550,7 @@ def test_still_cell_montage_pgc_not_exposed(fixtures_dir: Path) -> None:
         )
     ] == [
         (1, 0.5005, 13),
-        (2, 3.0, 38),
+        (2, 3.003, 38),
         (3, 0.5005, 11),
         (4, 0.5005, 24),
     ]
@@ -570,7 +570,7 @@ def test_bonus_feature_pgcs_are_not_editions(fixtures_dir: Path) -> None:
     """
     data = (fixtures_dir / "treasure_vts_09_0.ifo").read_bytes()
 
-    assert _find_main_pgc(data) == (4280, 53.0, 3)
+    assert _find_main_pgc(data) == (4280, 53.053, 3)
     assert _find_alternate_edition_pgcs(data) == [
         (num, False)
         for num in (

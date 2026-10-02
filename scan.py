@@ -421,6 +421,30 @@ def _title_clip_keys(t: Title) -> list[str]:
     return [str(t.source_file), *(str(p) for p in t.append_clips)]
 
 
+def _is_dvd_chain(t: Title) -> bool:
+    """Whether *t* plays a DVD program chain whose cells are known."""
+    return (
+        not t.playlist_name
+        and t.dvd_vts_number is not None
+        and bool(t.dvd_cell_fingerprint)
+    )
+
+
+def _edition_clip_layout(t: Title) -> tuple[list[str], list[float], list[int]]:
+    """The clips an edition is built from: keys, durations and sizes.
+
+    Blu-ray editions are playlists of clip files; DVD editions are program
+    chains of cells, keyed by title set and (vob_id, cell_id) so chains
+    from one title set share keys exactly where they share footage.
+    """
+    if _is_dvd_chain(t):
+        keys = [
+            f"{t.dvd_vts_number}:{vob}/{cell}" for vob, cell in t.dvd_cell_fingerprint
+        ]
+        return keys, list(t.dvd_cell_durations), [0] * len(keys)
+    return _title_clip_keys(t), t.clip_durations, t.clip_sizes
+
+
 def _stream_signature(t: Title) -> tuple[tuple[object, ...], ...]:
     """Identity of a title's stream layout (type, codec, lang, pid, channels)."""
     return tuple(
@@ -492,9 +516,31 @@ class _EditionClipUnion:
     total_duration: float
 
 
+# Share of the shorter DVD chain that must be common footage for editions:
+# real editions share 27-100% (the Platinum Edition's Work-in-Progress swaps
+# most scenes for pencil tests on angle 2); a chain sharing only bridge
+# cells shares ~0%.
+_DVD_EDITION_SHARED_SHARE = 0.10
+
+
 def _editions_share_clips(first: Title, title: Title) -> bool:
     """Whether two titles share enough clips to be editions of one movie."""
-    return len(set(_title_clip_keys(first)) & set(_title_clip_keys(title))) >= 3
+    first_keys, first_durations, _sizes = _edition_clip_layout(first)
+    keys, durations, _sizes = _edition_clip_layout(title)
+    shared = set(first_keys) & set(keys)
+    if len(shared) < 3:
+        return False
+    if not (_is_dvd_chain(first) and _is_dvd_chain(title)):
+        return True
+    # DVD chains of one title set often open with the same short bridge
+    # cells, so the shared cells must also be real footage (Beauty and the
+    # Beast Diamond Edition's separately stored Work-in-Progress shares 4 s
+    # with the Extended cut).
+    shared_seconds = sum(
+        duration for key, duration in zip(keys, durations) if key in shared
+    )
+    shorter = min(sum(first_durations), sum(durations))
+    return shared_seconds >= _DVD_EDITION_SHARED_SHARE * shorter
 
 
 def _edition_duration_within(first: Title, title: Title) -> bool:
@@ -512,10 +558,12 @@ def _validate_edition_titles(edition_titles: list[Title]) -> tuple[Title, bool]:
     if any(bool(title.iso_internal_paths) != is_iso for title in edition_titles):
         raise ValueError("cannot mix ISO and folder sources in one multi-edition title")
     for title in edition_titles[1:]:
-        if not title.playlist_name:
+        if not (title.playlist_name or _is_dvd_chain(title)) or (
+            _is_dvd_chain(title) != _is_dvd_chain(first)
+        ):
             raise ValueError(
-                f"'{title.name}' is not a Blu-ray playlist title; "
-                "multi-edition MKVs can only combine playlists"
+                f"'{title.name}' is not a Blu-ray playlist or DVD chain like "
+                f"'{first.name}'; multi-edition MKVs combine one kind"
             )
         if not _editions_share_clips(first, title):
             raise ValueError(
@@ -560,9 +608,7 @@ def _union_edition_clips(edition_titles: list[Title]) -> _EditionClipUnion:
     clip_sizes: list[int] = []
 
     for title in edition_titles:
-        keys = _title_clip_keys(title)
-        durations = title.clip_durations
-        sizes = title.clip_sizes
+        keys, durations, sizes = _edition_clip_layout(title)
         if len(durations) != len(keys):
             log_debug(
                 f"{title.name}: clip_durations mismatch "
@@ -627,7 +673,7 @@ def _build_edition_specs(
 
     editions: list[EditionSpec] = []
     for edition_index, title in enumerate(edition_titles):
-        keys = _title_clip_keys(title)
+        keys = _edition_clip_layout(title)[0]
         indices = [clip_union.index[key] for key in keys if key in clip_union.index]
         chapters = list(title.chapters)
         # Re-apply the trailing end-chapter strip relative to this edition's
@@ -693,6 +739,59 @@ def _union_edition_streams(edition_titles: list[Title]) -> list[Stream]:
     return union
 
 
+def _build_combined_dvd_edition_title(
+    edition_titles: list[Title],
+    clip_union: _EditionClipUnion,
+    editions: list[EditionSpec],
+) -> Title:
+    """One title over the union of DVD editions' cells (see the Blu-ray twin).
+
+    The editions share a title set, so the combined title keeps the first
+    one's source, IFO and stream attributes; the muxer reads only the union
+    cells' own VOBUs (``dvd_edition_cells``) and retimes the edition atoms
+    onto the cells' real durations from their NAV packs.
+    """
+    from dvdifo import _EditionCell, pgc_edition_cells
+
+    first = edition_titles[0]
+    cells_by_key: dict[str, _EditionCell] = {}
+    for title in edition_titles:
+        if title.dvd_ifo_data is None:
+            continue
+        for cell in pgc_edition_cells(title.dvd_ifo_data, title.dvd_pgc_number):
+            key = f"{title.dvd_vts_number}:{cell.vob_id}/{cell.cell_id}"
+            cells_by_key.setdefault(key, cell)
+    missing = [key for key in clip_union.keys if key not in cells_by_key]
+    if missing:
+        raise ValueError(f"DVD cells not found for multi-edition: {missing[:3]}")
+    name = first.name
+    label = first.dvd_edition_label
+    if label and name.endswith(f" - {label}"):
+        name = name[: -len(label) - 3]
+    combined = replace(
+        first,
+        name=first.disc_name or name,
+        duration_seconds=clip_union.total_duration,
+        chapters=[],
+        streams=_union_edition_streams(edition_titles),
+        clip_durations=list(clip_union.durations),
+        clip_sizes=[],
+        estimated_size_bytes=max(t.estimated_size_bytes for t in edition_titles),
+        editions=editions,
+        dvd_edition_cells=[cells_by_key[key] for key in clip_union.keys],
+        dvd_edition_label=None,
+        dvd_is_edition=False,
+        episode_number=None,
+        play_all=False,
+    )
+    log_debug(
+        f"Multi-edition DVD title: {len(clip_union.keys)} unique cells "
+        f"({clip_union.total_duration:.0f}s total), {len(editions)} editions "
+        f"({', '.join(edition.name for edition in editions)})"
+    )
+    return combined
+
+
 def _build_combined_edition_title(
     edition_titles: list[Title],
     clip_union: _EditionClipUnion,
@@ -700,6 +799,8 @@ def _build_combined_edition_title(
     editions: list[EditionSpec],
 ) -> Title:
     first = edition_titles[0]
+    if _is_dvd_chain(first):
+        return _build_combined_dvd_edition_title(edition_titles, clip_union, editions)
     base_name = first.disc_name or first.name
     if is_iso:
         combined = Title(
@@ -736,7 +837,10 @@ def _build_combined_edition_title(
 def build_multi_edition_title(
     edition_titles: list[Title], edition_names: list[str] | None = None
 ) -> Title:
-    """Combine seamless-branching playlist titles into one multi-edition Title.
+    """Combine seamless-branching titles into one multi-edition Title.
+
+    Blu-ray playlists combine over their clips, DVD program chains of one
+    title set over their cells.
 
     The result carries the union of all unique clips (first-appearance order
     across the given editions) as its append sequence, plus one ordered-
@@ -744,8 +848,8 @@ def build_multi_edition_title(
     edition; the muxer writes one ``EditionEntry`` per spec and edition TITLE
     tags naming each cut.
 
-    All titles must come from the same disc/source mode, be Blu-ray playlist
-    titles, and overlap on at least three clips with durations within 25% of
+    All titles must come from the same disc/source mode, all be Blu-ray
+    playlist titles or all DVD chains, and overlap on at least three clips with durations within 25% of
     each other (editions of one movie differ in clip order/selection, and may
     expose different track lists, but not in substance). Raises
     ``ValueError`` otherwise.
@@ -770,7 +874,13 @@ def _detect_edition_groups(titles: list[Title]) -> list[list[Title]]:
     """
     groups: list[list[Title]] = []
     pending = [
-        t for t in titles if t.playlist_name and t.clip_durations and len(t.streams) > 1
+        t
+        for t in titles
+        if len(t.streams) > 1
+        and (
+            (t.playlist_name and t.clip_durations)
+            or (_is_dvd_chain(t) and _is_notable_title(t))
+        )
     ]
     while pending:
         head, pending = pending[0], pending[1:]

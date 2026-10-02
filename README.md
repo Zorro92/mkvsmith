@@ -242,7 +242,8 @@ not expose DVD cell IDs.
   frequently capped at a fraction of RAM), with extra guards for
   currently-available RAM and tmpfs free space, since `/tmp` is shared.
 - **Multi-edition MKV output** (`--multi-edition`, or the interactive `me`
-  command) combines seamless-branching playlists into one file with
+  command) combines seamless-branching versions of a film (Blu-ray
+  playlists, or DVD program chains sharing cells) into one file with
   gapless joins and exact chapter placement. It needs a player with
   ordered-chapters support (e.g. mpv, VLC) to switch editions.
 - **Episode names.** A disc can't know how many episodes earlier discs of

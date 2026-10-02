@@ -166,7 +166,7 @@ _ES: dict[str, str] = {
     'disc, folder, or image to read; quote paths with spaces, e.g. "/media/My Disc.iso"': 'disco, carpeta o imagen a leer; pon entre comillas las rutas con espacios, p. ej. "/media/Mi Disco.iso"',
     'output directory (default: current directory), e.g. "/media/rips/New Movies"': 'directorio de salida (predeterminado: el directorio actual), p. ej. "/media/rips/Películas nuevas"',
     'rip title N (or several: 1,3,5 or "1 3 5")': 'extrae el título N (o varios: 1,3,5 o "1 3 5")',
-    'combine playlist titles into one multi-edition MKV, e.g. 1,2 or "1 2"': 'combina títulos de playlist en un MKV multiedición, p. ej. 1,2 o "1 2"',
+    'combine versions of one film (Blu-ray playlists or DVD chains) into one multi-edition MKV, e.g. 1,2 or "1 2"': 'combina versiones de una película (playlists de Blu-ray o cadenas de DVD) en un MKV multiedición, p. ej. 1,2 o "1 2"',
     'streams to rip, e.g. v:0,a:eng,s:all or "v:0 a:eng s:all"': 'pistas a extraer, p. ej. v:0,a:eng,s:all o "v:0 a:eng s:all"',
     "closed-caption sidecar format: srt (portable plain text) or ass (preserves speaker positioning and italics)": "formato del archivo de subtítulos ocultos: srt (texto plano portátil) o ass (conserva la posición de los hablantes y las cursivas)",
     'metadata properties to fetch (default: a sensible set), e.g. Title,Overview or "Title Overview"': 'propiedades de metadatos a obtener (predeterminado: un conjunto razonable), p. ej. Title,Overview o "Title Overview"',

@@ -555,8 +555,12 @@ def _bcd_playback_seconds(data: bytes, off: int) -> float:
     """Decode a DVD 4-byte BCD playback time (HH MM SS FF) into seconds.
 
     The high two bits of the last byte select the frame rate: 1 = 25 fps
-    (PAL), 3 = 30000/1001 fps (NTSC). Returns 0.0 if the bytes are not a
-    plausible time.
+    (PAL), 3 = 30000/1001 fps (NTSC). An NTSC time is a 30-frame timecode,
+    not clock time: HH:MM:SS:FF counts (HH*3600 + MM*60 + SS) * 30 + FF
+    frames, each lasting 1001/30000 s, so it runs 0.1% longer than read
+    literally (Beauty and the Beast's 304.868 s cell plays 305.172 s by its
+    NAV packs; a 90-minute film's chapters drifted ~5 s early). Returns 0.0
+    if the bytes are not a plausible time.
     """
     if off + 4 > len(data):
         return 0.0
@@ -570,9 +574,13 @@ def _bcd_playback_seconds(data: bytes, off: int) -> float:
     )
     if hh > 23 or mm > 59 or ss > 59:
         return 0.0
-    secs = Fraction(hh * 3600 + mm * 60 + ss, 1)
+    whole = hh * 3600 + mm * 60 + ss
+    frames = _bcd(frame_byte & 0x3F)
+    if fps_code == 0x03:
+        return float(Fraction(whole * 30 + frames, 1) / fps)
+    secs = Fraction(whole, 1)
     if fps:
-        secs += Fraction(_bcd(frame_byte & 0x3F), 1) / fps
+        secs += Fraction(frames, 1) / fps
     return float(secs)
 
 
@@ -2641,16 +2649,43 @@ def _read_nav_ids_from_sector(sector: bytes) -> tuple[int, int] | None:
     return None
 
 
-def _scan_vobu_cell_ids(
-    inputs: list[Path], vobu_sectors: list[int]
-) -> dict[int, tuple[int, int]]:
-    """Read the NAV pack (vob_id, cell_id) identity for each given VOBU sector.
+def _read_nav_ptm_from_sector(sector: bytes) -> tuple[int, int] | None:
+    """(vobu_s_ptm, vobu_e_ptm) from a NAV pack's PCI packet, or None.
+
+    pci_gi_t: nv_pck_lbn(4), vobu_cat(2), zero1(2), vobu_uop_ctl(4), then
+    vobu_s_ptm(4) and vobu_e_ptm(4), in 90 kHz ticks.
+    """
+    pos = sector.find(b"\x00\x00\x01\xbf")
+    if pos == -1 or pos + 27 > len(sector) or sector[pos + 6] != 0x00:
+        return None
+    pci = pos + 7
+    return (
+        int.from_bytes(sector[pci + 12 : pci + 16], "big"),
+        int.from_bytes(sector[pci + 16 : pci + 20], "big"),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _VobuNav:
+    """One VOBU's NAV-pack identity and presentation span."""
+
+    ids: tuple[int, int]
+    start_ptm: int
+    end_ptm: int
+
+    @property
+    def seconds(self) -> float:
+        return max(self.end_ptm - self.start_ptm, 0) / 90000
+
+
+def _scan_vobu_nav(inputs: list[Path], vobu_sectors: list[int]) -> dict[int, _VobuNav]:
+    """Read each given VOBU's NAV pack: its (vob_id, cell_id) and span.
 
     Opens each backing file once and seeks per sector rather than reopening
     per VOBU, since this may run for thousands of VOBUs on discs with
     seamless branching.
     """
-    results: dict[int, tuple[int, int]] = {}
+    results: dict[int, _VobuNav] = {}
     layout = _concat_file_layout(inputs)
     handles: dict[Path, Any] = {}
     try:
@@ -2666,12 +2701,22 @@ def _scan_vobu_cell_ids(
                     data = fh.read(2048)
                     ids = _read_nav_ids_from_sector(data)
                     if ids is not None:
-                        results[sector] = ids
+                        ptm = _read_nav_ptm_from_sector(data) or (0, 0)
+                        results[sector] = _VobuNav(ids, *ptm)
                     break
     finally:
         for fh in handles.values():
             fh.close()
     return results
+
+
+def _scan_vobu_cell_ids(
+    inputs: list[Path], vobu_sectors: list[int]
+) -> dict[int, tuple[int, int]]:
+    """Read the NAV pack (vob_id, cell_id) identity for each given VOBU sector."""
+    return {
+        sector: nav.ids for sector, nav in _scan_vobu_nav(inputs, vobu_sectors).items()
+    }
 
 
 @dataclass(slots=True)
@@ -2809,6 +2854,8 @@ class PgcLayout:
     backward_jumps: int
     # Some plain cell's range is padded beyond what it can play.
     padded: bool
+    # Each played cell's IFO duration (seconds), aligned with fingerprint.
+    cell_durations: tuple[float, ...] = ()
 
 
 def pgc_layout(ifo_data: bytes, pgc_number: int | None) -> PgcLayout | None:
@@ -2832,7 +2879,78 @@ def pgc_layout(ifo_data: bytes, pgc_number: int | None) -> PgcLayout | None:
             _cell_is_padded(cell, _pgc_cell_flags(ifo_data, pgc_abs, cell.cell_index))
             for cell in cells
         ),
+        cell_durations=tuple(cell.duration_seconds for cell in cells),
     )
+
+
+def pgc_edition_cells(ifo_data: bytes, pgc_number: int | None) -> list[_EditionCell]:
+    """The cells one PGC plays, angle-selected, in playback order."""
+    main = _find_main_pgc(ifo_data, pgc_number)
+    if main is None:
+        return []
+    selection = _select_main_edition_cells(ifo_data, main[0], main[2])
+    return selection[0] if selection is not None else []
+
+
+def edition_union_vobu_layout(
+    cells: list[_EditionCell], ifo_data: bytes, inputs: list[Path]
+) -> tuple[list[tuple[int, int]], list[float]] | None:
+    """Byte ranges and real durations for a multi-edition DVD's cell union.
+
+    *cells* is the union of the editions' cells (each once, in the combined
+    file's order). Every VOBU's NAV pack says which cell it belongs to and
+    what it presents, so this both keeps only each cell's own VOBUs
+    (seamless branching interleaves editions; protection pads ranges) and
+    measures each cell as the muxed video will play it. IFO cell times are
+    nominal and occasionally off by most of a second (bridge cells), which
+    would misplace every edition atom after them. Returns ``(runs,
+    durations)`` aligned with *cells*, or None when nothing matched.
+    """
+    vobu_admap = _parse_vts_vobu_admap(ifo_data)
+    if not vobu_admap or not cells:
+        return None
+    bounds = _interleaved_scan_sectors(cells, vobu_admap)
+    if bounds is None:
+        return None
+    admap_index, scan_sectors = bounds
+    nav = _scan_vobu_nav(inputs, scan_sectors)
+    order = {(cell.vob_id, cell.cell_id): index for index, cell in enumerate(cells)}
+    cell_vobus: dict[int, list[int]] = {}
+    durations = [0.0] * len(cells)
+    for sector in scan_sectors:
+        entry = nav.get(sector)
+        if entry is None or entry.ids not in order:
+            continue
+        index = order[entry.ids]
+        cell_vobus.setdefault(index, []).append(admap_index[sector])
+        durations[index] += entry.seconds
+    runs: list[tuple[int, int]] = []
+    for index in sorted(cell_vobus):
+        indices = sorted(cell_vobus[index])
+        run_start = previous = indices[0]
+        for vobu in indices[1:]:
+            if vobu != previous + 1:
+                runs.append(
+                    (
+                        vobu_admap[run_start] * _DVD_SECTOR_SIZE,
+                        _vobu_end_byte(vobu_admap[previous], vobu_admap),
+                    )
+                )
+                run_start = vobu
+            previous = vobu
+        runs.append(
+            (
+                vobu_admap[run_start] * _DVD_SECTOR_SIZE,
+                _vobu_end_byte(vobu_admap[previous], vobu_admap),
+            )
+        )
+    if not runs:
+        return None
+    log_debug(
+        f"Multi-edition DVD: {len(runs)} VOBU run(s) for {len(cell_vobus)}/"
+        f"{len(cells)} cells, {sum(durations):.3f}s by NAV packs"
+    )
+    return runs, durations
 
 
 def _noninterleaved_vobu_ranges(

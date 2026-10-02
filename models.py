@@ -32,7 +32,7 @@ try:
 except ImportError:
     _rich_console_class = None
 
-from dvdifo import _IFOAudioAttrs, _IFOSubpictureAttrs, _IFOVideoAttrs
+from dvdifo import _EditionCell, _IFOAudioAttrs, _IFOSubpictureAttrs, _IFOVideoAttrs
 from i18n import tr
 from settings import DEFAULT_TAG_METADATA, Settings
 
@@ -731,6 +731,11 @@ class Title:
     # a decoy plays its cells scrambled, a duplicate plays exactly the cells
     # of another listed title. Both are hidden from the default listing.
     dvd_cell_fingerprint: tuple[tuple[int, int], ...] = ()
+    # IFO durations of the played cells, aligned with dvd_cell_fingerprint.
+    dvd_cell_durations: tuple[float, ...] = ()
+    # A multi-edition DVD title: the union of its editions' cells in the
+    # combined file's order (see scan.build_multi_edition_title).
+    dvd_edition_cells: list[_EditionCell] = field(default_factory=list[_EditionCell])
     dvd_backward_jumps: int = 0
     dvd_padded: bool = False
     dvd_decoy: bool = False

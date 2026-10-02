@@ -1312,6 +1312,50 @@ def _write_vobu_trim(
     return parts, [end - start for start, end in ranges]
 
 
+def _prepare_dvd_edition_inputs(
+    title: Title,
+    inputs: list[Path],
+    temp_base: Path | None,
+    cleanup: list[Path],
+    temp_files: list[Path],
+) -> _DvdTrimResult:
+    """Combined VOB for a multi-edition DVD title, with retimed editions.
+
+    The union cells' own VOBUs are written in the combined order, and each
+    edition's atoms move from the IFO's nominal cell times onto the cells'
+    real durations from their NAV packs: the timeline the muxed video
+    actually has.
+    """
+    from dvdifo import edition_union_vobu_layout
+
+    layout = (
+        edition_union_vobu_layout(title.dvd_edition_cells, title.dvd_ifo_data, inputs)
+        if title.dvd_ifo_data is not None
+        else None
+    )
+    if layout is None:
+        raise RipError(
+            message="Could not locate the editions' cells in the DVD's VOBs",
+            title=title,
+        )
+    runs, durations = layout
+    output = _temp_vob_path(temp_base)
+    _register_temp_file(output, cleanup, temp_files)
+    parts, part_sizes = _write_vobu_trim(
+        inputs, runs, output, temp_base, cleanup, temp_files
+    )
+    bounds: list[tuple[float, float]] = []
+    running = 0.0
+    for duration in durations:
+        bounds.append((running, running + duration))
+        running += duration
+    title.editions = _retime_editions(title.editions, title.clip_durations, bounds)
+    title.clip_durations = durations
+    title.duration_seconds = running
+    vobu_parts = parts if len(parts) > 1 else None
+    return _DvdTrimResult([output], vobu_parts, part_sizes if vobu_parts else None)
+
+
 def _prepare_dvd_inputs(
     title: Title,
     inputs: list[Path],
@@ -1319,6 +1363,10 @@ def _prepare_dvd_inputs(
     cleanup: list[Path],
     temp_files: list[Path],
 ) -> _DvdTrimResult:
+    if title.dvd_edition_cells:
+        return _prepare_dvd_edition_inputs(
+            title, inputs, temp_base, cleanup, temp_files
+        )
     trim_range = _find_dvd_trim_range(title, inputs)
     if trim_range is None:
         log_warn(

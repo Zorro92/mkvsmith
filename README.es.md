@@ -258,7 +258,9 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   a una fracción de la RAM), con comprobaciones adicionales para la RAM
   disponible y el espacio libre del tmpfs, ya que `/tmp` es compartido.
 - **La salida MKV multi-edición** (`--multi-edition`, o el comando interactivo
-  `me`) combina playlists con ramificación continua en un solo archivo con
+  `me`) combina versiones con ramificación continua de una película
+  (playlists de Blu-ray, o cadenas de DVD que comparten celdas) en un solo
+  archivo con
   uniones sin pausas y capítulos exactos. Requiere un reproductor con
   soporte de capítulos ordenados (p. ej. mpv, VLC) para cambiar de edición.
 - **Nombres de episodios.** Un disco no puede saber cuántos episodios

@@ -369,3 +369,43 @@ def test_interactive_settings_commands(
     assert "Takes effect from the next run." in out
     assert "languages = jpn,eng" in out
     assert state.settings.languages == ["eng", "en", "und"]
+
+
+# -----------------------------------------------------------------------------
+# -h shows the everyday options; --help-all shows everything
+# -----------------------------------------------------------------------------
+
+_ADVANCED = ["--tag-art", "--discdb", "--temp-dir", "--cc-format", "--min-duration"]
+_EVERYDAY = ["--title", "--main", "--languages", "--subs", "--tag", "--set"]
+
+
+def _help(capsys: pytest.CaptureFixture[str], flag: str) -> str:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse(flag)
+    assert exc_info.value.code == 0
+    return capsys.readouterr().out
+
+
+def test_short_help_hides_advanced_options(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    short = _help(capsys, "-h")
+    assert all(flag in short for flag in _EVERYDAY)
+    assert not any(flag in short for flag in _ADVANCED)
+    assert "--help-all" in short
+
+
+def test_full_help_shows_every_option_in_sections(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    full = _help(capsys, "--help-all")
+    assert all(flag in full for flag in _EVERYDAY + _ADVANCED)
+    for section in ("Actions", "Tracks", "TMDB tagging", "TheDiscDB", "Temporary"):
+        assert section in full
+    # Hidden aliases stay hidden even here.
+    assert "--save-key" not in full and "--cc-srt" not in full
+
+
+def test_advanced_options_parse_without_appearing_in_short_help() -> None:
+    args = _parse("disc.iso", "--tag-art", "poster", "--min-duration", "30")
+    assert (args.tag_art, args.min_duration) == ("poster", 30.0)

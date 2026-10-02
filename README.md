@@ -96,6 +96,9 @@ mkvsmith> q          # quit
 
 ### Common options
 
+`-h` shows the everyday options; `--help-all` lists every option, grouped
+by section (tracks, titles, TMDB tagging, TheDiscDB, temporary files, ...).
+
 | Flag | Description |
 |---|---|
 | `-t, --title N[,N...]` | Rip one title, or several (`-t 1,3,5`) |

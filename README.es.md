@@ -101,6 +101,10 @@ mkvsmith> q          # salir
 
 ### Opciones comunes
 
+`-h` muestra las opciones habituales; `--help-all` lista todas las opciones,
+agrupadas por sección (pistas, títulos, etiquetado TMDB, TheDiscDB, archivos
+temporales, ...).
+
 | Opción | Descripción |
 |---|---|
 | `-t, --title N[,N...]` | Extrae un título, o varios (`-t 1,3,5`) |

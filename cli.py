@@ -734,31 +734,105 @@ def _index_list(text: str) -> list[int]:
         ) from None
 
 
-def _build_arg_parser() -> argparse.ArgumentParser:
+class _HelpAllAction(argparse.Action):
+    """--help-all: print the full help (every option) and exit."""
+
+    def __init__(
+        self, option_strings: list[str], dest: str, help: str | None = None
+    ) -> None:
+        super().__init__(option_strings, dest, nargs=0, help=help)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        _build_arg_parser(full=True).print_help()
+        parser.exit()
+
+
+def _help_description(prog: str) -> str:
+    """The text under the usage line: what the tool is, then examples."""
+    examples = [
+        (f'{prog} "/media/My Disc.iso"', tr("open the interactive prompt")),
+        (
+            f'{prog} "/media/My Disc.iso" -m ~/rips',
+            tr("rip the main feature to ~/rips"),
+        ),
+        (
+            f"{prog} disc.iso -t 1,3 -l jpn,eng",
+            tr("rip titles 1 and 3, Japanese then English"),
+        ),
+        (f"{prog} --set tmdb.tagging=never", tr("change a saved setting")),
+    ]
+    width = max(len(command) for command, _ in examples) + 3
+    lines = [
+        tr("DVD/Blu-ray ripper using mkvmerge (MKVToolNix)") + ".",
+        tr("Run without an action to open the interactive prompt."),
+        "",
+        tr("examples:"),
+        *(f"  {command:<{width}}{text}" for command, text in examples),
+    ]
+    return "\n".join(lines)
+
+
+def _build_arg_parser(full: bool = False) -> argparse.ArgumentParser:
+    """The command-line parser; *full* shows every option in --help.
+
+    Both parsers accept the same options. ``-h`` shows the everyday ones;
+    ``--help-all`` (``full``) adds tagging, TheDiscDB, temp files and the
+    other advanced options.
+    """
+
+    def more(text: str) -> str:
+        """Help shown only by --help-all."""
+        return text if full else argparse.SUPPRESS
+
     p = argparse.ArgumentParser(
-        description=tr("DVD/Blu-ray ripper using mkvmerge (MKVToolNix)")
+        usage=tr("%(prog)s [options] SOURCE [OUTPUT]"),
+        epilog=None
+        if full
+        else tr(
+            "More options (stream selection, captions, titles, TMDB tagging, "
+            "TheDiscDB, temporary files): --help-all"
+        ),
+        # Keeps the examples' layout; option help is still wrapped.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
     )
-    p.add_argument(
+    p.description = _help_description(p.prog)
+
+    # --- Source and output ---------------------------------------------------
+    io = p.add_argument_group(tr("Source and output"))
+    io.add_argument(
         "source",
         type=Path,
         nargs="?",
+        metavar=tr("SOURCE"),
         help=tr(
             "disc, folder, or image to read; quote paths with spaces, e.g. "
             '"/media/My Disc.iso"'
         ),
     )
-    p.add_argument(
+    io.add_argument(
         "output",
         type=Path,
         nargs="?",
+        metavar=tr("OUTPUT"),
         default=None,
         help=tr(
             "output directory (default: current directory), e.g. "
             '"/media/rips/New Movies"'
         ),
     )
-    # One action per run; none opens the interactive prompt.
-    actions = p.add_mutually_exclusive_group()
+
+    # --- Actions: one per run; none opens the interactive prompt -------------
+    action_group = p.add_argument_group(
+        tr("Actions (pick one; none opens the interactive prompt)")
+    )
+    actions = action_group.add_mutually_exclusive_group()
     actions.add_argument(
         "-t",
         "--title",
@@ -772,41 +846,41 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=tr("rip the detected main feature (all episodes on series discs)"),
     )
-    actions.add_argument("-a", "--all", action="store_true")
+    actions.add_argument(
+        "-a", "--all", action="store_true", help=tr("rip every listed title")
+    )
+    actions.add_argument(
+        "-i",
+        "--info",
+        action="store_true",
+        help=tr("scan the disc and list its titles"),
+    )
+    actions.add_argument(
+        "-d",
+        "--details",
+        type=int,
+        metavar="N",
+        help=tr("show title N's tracks and chapters"),
+    )
     actions.add_argument(
         "--multi-edition",
         type=_index_list,
         metavar="N,N,...",
         default=None,
-        help=tr(
-            'combine playlist titles into one multi-edition MKV, e.g. 1,2 or "1 2"'
+        help=more(
+            tr('combine playlist titles into one multi-edition MKV, e.g. 1,2 or "1 2"')
         ),
     )
-    actions.add_argument("-i", "--info", action="store_true")
-    actions.add_argument("-d", "--details", type=int, metavar="N")
     actions.add_argument(
         "--settings",
         action="store_true",
         help=tr("show the saved settings and exit"),
     )
+
     # Flags left unset (None) fall back to the settings file (settings.py).
-    p.add_argument(
-        "--split-episodes",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help=tr(
-            "split playlists holding several back-to-back episodes into one "
-            "title per episode"
-        ),
-    )
-    p.add_argument(
-        "-s",
-        "--streams",
-        type=_comma_list,
-        metavar="SEL[,SEL...]",
-        help=tr('streams to rip, e.g. v:0,a:eng,s:all or "v:0 a:eng s:all"'),
-    )
-    p.add_argument(
+    # --- Tracks --------------------------------------------------------------
+    tracks = p.add_argument_group(tr("Tracks"))
+    tracks.add_argument(
         "-l",
         "--languages",
         dest="lang",
@@ -814,93 +888,105 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="LANG[,LANG...]",
         help=tr(
-            "preferred track languages, most preferred first: keeps only these "
-            "subtitles (see --all-subs), marks the default audio track, and with "
-            '--no-all-audio drops other audio; e.g. jpn,eng or "jpn eng"'
+            'preferred languages, most preferred first, e.g. jpn,eng or "jpn '
+            'eng": keeps their subtitles and marks the default audio track'
         ),
     )
-    p.add_argument("--lang", dest="lang", type=_comma_list, help=argparse.SUPPRESS)
-    p.add_argument(
+    tracks.add_argument("--lang", dest="lang", type=_comma_list, help=argparse.SUPPRESS)
+    tracks.add_argument(
+        "-s",
+        "--streams",
+        type=_comma_list,
+        metavar="SEL[,SEL...]",
+        help=more(tr('streams to rip, e.g. v:0,a:eng,s:all or "v:0 a:eng s:all"')),
+    )
+    tracks.add_argument(
         "--all-audio",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=tr("keep audio in every language, not only the preferred ones"),
+        help=tr("keep audio in every language (--no-all-audio: only --languages)"),
     )
-    p.add_argument(
+    tracks.add_argument(
         "--subs",
         action=argparse.BooleanOptionalAction,
         default=None,
         help=tr("keep subtitle tracks"),
     )
-    p.add_argument(
+    tracks.add_argument(
         "--all-subs",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=tr("keep subtitles in every language, not only the preferred ones"),
+        help=more(tr("keep subtitles in every language, not only the preferred ones")),
     )
-    p.add_argument(
+    tracks.add_argument(
         "--forced",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=tr("keep forced subtitle tracks"),
+        help=more(tr("keep forced subtitle tracks")),
     )
-    p.add_argument(
+    tracks.add_argument(
         "--cc",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=tr(
-            "extract EIA-608 closed captions as a text subtitle track "
-            "(format: --cc-format)"
+        help=more(
+            tr(
+                "extract EIA-608 closed captions as a text subtitle track "
+                "(format: --cc-format)"
+            )
         ),
     )
     # Old spelling, from when captions were SRT only.
-    p.add_argument(
+    tracks.add_argument(
         "--cc-srt",
         dest="cc",
         action=argparse.BooleanOptionalAction,
         default=None,
         help=argparse.SUPPRESS,
     )
-    p.add_argument(
+    tracks.add_argument(
         "--cc-format",
         choices=["srt", "ass"],
         default=None,
-        help=tr(
-            "closed-caption sidecar format: srt (portable plain text) or "
-            "ass (preserves speaker positioning and italics)"
+        help=more(
+            tr(
+                "closed-caption sidecar format: srt (portable plain text) or "
+                "ass (preserves speaker positioning and italics)"
+            )
         ),
     )
-    p.add_argument("--min-duration", type=float, default=None)
-    p.add_argument(
+
+    # --- Titles --------------------------------------------------------------
+    titles = p.add_argument_group(tr("Titles"))
+    titles.add_argument(
+        "--min-duration",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=more(tr("hide titles shorter than this many seconds (default: 60)")),
+    )
+    titles.add_argument(
         "--show-all",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=tr("show all titles including low-quality ones (menus, trailers, etc.)"),
-    )
-    p.add_argument("--debug", action="store_true", default=None)
-    p.add_argument(
-        "--temp-dir",
-        type=Path,
-        default=None,
-        help=tr(
-            "directory for temporary files (default: /var/tmp when usable, else system temp). "
-        )
-        + tr(
-            "Set explicitly to use tmpfs/RAM (see --ram-limit) or another disk "
-            'path, e.g. "/mnt/big disk/tmp".'
+        help=more(
+            tr("show all titles including low-quality ones (menus, trailers, etc.)")
         ),
     )
-    p.add_argument(
-        "--ram-limit",
-        type=float,
+    titles.add_argument(
+        "--split-episodes",
+        action=argparse.BooleanOptionalAction,
         default=None,
-        metavar="FRAC",
-        help=tr(
-            "max fraction of RAM-backed (tmpfs) temp capacity that extractions may "
-            "use before spilling to disk (default: 0.8). 0 disables the check."
+        help=more(
+            tr(
+                "split playlists holding several back-to-back episodes into one "
+                "title per episode"
+            )
         ),
     )
-    p.add_argument(
+
+    # --- Output files --------------------------------------------------------
+    output = p.add_argument_group(tr("Output files"))
+    output.add_argument(
         "--overwrite",
         choices=list(ASK_MODES),
         default=None,
@@ -909,169 +995,260 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "or never (skip the title)"
         ),
     )
-    p.add_argument(
+    output.add_argument(
         "--force",
         dest="overwrite",
         action="store_const",
         const="always",
-        help=tr("same as --overwrite always"),
+        help=more(tr("same as --overwrite always")),
     )
-    p.add_argument(
+
+    # --- TMDB tagging --------------------------------------------------------
+    tagging = p.add_argument_group(tr("TMDB tagging"))
+    tagging.add_argument(
         "--tag",
         action=argparse.BooleanOptionalAction,
         default=None,
         help=tr("fetch TMDB metadata and tag each rip during muxing"),
     )
-    p.add_argument(
-        "--tmdb-key",
-        help=tr(
-            "TMDB API key for this run (visible to other users; prefer "
-            "TMDB_API_KEY or --set tmdb.api_key)"
-        ),
-    )
-    # Old way to store the key; --set tmdb.api_key replaces it.
-    p.add_argument("--save-key", metavar="KEY", default=None, help=argparse.SUPPRESS)
-    p.add_argument(
-        "--tag-metadata",
-        type=_comma_list,
-        metavar="PROP[,PROP...]",
-        help=tr(
-            "metadata properties to fetch (default: a sensible set), e.g. "
-            'Title,Overview or "Title Overview"'
-        ),
-    )
-    p.add_argument(
-        "--tag-region",
-        default=None,
-        help=tr("ISO 3166-1 region for content rating (default: US)"),
-    )
-    p.add_argument(
-        "--tag-language",
-        default=None,
-        help=tr("TMDB language code for localized metadata (e.g. en, ja, fr)"),
-    )
-    p.add_argument(
+    tagging.add_argument(
         "--tag-art",
         choices=list(TAG_ART_CHOICES),
         default=None,
-        help=tr(
-            "cover art to embed from TMDB (ask: the interactive prompt asks per rip)"
+        help=more(
+            tr(
+                "cover art to embed from TMDB (ask: the interactive prompt asks "
+                "per rip)"
+            )
         ),
     )
-    p.add_argument(
-        "--save-tag-xml",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help=tr("keep the XML tag file after muxing"),
-    )
-    p.add_argument(
+    tagging.add_argument(
         "--tag-confirm",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=tr("confirm the TMDB match before tagging each rip"),
+        help=more(tr("confirm the TMDB match before tagging each rip")),
     )
-    p.add_argument(
+    tagging.add_argument(
         "--tag-title",
         default=None,
-        help=tr('override the movie title used for the TMDB search, e.g. "The Matrix"'),
+        metavar="TITLE",
+        help=more(
+            tr('override the movie title used for the TMDB search, e.g. "The Matrix"')
+        ),
     )
-    p.add_argument(
+    tagging.add_argument(
         "--tag-year",
         type=int,
         default=None,
-        help=tr("override the release year used for the TMDB search"),
+        metavar="YEAR",
+        help=more(tr("override the release year used for the TMDB search")),
     )
-    p.add_argument(
+    tagging.add_argument(
+        "--tag-metadata",
+        type=_comma_list,
+        metavar="PROP[,PROP...]",
+        help=more(
+            tr(
+                "metadata properties to fetch (default: a sensible set), e.g. "
+                'Title,Overview or "Title Overview"'
+            )
+        ),
+    )
+    tagging.add_argument(
+        "--tag-region",
+        default=None,
+        metavar="REGION",
+        help=more(tr("ISO 3166-1 region for content rating (default: US)")),
+    )
+    tagging.add_argument(
+        "--tag-language",
+        default=None,
+        metavar="LANG",
+        help=more(tr("TMDB language code for localized metadata (e.g. en, ja, fr)")),
+    )
+    tagging.add_argument(
+        "--save-tag-xml",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=more(tr("keep the XML tag file after muxing")),
+    )
+    tagging.add_argument(
+        "--tmdb-key",
+        metavar="KEY",
+        help=more(
+            tr(
+                "TMDB API key for this run (visible to other users; prefer "
+                "TMDB_API_KEY or --set tmdb.api_key)"
+            )
+        ),
+    )
+    # Old way to store the key; --set tmdb.api_key replaces it.
+    tagging.add_argument(
+        "--save-key", metavar="KEY", default=None, help=argparse.SUPPRESS
+    )
+
+    # --- TheDiscDB -----------------------------------------------------------
+    discdb = p.add_argument_group(tr("TheDiscDB"))
+    discdb.add_argument(
         "--discdb",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=tr("query TheDiscDB and automatically apply a unique disc match"),
+        help=more(tr("query TheDiscDB and automatically apply a unique disc match")),
     )
-    p.add_argument(
-        "--discdb-url",
-        default=None,
-        help=tr("TheDiscDB base URL (or set THEDISCDB_BASE_URL)"),
-    )
-    p.add_argument(
-        "--discdb-timeout",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        help=tr("TheDiscDB network timeout in seconds"),
-    )
-    p.add_argument(
+    discdb.add_argument(
         "--discdb-contribute",
         choices=list(DISCDB_CONTRIBUTE_MODES),
         default=None,
         metavar="MODE",
-        help=tr(
-            "write a TheDiscDB contribution bundle: browser, manual, "
-            "authenticated direct, or off"
+        help=more(
+            tr(
+                "write a TheDiscDB contribution bundle: browser, manual, "
+                "authenticated direct, or off"
+            )
         ),
     )
-    p.add_argument(
+    discdb.add_argument(
         "--discdb-bundle-dir",
         type=Path,
         default=None,
-        help=tr(
-            "output directory for TheDiscDB contribution files, e.g. "
-            '"/media/rips/DiscDB bundles"'
+        metavar="DIR",
+        help=more(
+            tr(
+                "output directory for TheDiscDB contribution files, e.g. "
+                '"/media/rips/DiscDB bundles"'
+            )
         ),
     )
-    p.add_argument(
+    discdb.add_argument(
         "--discdb-open",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=tr("open TheDiscDB in a browser after preparing a contribution"),
+        help=more(tr("open TheDiscDB in a browser after preparing a contribution")),
     )
-    p.add_argument(
+    discdb.add_argument(
         "--discdb-contribution-id",
         default=None,
         metavar="ID",
-        help=tr("existing TheDiscDB contribution ID for browser/direct handoff"),
+        help=more(tr("existing TheDiscDB contribution ID for browser/direct handoff")),
     )
-    p.add_argument(
+    discdb.add_argument(
         "--discdb-disc-name",
         default=None,
         metavar="NAME",
-        help=tr(
-            "disc name for a direct TheDiscDB contribution (default: Disc 1), "
-            'e.g. "Bonus Disc"'
+        help=more(
+            tr(
+                "disc name for a direct TheDiscDB contribution (default: Disc 1), "
+                'e.g. "Bonus Disc"'
+            )
         ),
     )
-    p.add_argument(
+    discdb.add_argument(
         "--discdb-cookie",
         default=None,
-        help=tr(
-            "authenticated TheDiscDB browser cookie (or set THEDISCDB_COOKIE); "
-            'quote it, e.g. "name=value; other=value"'
+        metavar="COOKIE",
+        help=more(
+            tr(
+                "authenticated TheDiscDB browser cookie (or set THEDISCDB_COOKIE); "
+                'quote it, e.g. "name=value; other=value"'
+            )
         ),
     )
-    p.add_argument(
+    discdb.add_argument(
+        "--discdb-url",
+        default=None,
+        metavar="URL",
+        help=more(tr("TheDiscDB base URL (or set THEDISCDB_BASE_URL)")),
+    )
+    discdb.add_argument(
+        "--discdb-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=more(tr("TheDiscDB network timeout in seconds")),
+    )
+
+    # --- Temporary files -----------------------------------------------------
+    temp = p.add_argument_group(tr("Temporary files"))
+    temp.add_argument(
+        "--temp-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=more(
+            tr(
+                "directory for temporary files (default: /var/tmp when usable, "
+                "else system temp). "
+            )
+            + tr(
+                "Set explicitly to use tmpfs/RAM (see --ram-limit) or another "
+                'disk path, e.g. "/mnt/big disk/tmp".'
+            )
+        ),
+    )
+    temp.add_argument(
+        "--ram-limit",
+        type=float,
+        default=None,
+        metavar="FRAC",
+        help=more(
+            tr(
+                "max fraction of RAM-backed (tmpfs) temp capacity that extractions "
+                "may use before spilling to disk (default: 0.8). 0 disables the "
+                "check."
+            )
+        ),
+    )
+
+    # --- Settings ------------------------------------------------------------
+    saved = p.add_argument_group(
+        tr("Saved settings (defaults for every run; list them with --settings)")
+    )
+    saved.add_argument(
         "--set",
         dest="set_settings",
         action="append",
         default=[],
         metavar="KEY[=VALUE]",
         help=tr(
-            "save a setting and exit, e.g. --set tmdb.tagging=never or "
-            '--set "temp.dir=/mnt/big disk/tmp" (no value: ask for it; secrets '
-            "are typed hidden). Repeatable; see --settings"
+            'save a setting and exit, e.g. tmdb.tagging=never or "temp.dir=/mnt/'
+            'big disk/tmp"; with no value it asks (secrets typed hidden)'
         ),
     )
-    p.add_argument(
+    saved.add_argument(
         "--reset",
         dest="reset_settings",
         action="append",
         default=[],
         metavar="KEY",
-        help=tr("put a saved setting back to its default and exit. Repeatable"),
+        help=tr("put a saved setting back to its default and exit"),
     )
-    p.add_argument("-v", "--version", action="version", version=__version__)
-    p.add_argument(
+
+    # --- Other ---------------------------------------------------------------
+    other = p.add_argument_group(tr("Other"))
+    other.add_argument(
+        "-h", "--help", action="help", help=tr("show the common options and exit")
+    )
+    other.add_argument(
+        "--help-all", action=_HelpAllAction, help=tr("show every option and exit")
+    )
+    other.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=__version__,
+        help=tr("show the version and exit"),
+    )
+    other.add_argument(
         "--ui-lang",
         default=None,
-        help="UI language code (e.g. en, es); overrides the settings file",
+        metavar="LANG",
+        help=more(tr("UI language code (e.g. en, es); overrides the settings file")),
+    )
+    other.add_argument(
+        "--debug",
+        action="store_true",
+        default=None,
+        help=more(tr("print verbose debug output")),
     )
     return p
 

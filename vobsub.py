@@ -112,6 +112,29 @@ class _PtsTimelineRebaser:
         self.tolerance = tolerance
         self.offset = 0
         self.last_effective: int | None = None
+        # Raw and re-based end of the previous VOBU (from its NAV pack).
+        self.vobu_end: int | None = None
+        self.vobu_end_effective: int | None = None
+
+    def splice_vobu(self, start_ptm: int, end_ptm: int) -> None:
+        """Feed one NAV pack: its VOBU presents raw [*start_ptm*, *end_ptm*).
+
+        On a continuous disc each VOBU starts exactly where the previous
+        one ended. Anything else is a splice: a clock reset, or a seamless-
+        branching jump, which can go forward (the other version's footage
+        was skipped) as well as backward. Either way the VOBU continues the
+        timeline from the previous VOBU's end, exactly as the muxed video
+        does. ``rebase``'s tolerance only catches backward resets, so
+        branching discs need the NAV packs.
+        """
+        if end_ptm <= start_ptm:
+            return
+        if self.vobu_end is not None and self.vobu_end_effective is not None:
+            if start_ptm != self.vobu_end:
+                self.offset = self.vobu_end_effective - start_ptm
+            self.last_effective = start_ptm + self.offset
+        self.vobu_end = end_ptm
+        self.vobu_end_effective = end_ptm + self.offset
 
     def rebase(self, raw_pts: int) -> int:
         """Map one raw PTS onto the continuous timeline (90 kHz ticks)."""
@@ -125,6 +148,24 @@ class _PtsTimelineRebaser:
         if self.last_effective is None or effective > self.last_effective:
             self.last_effective = effective
         return effective
+
+
+def _nav_pack_ptm(
+    data: bytearray | bytes | mmap.mmap, pes_start: int, data_len: int
+) -> tuple[int, int] | None:
+    """(vobu_s_ptm, vobu_e_ptm) when the private stream 2 PES at
+    *pes_start* is a NAV pack's PCI, else None.
+
+    PCI layout (DVD-Video, pci_gi): substream id 0x00, then nv_pck_lbn (4),
+    vobu_cat (2), reserved (2), vobu_uop_ctl (4), vobu_s_ptm (4),
+    vobu_e_ptm (4), in 90 kHz ticks.
+    """
+    payload = pes_start + 6
+    if payload + 21 > data_len or data[payload] != 0x00:
+        return None
+    start = int.from_bytes(data[payload + 13 : payload + 17], "big")
+    end = int.from_bytes(data[payload + 17 : payload + 21], "big")
+    return start, end
 
 
 def _video_pes_pts(
@@ -904,6 +945,9 @@ def _scan_vob_subpicture_window(
             scan = _vob_pes_skip(data, index)
         elif stream_id == _PS_PRIVATE2_SID:
             counts.private_two += 1
+            nav = _nav_pack_ptm(data, index, data_len)
+            if nav is not None:
+                pts_rebaser.splice_vobu(*nav)
             packet_end, pts, spu_chunks = _parse_private2_subpictures(
                 data, index, data_len
             )

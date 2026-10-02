@@ -124,6 +124,7 @@ _ES: dict[str, str] = {
     "Choice": "Opción",
     "Using language: {name} ({code})": "Usando idioma: {name} ({code})",
     "Settings: {problem}": "Ajustes: {problem}",
+    "Title {idx} looks mis-authored: its angle blocks have angles of different lengths, so it plays parts of the film out of order (on players too)": "El título {idx} parece mal creado: sus bloques de ángulos tienen ángulos de distinta duración, así que reproduce partes de la película desordenadas (también en reproductores)",
     "PGC": "PGC",
     "VTS/PGC": "VTS/PGC",
     "SOURCE": "ORIGEN",

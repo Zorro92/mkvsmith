@@ -723,6 +723,9 @@ class Title:
     # counterpart of a Blu-ray title's playlist_name.
     dvd_vts_number: int | None = None
     dvd_chain_pgc: int | None = None
+    # The chain has an angle block whose angles differ in length, so it is
+    # mis-authored and plays out of order (see _pgc_angle_lengths_differ).
+    dvd_misauthored: bool = False
     # Human-readable label for a substantial PGC exposed as its own title,
     # set alongside ``dvd_pgc_number``: "Edition N" when the PGC re-cuts the
     # default title's footage (seamless branching), or "PGC N" for an

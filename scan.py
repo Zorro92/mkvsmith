@@ -1498,10 +1498,24 @@ class Scanner:
         if self.titles:
             self._apply_disc_name()
         self._offer_packed_episodes()
+        self._warn_misauthored_titles()
         self._runtime_state.refresh_series_disc(self.titles)
         # Naming adds the fallback name and series info after the early copy.
         self._runtime_state.disc_metadata = self.disc_metadata
         return self.titles
+
+    def _warn_misauthored_titles(self) -> None:
+        """Point out DVD chains that will rip (and play) out of order."""
+        for title in self.titles:
+            if title.dvd_misauthored and _is_notable_title(title):
+                log_warn(
+                    tr(
+                        "Title {idx} looks mis-authored: its angle blocks have "
+                        "angles of different lengths, so it plays parts of the "
+                        "film out of order (on players too)",
+                        idx=title.index,
+                    )
+                )
 
     def _settle_dvd_editions(self) -> None:
         """Keep "Edition N" only for versions of the main feature.

@@ -48,6 +48,37 @@ def test_pts_timeline_rebaser_snaps_clock_resets() -> None:
     assert rebaser.rebase(int(2.5 * second)) == int(13.5 * second)
 
 
+def test_pts_timeline_rebaser_splices_seamless_branching_jumps() -> None:
+    """Seamless-branching editions skip the other version's footage, so the
+    raw clock jumps *forward* between VOBUs; NAV packs splice each jump shut
+    so subtitles follow the muxed video instead of running past its end."""
+    rebaser = _PtsTimelineRebaser(tolerance=5 * 90000)
+    second = 90000
+
+    rebaser.splice_vobu(0, 2 * second)
+    assert rebaser.rebase(1 * second) == 1 * second
+    # Continuous VOBU: no change.
+    rebaser.splice_vobu(2 * second, 4 * second)
+    assert rebaser.rebase(3 * second) == 3 * second
+    # Branch skips 95 s of the other edition: the clock jumps forward.
+    rebaser.splice_vobu(99 * second, 101 * second)
+    assert rebaser.rebase(100 * second) == 5 * second
+    # A later clock reset (backward) splices the same way.
+    rebaser.splice_vobu(0, 1 * second)
+    assert rebaser.rebase(int(0.5 * second)) == int(6.5 * second)
+
+
+def test_nav_pack_ptm_reads_the_pci_times() -> None:
+    from vobsub import _nav_pack_ptm
+
+    pci = bytes([0x00]) + bytes(12) + (90000).to_bytes(4, "big")
+    pci += (135000).to_bytes(4, "big") + bytes(20)
+    packet = b"\x00\x00\x01\xbf" + struct.pack(">H", len(pci)) + pci
+    assert _nav_pack_ptm(packet, 0, len(packet)) == (90000, 135000)
+    dsi = b"\x00\x00\x01\xbf" + struct.pack(">H", len(pci)) + b"\x01" + pci[1:]
+    assert _nav_pack_ptm(dsi, 0, len(dsi)) is None
+
+
 def _video_pes(pts: int) -> bytes:
     """Minimal video PES packet carrying one PTS (flags: PTS present)."""
     return (

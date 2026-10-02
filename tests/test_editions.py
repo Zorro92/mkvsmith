@@ -770,3 +770,23 @@ def test_pull_back_jump_atom_ends_keeps_final_atom_at_file_end() -> None:
     )
     (adjusted,) = _pull_back_jump_atom_ends([edition], file_end=60.0)
     assert adjusted.atoms[0].end == 60.0
+
+
+_BATB_DVDR_IFO = Path(__file__).parent / "fixtures" / "batb_se_dvdr_vts09.ifo"
+
+
+@pytest.mark.skipif(
+    not _BATB_DVDR_IFO.exists(), reason="Beauty and the Beast DVD-R fixture missing"
+)
+def test_unequal_angle_blocks_mark_a_chain_misauthored() -> None:
+    """Beauty and the Beast SE (a DVD-R copy, VTS 9): chain 1 plays the film
+    straight; chains 2 and 3 flag consecutive film segments as alternate
+    angles of different lengths, so they play out of order."""
+    from dvdifo import _pgc_angle_lengths_differ
+
+    ifo = _BATB_DVDR_IFO.read_bytes()
+    assert [_pgc_angle_lengths_differ(ifo, pgc) for pgc in (1, 2, 3)] == [
+        False,
+        True,
+        True,
+    ]

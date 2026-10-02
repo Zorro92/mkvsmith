@@ -1987,6 +1987,45 @@ def _pgc_program_cell_duration(
     return duration
 
 
+# Angle blocks whose angles differ by more than this are not real angles.
+_ANGLE_LENGTH_TOLERANCE = 1.0
+
+
+def _pgc_angle_lengths_differ(ifo_data: bytes, pgc_number: int | None) -> bool:
+    """Whether the PGC has an angle block whose angles differ in length.
+
+    The angles of a real multi-angle block play the same moment from
+    different cameras, so they always run equally long. A block whose
+    "angles" don't (Beauty and the Beast SE on one DVD-R copy: 165 s vs
+    95 s) marks consecutive film segments as alternatives; a player
+    following it skips parts of the film and plays others out of order.
+    """
+    main = _find_main_pgc(ifo_data, pgc_number)
+    if main is None:
+        return False
+    tables = _pgc_program_tables(ifo_data, main[0])
+    if tables is None:
+        return False
+    _program_map, cell_table, _program_count, cell_count = tables
+    block: list[float] = []
+    for cell in range(1, cell_count + 1):
+        base = _cell_playback_base(cell_table, cell)
+        flags = ifo_data[base]
+        block_mode = (flags >> 6) & 0x03
+        is_angle = ((flags >> 4) & 0x03) == 1
+        if block_mode == 0 or not is_angle:
+            block = []
+            continue
+        if block_mode == 1:
+            block = []
+        block.append(_cell_duration(ifo_data, base))
+        if block_mode == 3:
+            if len(block) > 1 and max(block) - min(block) > _ANGLE_LENGTH_TOLERANCE:
+                return True
+            block = []
+    return False
+
+
 def _pgc_chapters_and_duration(
     ifo_data: bytes, pgc_abs: int
 ) -> tuple[list[float], float]:

@@ -124,6 +124,8 @@ _ES: dict[str, str] = {
     "Choice": "Opción",
     "Using language: {name} ({code})": "Usando idioma: {name} ({code})",
     "Settings: {problem}": "Ajustes: {problem}",
+    "This DVD is CSS-encrypted; decrypt it first": "Este DVD está cifrado con CSS; descífralo primero",
+    "This DVD is CSS-encrypted. mkvsmith can't decrypt it, so its titles can't be ripped; decrypt it first (for example with a full disc backup) and rip the copy.": "Este DVD está cifrado con CSS. mkvsmith no puede descifrarlo, así que sus títulos no se pueden extraer; descífralo primero (por ejemplo, con una copia de seguridad completa del disco) y extrae la copia.",
     "Title {idx} looks mis-authored: its angle blocks have angles of different lengths, so it plays parts of the film out of order (on players too)": "El título {idx} parece mal creado: sus bloques de ángulos tienen ángulos de distinta duración, así que reproduce partes de la película desordenadas (también en reproductores)",
     "PGC": "PGC",
     "VTS/PGC": "VTS/PGC",

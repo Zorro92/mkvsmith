@@ -790,3 +790,67 @@ def test_unequal_angle_blocks_mark_a_chain_misauthored() -> None:
         True,
         True,
     ]
+
+
+_BATB_PLATINUM_IFO = Path(__file__).parent / "fixtures" / "batb_platinum_mex_vts09.ifo"
+
+
+@pytest.mark.skipif(
+    not _BATB_PLATINUM_IFO.exists(),
+    reason="Beauty and the Beast Platinum fixture missing",
+)
+def test_real_angle_blocks_are_not_misauthored() -> None:
+    """The pressed Platinum Edition (VTS 9): Special Edition, Theatrical and
+    Work-in-Progress share 36 two-angle blocks of equal-length angles (the
+    finished film and its pencil tests), so no chain is flagged."""
+    from dvdifo import _pgc_angle_lengths_differ
+
+    ifo = _BATB_PLATINUM_IFO.read_bytes()
+    assert not any(_pgc_angle_lengths_differ(ifo, pgc) for pgc in (1, 2, 3))
+
+
+# --- Copy-protected DVDs (Beauty and the Beast Diamond Edition) ----------------
+
+_DIAMOND = {
+    vts: Path(__file__).parent / "fixtures" / f"batb_diamond_vts{vts:02d}.ifo"
+    for vts in (5, 8, 10)
+}
+
+
+@pytest.mark.skipif(
+    not all(path.exists() for path in _DIAMOND.values()),
+    reason="Beauty and the Beast Diamond Edition fixtures missing",
+)
+def test_protected_disc_chain_layouts() -> None:
+    """All title sets share one set of video files. VTS 10 lists the real
+    chains with exact cell ranges; VTS 5 repeats them with ranges padded by
+    junk (identical cells, so the same fingerprint); VTS 8 holds scrambled
+    decoys that jump back and forth across the disc."""
+    from dvdifo import pgc_layout
+
+    vts05, vts08, vts10 = (_DIAMOND[v].read_bytes() for v in (5, 8, 10))
+    real = pgc_layout(vts10, 6)
+    padded = pgc_layout(vts05, 2)
+    decoy = pgc_layout(vts08, 2)
+    assert real is not None and padded is not None and decoy is not None
+    assert (real.padded, real.backward_jumps) == (False, 0)
+    assert (padded.padded, padded.backward_jumps) == (True, 0)
+    assert padded.fingerprint == real.fingerprint
+    assert decoy.backward_jumps >= 3
+
+
+@pytest.mark.skipif(
+    not _DIAMOND[10].exists(), reason="Beauty and the Beast Diamond fixture missing"
+)
+def test_invalid_setstn_angle_plays_angle_one() -> None:
+    """Chains 10/1 and 10/6 differ only in a SetSTN to angle 11, which
+    players ignore, so both play angle 1: the same cells."""
+    from dvdifo import _find_main_pgc, _pgc_angle_from_commands, pgc_layout
+
+    ifo = _DIAMOND[10].read_bytes()
+    main = _find_main_pgc(ifo, 1)
+    assert main is not None
+    assert _pgc_angle_from_commands(ifo, main[0]) == 1
+    first, sixth = pgc_layout(ifo, 1), pgc_layout(ifo, 6)
+    assert first is not None and sixth is not None
+    assert first.fingerprint == sixth.fingerprint

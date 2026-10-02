@@ -385,9 +385,10 @@ def test_pgc_program_cell_duration_selects_angle_cell() -> None:
     assert dvdifo._pgc_program_cell_duration(
         parsed, cell_table, 1, 3, angle_index=1
     ) == pytest.approx(2.0)
+    # An angle the block doesn't have plays angle 1, as players do.
     assert dvdifo._pgc_program_cell_duration(
         parsed, cell_table, 1, 3, angle_index=9
-    ) == pytest.approx(3.0)
+    ) == pytest.approx(1.0)
 
 
 def test_pgc_angle_from_commands_reads_setstn_and_defaults_to_one() -> None:

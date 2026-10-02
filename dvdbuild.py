@@ -58,6 +58,7 @@ from dvdifo import (
     _detect_episode_pgcs,
     _default_pgc_number,
     _pgc_angle_lengths_differ,
+    pgc_layout,
     _compute_dvd_disc_id,
     _compute_libdvdread_disc_id,
     _effective_pgc_durations,
@@ -1130,6 +1131,11 @@ def _build_title_from_ifo(
     title.dvd_vts_number = vts
     title.dvd_chain_pgc = pgc_number or _default_pgc_number(ifo_data)
     title.dvd_misauthored = _pgc_angle_lengths_differ(ifo_data, pgc_number)
+    layout = pgc_layout(ifo_data, pgc_number)
+    if layout is not None:
+        title.dvd_cell_fingerprint = layout.fingerprint
+        title.dvd_backward_jumps = layout.backward_jumps
+        title.dvd_padded = layout.padded
 
     _append_undeclared_dvd_subpictures(
         title, ifo_data, vob_parts, duration, config, scan_cache

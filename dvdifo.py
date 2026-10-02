@@ -1954,7 +1954,9 @@ def _selected_angle_cell(
 ) -> int:
     if not angle_cells:
         return last_cell
-    return angle_cells[min(angle_index, len(angle_cells) - 1)]
+    # An angle the block doesn't have plays the block's first cell, as
+    # players do (libdvdnav reverts an out-of-block angle to angle 1).
+    return angle_cells[angle_index if angle_index < len(angle_cells) else 0]
 
 
 def _pgc_program_cell_duration(
@@ -2358,9 +2360,12 @@ def _scan_pgc_angle_commands(
         )
         if angle_byte & 0x80:
             angle = angle_byte & 0x7F
-            if angle > 0:
+            # DVD-Video angles run 1-9; players ignore any other value
+            # (copy-protected discs set angle 11 as a decoy).
+            if 1 <= angle <= 9:
                 log_debug(f"    _pgc_angle: detected Angle {angle}")
                 return angle
+            log_debug(f"    _pgc_angle: ignoring invalid Angle {angle}")
     return 0
 
 
@@ -2716,9 +2721,8 @@ def _select_main_edition_cells(
     def finalize_block() -> None:
         if not current_block:
             return
-        selected_index = (
-            angle_index if angle_index < len(current_block) else len(current_block) - 1
-        )
+        # Out-of-block angles play the first cell, like _selected_angle_cell.
+        selected_index = angle_index if angle_index < len(current_block) else 0
         selected_cells.append(current_block[selected_index])
         current_block.clear()
 
@@ -2761,6 +2765,74 @@ def _select_main_edition_cells(
     if not selected_cells:
         return None
     return _trim_trailing_thumbnail_cells(selected_cells), any_interleaved
+
+
+# DVD-Video's maximum mux rate (10.08 Mbit/s) in 2048-byte sectors per
+# second. A cell claiming far more sectors than its duration could play is
+# padded with junk (copy-protection), so its range can't be copied whole.
+_DVD_MAX_SECTORS_PER_SECOND = 10_080_000 / 8 / 2048
+_PADDED_CELL_FACTOR = 1.5
+_CELL_INTERLEAVED_FLAG = 0x04
+
+
+def _cell_is_padded(cell: _EditionCell, flags: int) -> bool:
+    """Whether a plain (non-interleaved) cell's range overruns its playback.
+
+    Real cells stay under the maximum rate (the densest seen: 0.96 of it).
+    Protection-padded ranges overrun it 3-22x (Beauty and the Beast Diamond
+    Edition); interleaved cells legitimately span other branches' data, so
+    they're never judged.
+    """
+    if cell.block_mode or flags & _CELL_INTERLEAVED_FLAG:
+        return False
+    sectors = cell.last_sector - cell.first_sector + 1
+    allowed = (cell.duration_seconds + 1.0) * _DVD_MAX_SECTORS_PER_SECOND
+    return sectors > allowed * _PADDED_CELL_FACTOR
+
+
+def _pgc_cell_flags(ifo_data: bytes, pgc_abs: int, cell_index: int) -> int:
+    tables = _pgc_program_tables(ifo_data, pgc_abs)
+    if tables is None:
+        return 0
+    return ifo_data[_cell_playback_base(tables[1], cell_index + 1)]
+
+
+@dataclass(frozen=True, slots=True)
+class PgcLayout:
+    """How a PGC's selected cells sit on the disc (see ``pgc_layout``)."""
+
+    # (vob_id, cell_id) of each played cell, angle-selected: identical
+    # chains have identical fingerprints even when their sector ranges
+    # differ (padded copies of the same chain).
+    fingerprint: tuple[tuple[int, int], ...]
+    # Times the next played cell starts before the previous one on disc.
+    backward_jumps: int
+    # Some plain cell's range is padded beyond what it can play.
+    padded: bool
+
+
+def pgc_layout(ifo_data: bytes, pgc_number: int | None) -> PgcLayout | None:
+    """The played cells' identity and on-disc order for one PGC."""
+    main = _find_main_pgc(ifo_data, pgc_number)
+    if main is None:
+        return None
+    pgc_abs, _duration, cell_count = main
+    selection = _select_main_edition_cells(ifo_data, pgc_abs, cell_count)
+    if selection is None:
+        return None
+    cells, _interleaved = selection
+    return PgcLayout(
+        fingerprint=tuple((cell.vob_id, cell.cell_id) for cell in cells),
+        backward_jumps=sum(
+            1
+            for previous, cell in zip(cells, cells[1:])
+            if cell.first_sector < previous.first_sector
+        ),
+        padded=any(
+            _cell_is_padded(cell, _pgc_cell_flags(ifo_data, pgc_abs, cell.cell_index))
+            for cell in cells
+        ),
+    )
 
 
 def _noninterleaved_vobu_ranges(
@@ -2915,8 +2987,14 @@ def _build_main_edition_vobu_ranges(
     if selection is None:
         return None
     cells, any_interleaved = selection
+    # Padded cells (copy-protection junk around the real data) can't be
+    # copied by range either: the NAV scan keeps only the cells' own VOBUs.
+    padded = any(
+        _cell_is_padded(cell, _pgc_cell_flags(ifo_data, pgc_abs, cell.cell_index))
+        for cell in cells
+    )
 
-    if not any_interleaved:
+    if not any_interleaved and not padded:
         runs = _noninterleaved_vobu_ranges(cells, vobu_admap)
         log_debug(f"Main-edition ranges (no interleaving): {len(runs)} run(s)")
         return runs

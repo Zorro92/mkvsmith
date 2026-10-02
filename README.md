@@ -227,7 +227,13 @@ not expose DVD cell IDs.
   rewritable or recordable media (sparable or virtual UDF partitions) are not
   supported yet; copy such a disc to a folder first.
 - Encrypted commercial discs need `libdvdcss` (DVD) / `libaacs` (Blu-ray) at
-  the OS level.
+  the OS level. A DVD image or folder that is still CSS-encrypted is flagged
+  when scanned (mkvsmith doesn't decrypt), instead of failing at the mux.
+- **Copy-protected DVDs** that bury the film among dozens of decoy chains
+  (Disney's, for one) list only the real versions: scrambled decoys and
+  duplicate chains are hidden (`--show-all` shows them labelled), padded
+  cell ranges are ripped without their junk, and a version's alternate
+  cuts read as `Edition 1`, `Edition 2`, ...
 - Temp files default to `/var/tmp` (disk-backed) when usable, falling back to
   the system temp dir. If the effective temp dir is RAM-backed (tmpfs —
   e.g. an explicit `--temp-dir /tmp`), `mkvsmith` detects this and

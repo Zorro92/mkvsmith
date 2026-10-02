@@ -240,7 +240,15 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   de discos grabables o regrabables (particiones UDF «sparable» o virtuales)
   aún no son compatibles; copia esos discos a una carpeta primero.
 - Los discos comerciales cifrados necesitan `libdvdcss` (DVD) / `libaacs`
-  (Blu-ray) a nivel de sistema.
+  (Blu-ray) a nivel de sistema. Una imagen o carpeta de DVD que sigue cifrada
+  con CSS se señala al escanearla (mkvsmith no descifra), en vez de fallar al
+  multiplexar.
+- **Los DVD con protección anticopia** que esconden la película entre
+  decenas de cadenas señuelo (los de Disney, por ejemplo) listan solo las
+  versiones reales: los señuelos desordenados y las cadenas duplicadas se
+  ocultan (`--show-all` las muestra etiquetadas), las celdas rellenadas se
+  extraen sin su basura y los cortes alternativos se leen como `Edition 1`,
+  `Edition 2`, ...
 - Los archivos temporales usan `/var/tmp` (en disco) por defecto cuando está
   disponible, y si no el directorio temporal del sistema. Si el directorio
   temporal efectivo está respaldado en RAM (tmpfs — p. ej. un `--temp-dir /tmp`

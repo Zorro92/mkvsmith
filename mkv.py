@@ -2585,6 +2585,11 @@ class MKVCreator:
         return out_file
 
     def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path:
+        if self.disc_metadata.css_encrypted and title.dvd_ifo_data is not None:
+            raise RipError(
+                message=tr("This DVD is CSS-encrypted; decrypt it first"),
+                title=title,
+            )
         if not streams:
             streams = self.select_streams(title)
         if not streams:

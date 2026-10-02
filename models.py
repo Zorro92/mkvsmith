@@ -726,6 +726,15 @@ class Title:
     # The chain has an angle block whose angles differ in length, so it is
     # mis-authored and plays out of order (see _pgc_angle_lengths_differ).
     dvd_misauthored: bool = False
+    # Copy-protected DVDs (Disney's: dozens of film-length chains) - see
+    # Scanner._settle_dvd_protection. The layout fields come from the IFO;
+    # a decoy plays its cells scrambled, a duplicate plays exactly the cells
+    # of another listed title. Both are hidden from the default listing.
+    dvd_cell_fingerprint: tuple[tuple[int, int], ...] = ()
+    dvd_backward_jumps: int = 0
+    dvd_padded: bool = False
+    dvd_decoy: bool = False
+    dvd_duplicate: bool = False
     # Human-readable label for a substantial PGC exposed as its own title,
     # set alongside ``dvd_pgc_number``: "Edition N" when the PGC re-cuts the
     # default title's footage (seamless branching), or "PGC N" for an
@@ -874,6 +883,9 @@ class DiscMetadata:
     # Show / season / disc parsed from the disc and folder names, used to name
     # episodes on series discs. None when no season or disc number was found.
     series_info: SeriesInfo | None = None
+    # A DVD whose video is still CSS-scrambled: it can't be ripped until it
+    # is decrypted (mkvsmith doesn't decrypt; see dvd_title_is_css_encrypted).
+    css_encrypted: bool = False
 
 
 # =============================================================================

@@ -1477,6 +1477,8 @@ class Scanner:
             self._scan_iso()
         else:
             self._scan_source_type(source_type)
+        self._check_css_encryption()
+        _settle_dvd_protection(self.titles)
 
         self.disc_name = self.disc_metadata.name
         self._runtime_state.disc_metadata = self.disc_metadata
@@ -1504,6 +1506,25 @@ class Scanner:
         self._runtime_state.disc_metadata = self.disc_metadata
         return self.titles
 
+    def _check_css_encryption(self) -> None:
+        """Flag (and warn about) a DVD whose video is still CSS-encrypted."""
+        from disc_reader import dvd_title_is_css_encrypted
+
+        dvd_titles = [t for t in self.titles if t.dvd_ifo_data is not None]
+        if not dvd_titles:
+            return
+        longest = max(dvd_titles, key=lambda t: t.duration_seconds)
+        if not dvd_title_is_css_encrypted(longest):
+            return
+        self.disc_metadata = replace(self.disc_metadata, css_encrypted=True)
+        log_warn(
+            tr(
+                "This DVD is CSS-encrypted. mkvsmith can't decrypt it, so its "
+                "titles can't be ripped; decrypt it first (for example with a "
+                "full disc backup) and rip the copy."
+            )
+        )
+
     def _warn_misauthored_titles(self) -> None:
         """Point out DVD chains that will rip (and play) out of order."""
         for title in self.titles:
@@ -1518,31 +1539,53 @@ class Scanner:
                 )
 
     def _settle_dvd_editions(self) -> None:
-        """Keep "Edition N" only for versions of the main feature.
+        """Label the versions of the main feature "Edition 1", "Edition 2", ...
 
         A VTS whose chains re-cut each other's footage is labelled as
         editions while scanning, but only the main feature's VTS holds
         versions of the film; bonus VTSs that do the same (a featurette in
         parts) go back to neutral labels: "PGC N", nothing for their
         default chain.
+
+        In the main VTS, a listed chain running as long as the film (within
+        10%) is a version too, even when it plays its footage from other
+        cells (copy-protected discs duplicate it). The versions are then
+        numbered in disc order, after decoys and duplicates are hidden, and
+        a lone version is no edition at all.
         """
         main_idx = pick_main_feature(self.titles, self.config)
         main = next((t for t in self.titles if t.index == main_idx), None)
         main_vts = main.dvd_vts_number if main is not None else None
         for title in self.titles:
-            if not title.dvd_is_edition or (
-                main_vts is not None and title.dvd_vts_number == main_vts
+            if title.dvd_is_edition and (
+                main_vts is None or title.dvd_vts_number != main_vts
             ):
-                continue
-            old = title.dvd_edition_label
-            title.dvd_is_edition = False
-            title.dvd_edition_label = (
-                f"PGC {title.dvd_pgc_number}" if title.dvd_pgc_number else None
-            )
-            if old and title.name.endswith(f" - {old}"):
-                base = title.name[: -len(old) - 3]
-                label = title.dvd_edition_label
-                title.name = f"{base} - {label}" if label else base
+                _relabel_dvd_chain(title, None)
+        if main is None or main_vts is None:
+            return
+        if any(t.is_episode or t.play_all for t in self.titles):
+            return
+        versions = sorted(
+            (
+                t
+                for t in self.titles
+                if t.dvd_vts_number == main_vts
+                and _is_notable_title(t)
+                and (
+                    t.dvd_is_edition
+                    or abs(t.duration_seconds - main.duration_seconds)
+                    <= _EDITION_LENGTH_SHARE * main.duration_seconds
+                )
+            ),
+            key=lambda t: t.dvd_chain_pgc or 0,
+        )
+        if len(versions) < 2:
+            for title in versions:
+                if title.dvd_is_edition:
+                    _relabel_dvd_chain(title, None)
+            return
+        for number, title in enumerate(versions, start=1):
+            _relabel_dvd_chain(title, number)
 
     def _offer_packed_episodes(self) -> None:
         """Split playlists flagged as holding packed episodes, on request.
@@ -1629,6 +1672,10 @@ class Scanner:
                 )
             elif t.play_all:
                 t.name = play_all_title(series, self.disc_name)
+            elif t.dvd_decoy:
+                t.name = f"{base} - Decoy"
+            elif t.dvd_duplicate:
+                t.name = f"{base} - Duplicate"
             elif label := _short_title_label(t):
                 t.name = f"{base} - {label}"
             elif t.dvd_edition_label:
@@ -2422,6 +2469,100 @@ def _label_bluray_episodes(titles: list[Title], config: Config | None = None) ->
     log_info(tr("Detected {n} episode playlist(s)", n=len(order)))
 
 
+# A chain within this share of the film's length in its VTS is a version.
+_EDITION_LENGTH_SHARE = 0.10
+
+
+def _relabel_dvd_chain(title: Title, edition: int | None) -> None:
+    """Make *title* "Edition N", or (None) a neutral "PGC N" / no label."""
+    old = title.dvd_edition_label
+    title.dvd_is_edition = edition is not None
+    if edition is not None:
+        label: str | None = f"Edition {edition}"
+    else:
+        label = f"PGC {title.dvd_pgc_number}" if title.dvd_pgc_number else None
+    title.dvd_edition_label = label
+    base = title.name
+    if old and base.endswith(f" - {old}"):
+        base = base[: -len(old) - 3]
+    title.name = f"{base} - {label}" if label else base
+
+
+# A disc with at least this many film-length DVD chains is copy-protected
+# the Disney way (Beauty and the Beast Diamond Edition: 78).
+_PROTECTION_MIN_CHAINS = 8
+_FEATURE_SHARE = 0.5  # "film-length": at least half the longest title
+_DECOY_MIN_BACKWARD_JUMPS = 3
+
+
+def _settle_dvd_protection(titles: list[Title]) -> None:
+    """Hide decoy and duplicate DVD chains, keeping one of each real version.
+
+    Duplicates (any disc): titles playing exactly the same cells with the
+    same streams collapse to one, preferring an exact chain over a padded
+    one, then the title set holding the most exact chains, then disc order;
+    this matches the reference behaviour.
+
+    Decoys (protected discs only): with dozens of film-length chains, the
+    ones that jump backward across the disc between cells are scrambled
+    copies. A single such chain is legitimate elsewhere (Treasure Planet's
+    commentary cut jumps 21 times), so the rule needs the protection
+    pattern: many film-length chains, some of them playing straight.
+    """
+    dvd = [t for t in titles if t.dvd_cell_fingerprint]
+    if not dvd:
+        return
+    longest = max(t.duration_seconds for t in dvd)
+    features = [t for t in dvd if t.duration_seconds >= _FEATURE_SHARE * longest]
+    if len(features) >= _PROTECTION_MIN_CHAINS and any(
+        t.dvd_backward_jumps == 0 for t in features
+    ):
+        for title in features:
+            if title.dvd_backward_jumps >= _DECOY_MIN_BACKWARD_JUMPS:
+                title.dvd_decoy = True
+
+    kept = [t for t in dvd if not t.dvd_decoy]
+    exact_by_vts: Counter[int | None] = Counter(
+        t.dvd_vts_number for t in kept if not t.dvd_padded
+    )
+    groups: dict[tuple[object, ...], list[Title]] = {}
+    for title in kept:
+        key = (
+            title.dvd_cell_fingerprint,
+            round(title.duration_seconds),
+            tuple((s.stream_type, s.codec, s.language) for s in title.streams),
+        )
+        groups.setdefault(key, []).append(title)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members.sort(
+            key=lambda t: (
+                t.dvd_padded,
+                -exact_by_vts[t.dvd_vts_number],
+                t.dvd_vts_number or 0,
+                t.dvd_chain_pgc or 0,
+            )
+        )
+        for duplicate in members[1:]:
+            duplicate.dvd_duplicate = True
+    for title in dvd:
+        if title.dvd_decoy or title.dvd_duplicate:
+            # Hidden chains aren't content: a pair of same-length decoys in
+            # one title set otherwise reads as two episodes (and the whole
+            # disc as a series).
+            title.episode_number = None
+            title.dvd_episode_part = None
+            title.play_all = False
+    decoys = sum(t.dvd_decoy for t in dvd)
+    duplicates = sum(t.dvd_duplicate for t in dvd)
+    if decoys or duplicates:
+        log_debug(
+            f"DVD protection: {decoys} decoy and {duplicates} duplicate "
+            f"chain(s) hidden of {len(dvd)}"
+        )
+
+
 _SHORT_CLIP_SECONDS = 30.0
 # Less video than this is a blank placeholder (DVD-R copies that drop the
 # extras keep their title sets with ~10 KB of video each); even a
@@ -2479,6 +2620,9 @@ def _is_notable_title(title: Title) -> bool:
         (menu backgrounds) hide regardless of summed duration
     """
     if not title.video_streams:
+        return False
+
+    if title.dvd_decoy or title.dvd_duplicate:
         return False
 
     if _is_hddvd_secondary_experience(title):

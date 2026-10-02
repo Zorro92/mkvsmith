@@ -558,3 +558,85 @@ def test_placeholders_are_named_by_label(tmp_path: Path) -> None:
         "Beauty and the Beast",
         "Beauty and the Beast - Empty",
     ]
+
+
+def _chain(
+    index: int,
+    minutes: float,
+    vts: int,
+    pgc: int,
+    fingerprint: int,
+    *,
+    jumps: int = 0,
+    padded: bool = False,
+) -> Title:
+    title = _feature(index, minutes * 60, dvd_vts_number=vts, dvd_chain_pgc=pgc)
+    title.dvd_cell_fingerprint = ((fingerprint, 1), (fingerprint, 2))
+    title.dvd_backward_jumps = jumps
+    title.dvd_padded = padded
+    return title
+
+
+def test_protected_disc_keeps_one_exact_chain_per_version() -> None:
+    real_ext = _chain(0, 91.7, 10, 1, fingerprint=1)
+    padded_ext = [
+        _chain(1 + i, 91.7, 5 + i, 2, fingerprint=1, padded=True) for i in range(4)
+    ]
+    real_theatrical = _chain(5, 84.9, 10, 5, fingerprint=2)
+    padded_only = [
+        _chain(6 + i, 84.9, 5 + i, 3, fingerprint=3, padded=True) for i in range(2)
+    ]
+    padded_home = _chain(8, 84.9, 10, 3, fingerprint=3, padded=True)
+    decoys = [
+        _chain(9 + i, 80 + i, 8, i + 1, fingerprint=10 + i, jumps=15) for i in range(3)
+    ]
+    episode_decoy = decoys[0]
+    episode_decoy.episode_number = 1
+    titles = [
+        real_ext,
+        *padded_ext,
+        real_theatrical,
+        *padded_only,
+        padded_home,
+        *decoys,
+    ]
+
+    scan._settle_dvd_protection(titles)
+
+    kept = [t for t in titles if not (t.dvd_decoy or t.dvd_duplicate)]
+    assert kept == [real_ext, real_theatrical, padded_home]
+    assert all(t.dvd_decoy for t in decoys)
+    assert episode_decoy.episode_number is None
+    assert not scan._is_notable_title(decoys[1])
+
+
+def test_a_lone_scrambled_chain_is_not_a_decoy() -> None:
+    """Treasure Planet's commentary cut jumps backward 21 times, legitimately:
+    without the protection pattern (many film-length chains) nothing is
+    hidden."""
+    film = _chain(0, 95.3, 1, 1, fingerprint=1)
+    commentary = _chain(1, 95.5, 1, 2, fingerprint=2, jumps=21)
+    scan._settle_dvd_protection([film, commentary])
+    assert not (commentary.dvd_decoy or commentary.dvd_duplicate)
+
+
+def test_editions_are_numbered_after_hiding_duplicates(tmp_path: Path) -> None:
+    extended = _chain(0, 91.7, 10, 1, fingerprint=1)
+    extended.dvd_edition_label, extended.dvd_is_edition = "Edition 1", True
+    duplicate = _chain(1, 91.7, 10, 2, fingerprint=1, padded=True)
+    duplicate.dvd_edition_label, duplicate.dvd_is_edition = "Edition 2", True
+    theatrical = _chain(2, 84.9, 10, 3, fingerprint=2)
+    theatrical.dvd_edition_label, theatrical.dvd_is_edition = "Edition 3", True
+    no_angles = _chain(3, 84.9, 10, 5, fingerprint=3)
+    no_angles.dvd_pgc_number, no_angles.dvd_edition_label = 5, "PGC 5"
+    scanner = scan.Scanner(tmp_path, runtime_state=RuntimeState())
+    scanner.titles = [extended, duplicate, theatrical, no_angles]
+    scan._settle_dvd_protection(scanner.titles)
+
+    scanner._settle_dvd_editions()
+
+    assert [t.dvd_edition_label for t in scanner.titles if not t.dvd_duplicate] == [
+        "Edition 1",
+        "Edition 2",
+        "Edition 3",
+    ]

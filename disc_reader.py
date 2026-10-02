@@ -24,6 +24,7 @@ from pathlib import Path
 from models import (
     Config,
     RUNTIME_STATE,
+    Title,
     log_debug,
     log_error,
     log_info,
@@ -543,6 +544,71 @@ class _IsoFileMetadata:
     path: str
     size: int
     modified: datetime | None = None
+
+
+# How much of a DVD title's video to sample when checking for CSS.
+_CSS_SAMPLE_BYTES = 2 * 1024 * 1024
+_DVD_PACK = 2048
+_PES_MEDIA_STREAMS = frozenset([0xBD, *range(0xC0, 0xF0)])
+
+
+def css_scrambled_packets(data: bytes) -> tuple[int, int]:
+    """(scrambled, total) audio/video PES packets in 2048-byte DVD packs.
+
+    A CSS-encrypted DVD sets each scrambled packet's PES_scrambling_control
+    bits (ISO/IEC 13818-1: bits 5-4 of the byte after the packet length);
+    the pack and PES headers themselves stay readable.
+    """
+    scrambled = total = 0
+    for pack in range(0, len(data) - _DVD_PACK + 1, _DVD_PACK):
+        if data[pack : pack + 4] != b"\x00\x00\x01\xba":
+            continue
+        pes = pack + 14 + (data[pack + 13] & 0x07)
+        end = pack + _DVD_PACK
+        while pes + 7 <= end and data[pes : pes + 3] == b"\x00\x00\x01":
+            stream_id = data[pes + 3]
+            length = int.from_bytes(data[pes + 4 : pes + 6], "big")
+            if stream_id in _PES_MEDIA_STREAMS:
+                total += 1
+                if data[pes + 6] & 0x30:
+                    scrambled += 1
+                break
+            pes += 6 + length
+    return scrambled, total
+
+
+def _dvd_video_sample(title: Title) -> bytes | None:
+    """Up to 2 MB from the middle of *title*'s first VOB (folder or ISO)."""
+    try:
+        if title.iso_internal_paths and title.source_file.suffix.lower() == ".iso":
+            image = IsoImage(title.source_file)
+            try:
+                entry = image.entries.get(title.iso_internal_paths[0])
+                if entry is None:
+                    return None
+                offset = entry.size // 2 // _DVD_PACK * _DVD_PACK
+                return image.read(entry, offset, _CSS_SAMPLE_BYTES)
+            finally:
+                image.close()
+        size = title.source_file.stat().st_size
+        with title.source_file.open("rb") as handle:
+            handle.seek(size // 2 // _DVD_PACK * _DVD_PACK)
+            return handle.read(_CSS_SAMPLE_BYTES)
+    except (IsoImageError, OSError):
+        return None
+
+
+def dvd_title_is_css_encrypted(title: Title) -> bool:
+    """Whether *title*'s video is still CSS-scrambled.
+
+    mkvmerge can't read scrambled VOBs, and mkvsmith doesn't decrypt them;
+    checking at scan time saves extracting gigabytes only to fail at the mux.
+    """
+    sample = _dvd_video_sample(title)
+    if not sample:
+        return False
+    scrambled, total = css_scrambled_packets(sample)
+    return scrambled >= 3 and scrambled * 10 >= total
 
 
 def _open_iso(iso_path: Path) -> IsoImage | None:

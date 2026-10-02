@@ -34,7 +34,7 @@ import statistics
 from collections.abc import Collection, Sequence
 from dataclasses import replace
 
-from episode_naming import episode_number_width, episode_title
+from episode_naming import episode_number_width, episode_title, series_name
 from models import PackedSegment, SeriesInfo, Title
 
 _SHORT = 180.0  # seconds; a segment shorter than this can be an anchor
@@ -202,7 +202,7 @@ def split_packed_title(
             name = episode_title(series_info, parent.name, segment.episode, width=width)
         else:
             extra_number += 1
-            name = f"{parent.name} - Extra {extra_number}"
+            name = f"{series_name(series_info, parent.name)} - Extra {extra_number}"
         # ISO titles name their clips by internal path; folder titles by file.
         iso_paths = list(parent.iso_internal_paths[first : last + 1])
         clips = [parent.source_file, *parent.append_clips]

@@ -10,6 +10,10 @@ names, and episode titles say exactly what is known:
     EARTH FROM SPACE - Disc 1 - Episode 2           (disc only)
     <disc name> - Episode N                         (neither)
 
+The disc's other titles share the same base ("THE BIG BANG THEORY - S01
+Disc 2", "... - Extra 1"), so a series disc never mixes "S01" with the
+disc's own "Season 1".
+
 Episode numbers are zero-padded to the width of the disc's highest one
 (``Episode 001`` … ``Episode 101``), so they line up and sort correctly.
 """
@@ -74,7 +78,12 @@ def parse_series_info(names: Iterable[str | None]) -> SeriesInfo | None:
     return SeriesInfo(show or "", season, disc)
 
 
-def _prefix(info: SeriesInfo | None, fallback: str) -> str:
+def series_name(info: SeriesInfo | None, fallback: str) -> str:
+    """The disc's base name: "Show - S01 Disc 2", or *fallback* if unknown.
+
+    Every title on a series disc is named from this, so episodes, extras
+    and the rest of the disc read alike.
+    """
     if info is None or not info.show:
         return fallback
     parts = [info.show]
@@ -103,8 +112,8 @@ def episode_title(
 
     *width* zero-pads the number (see ``episode_number_width``).
     """
-    return f"{_prefix(info, fallback)} - Episode {number:0{width}d}{part}"
+    return f"{series_name(info, fallback)} - Episode {number:0{width}d}{part}"
 
 
 def play_all_title(info: SeriesInfo | None, fallback: str) -> str:
-    return f"{_prefix(info, fallback)} - Play All"
+    return f"{series_name(info, fallback)} - Play All"

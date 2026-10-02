@@ -148,7 +148,7 @@ def test_split_packed_episodes_use_series_info() -> None:
     assert named == [
         "Sgt. Frog - S01 Disc 1 - Episode 1",
         "Sgt. Frog - S01 Disc 1 - Episode 2",
-        "Sgt. Frog Season 1 Disc 1 - Extra 1",
+        "Sgt. Frog - S01 Disc 1 - Extra 1",
     ]
     assert plain[:2] == [
         "Sgt. Frog Season 1 Disc 1 - Episode 1",
@@ -195,3 +195,37 @@ def test_scanner_pads_to_the_disc_highest_episode(tmp_path: Path) -> None:
         "Show - S01 - Episode 010",
         "Show - S01 - Episode 101",
     ]
+
+
+def test_series_disc_titles_share_the_episode_base_name(tmp_path: Path) -> None:
+    from scan import Scanner
+
+    source = tmp_path / "SGT_FROG_S1_D1"
+    source.mkdir()
+    scanner = Scanner(source, runtime_state=RuntimeState())
+    scanner.disc_name = "Sgt. Frog Season 1 Disc 1"
+    packed = _title(0)
+    packed.packed_segments = [PackedSegment(0.0, 1400.0, 1)]
+    scanner.titles = [packed, _title(1)]
+
+    scanner._apply_disc_name()
+
+    # Not the disc's own "Season 1 Disc 1": the same base as the episodes.
+    assert [t.name for t in scanner.titles] == [
+        "Sgt. Frog - S01 Disc 1",
+        "Sgt. Frog - S01 Disc 1",
+    ]
+
+
+def test_movie_disc_titles_keep_the_disc_name(tmp_path: Path) -> None:
+    from scan import Scanner
+
+    source = tmp_path / "LOTR_D1"
+    source.mkdir()
+    scanner = Scanner(source, runtime_state=RuntimeState())
+    scanner.disc_name = "The Lord of the Rings Disc 1"
+    scanner.titles = [_title(0), _title(1)]
+
+    scanner._apply_disc_name()
+
+    assert {t.name for t in scanner.titles} == {"The Lord of the Rings Disc 1"}

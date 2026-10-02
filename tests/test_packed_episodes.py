@@ -18,6 +18,7 @@ import mkv
 from bluray import _parse_mpls
 from models import Config, PackedSegment, RuntimeState, Stream, StreamType, Title
 from packed_episodes import (
+    annotate_packed_titles,
     detect_packed_episodes,
     expand_packed_titles,
     packed_episode_count,
@@ -312,6 +313,7 @@ def test_scan_offers_but_only_splits_on_request(tmp_path: Path, split: bool) -> 
     )
     scanner.titles = [_detectable_title(tmp_path)]
 
+    annotate_packed_titles(scanner.titles)  # scan() flags them before naming
     scanner._offer_packed_episodes()
 
     if split:

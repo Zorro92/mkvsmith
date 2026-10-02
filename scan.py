@@ -1470,6 +1470,10 @@ class Scanner:
         _label_cross_vts_episodes(self.titles, self.config)
         _label_bluray_episodes(self.titles, self.config)
         _sort_and_reindex_titles(self.titles)
+        from packed_episodes import annotate_packed_titles
+
+        # Packed playlists make a series disc, which naming needs to know.
+        annotate_packed_titles(self.titles)
         if self.titles:
             self._apply_disc_name()
         self._offer_packed_episodes()
@@ -1479,17 +1483,12 @@ class Scanner:
         return self.titles
 
     def _offer_packed_episodes(self) -> None:
-        """Flag playlists holding back-to-back episodes; split them on request.
+        """Split playlists flagged as holding packed episodes, on request.
 
         Runs after naming so the episode titles inherit the disc name.
         """
-        from packed_episodes import (
-            annotate_packed_titles,
-            expand_packed_titles,
-            packed_episode_count,
-        )
+        from packed_episodes import expand_packed_titles, packed_episode_count
 
-        annotate_packed_titles(self.titles)
         packed = [t for t in self.titles if t.packed_segments]
         if not packed:
             return
@@ -1536,6 +1535,7 @@ class Scanner:
             episode_title,
             parse_series_info,
             play_all_title,
+            series_name,
         )
 
         source_name = self.source.name if self.source.is_dir() else self.source.stem
@@ -1547,6 +1547,13 @@ class Scanner:
             max((t.episode_number or 0 for t in self.titles), default=0)
         )
         main_idx = pick_main_feature(self.titles, self.config)
+        # On a series disc every title shares the episodes' base name
+        # ("Show - S01 Disc 1"), not the disc's own spelling of it.
+        series_disc = any(
+            t.episode_number is not None or t.play_all or t.packed_segments
+            for t in self.titles
+        )
+        base = series_name(series, self.disc_name) if series_disc else self.disc_name
         for t in self.titles:
             if t.hddvd_title_number is not None:
                 # XPL display names ("Main Movie", "Trailer3") are already
@@ -1561,11 +1568,11 @@ class Scanner:
             elif t.play_all:
                 t.name = play_all_title(series, self.disc_name)
             elif t.index == main_idx:
-                t.name = self.disc_name
+                t.name = base
             elif t.dvd_edition_label:
-                t.name = f"{self.disc_name} - {t.dvd_edition_label}"
+                t.name = f"{base} - {t.dvd_edition_label}"
             else:
-                t.name = self.disc_name
+                t.name = base
 
     def _scan_iso(self) -> None:
         from disc_reader import _probe_has_disc_image_fs

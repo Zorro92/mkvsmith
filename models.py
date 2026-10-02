@@ -874,7 +874,9 @@ class Config:
     temp_dir: Path | None = None
     preferred_languages: list[str] = field(default_factory=lambda: ["eng", "en", "und"])
     keep_all_audio: bool = True
-    keep_all_subtitles: bool = True
+    keep_all_subtitles: bool = True  # False drops every subtitle track
+    # Keep subtitles in every language; False keeps only preferred_languages.
+    all_subtitle_languages: bool = False
     include_forced: bool = True
     min_duration: float = 60.0
     debug: bool = False
@@ -1070,6 +1072,17 @@ def _stdin_text(prompt: str, default: str | None = None) -> str:
     return ans or (default or "")
 
 
+def _stdin_secret(prompt: str) -> str:
+    """Default secret hook: read a line without echoing it."""
+    import getpass
+
+    try:
+        return getpass.getpass(f"{prompt}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+
+
 @dataclass
 class UserPrompts:
     """Injectable user-interaction hooks (default: stdin).
@@ -1082,6 +1095,8 @@ class UserPrompts:
 
     confirm: ConfirmFn = _stdin_confirm
     text: TextPromptFn = _stdin_text
+    # Like text, but not echoed (API keys).
+    secret: Callable[[str], str] = _stdin_secret
 
 
 @dataclass

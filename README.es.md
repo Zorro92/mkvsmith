@@ -95,6 +95,7 @@ mkvsmith> n          # muestra los detalles del título n
 mkvsmith> r 1        # extrae el título 1
 mkvsmith> rm         # extrae la película principal (episodios en series)
 mkvsmith> ra         # extrae todos los títulos
+mkvsmith> settings   # lista los ajustes guardados (set CLAVE VALOR / reset CLAVE)
 mkvsmith> q          # salir
 ```
 
@@ -102,27 +103,47 @@ mkvsmith> q          # salir
 
 | Opción | Descripción |
 |---|---|
-| `-t, --title N` | Extrae un título concreto |
+| `-t, --title N[,N...]` | Extrae un título, o varios (`-t 1,3,5`) |
 | `-m, --main` | Extrae la película principal detectada (todos los episodios en series) |
 | `-a, --all` | Extrae todos los títulos |
 | `-i, --info` | Solo escanea y lista los títulos |
-| `--split-episodes` | Divide las playlists que contienen varios episodios seguidos en un título por episodio (desactivado por defecto) |
-| `-s, --streams` | Selecciona pistas (p. ej. `v:0 a:eng s:all`) |
-| `-l, --lang` | Idiomas preferidos (por defecto `eng,en,und`) |
-| `--all-audio` / `--no-all-audio` | Conserva todo el audio (activado por defecto) |
-| `--no-subs` | Descarta los subtítulos |
-| `--no-forced` | Descarta los subtítulos forzados |
+| `-d, --details N` | Muestra las pistas y capítulos de un título |
+| `--multi-edition N,N,...` | Combina títulos de playlist en un MKV multiedición |
+| `--settings` | Muestra los ajustes guardados y sale |
+| `--set CLAVE[=VALOR]` / `--reset CLAVE` | Guarda un ajuste (sin valor: se pregunta, oculto si es secreto) o restaura su valor predeterminado, y sale |
+| `--split-episodes` / `--no-split-episodes` | Divide las playlists con episodios seguidos en un título por episodio |
+| `-s, --streams SEL,...` | Selecciona pistas (p. ej. `v:0,a:eng,s:all`) |
+| `-l, --languages LANG,...` | Idiomas preferidos (por defecto `eng,en,und`): conserva solo estos subtítulos y marca el audio predeterminado |
+| `--all-audio` / `--no-all-audio` | Conserva el audio en todos los idiomas (activado por defecto) |
+| `--subs` / `--no-subs` | Conserva los subtítulos |
+| `--all-subs` / `--no-all-subs` | Conserva los subtítulos en todos los idiomas, no solo los de `-l` (desactivado por defecto) |
+| `--forced` / `--no-forced` | Conserva los subtítulos forzados |
+| `--cc` / `--no-cc` | Subtítulos ocultos EIA-608 como pista de texto (desactivado por defecto) |
+| `--cc-format srt\|ass` | Formato de los subtítulos ocultos: texto portátil o ASS con posición |
 | `--min-duration N` | Ignora los títulos de menos de N segundos |
-| `--show-all` | Muestra los títulos de baja calidad (menús/tráileres) |
+| `--show-all` / `--no-show-all` | Muestra los títulos de baja calidad (menús/tráileres) |
 | `--temp-dir DIR` | Directorio temporal (predeterminado: /var/tmp; para tmpfs/RAM u otra ruta en disco) |
 | `--ram-limit FRAC` | Fracción máxima de capacidad tmpfs para directorios temporales en RAM |
-| `--force` | Sobrescribir los archivos de salida existentes sin preguntar |
-| `--tag` / `--no-tag` | Controles de etiquetado TMDB |
+| `--overwrite ask\|always\|never` | Un archivo de salida existente: preguntar, sobrescribir u omitir el título |
+| `--force` | Igual que `--overwrite always` |
+| `--tag` / `--no-tag` | Etiquetado TMDB |
+| `--tag-art none\|poster\|backdrop\|both\|ask` | Arte de portada a incrustar |
+| `--tag-confirm` / `--no-tag-confirm` | Confirma la coincidencia de TMDB antes de etiquetar |
+| `--tag-metadata PROP,...` | Propiedades de TMDB a obtener |
 | `--discdb` / `--no-discdb` | Consulta de TheDiscDB (participativa) |
-| `--discdb-contribute[=MODO]` | Prepara o sube una contribución (`browser`, `manual` o `direct`) |
+| `--discdb-contribute MODO` | Prepara o sube una contribución (`browser`, `manual`, `direct` u `off`) |
 | `--discdb-disc-name NOMBRE` | Nombre de disco usado en el modo directo |
 | `--ui-lang LANG` | Idioma de la interfaz (p. ej. `en`, `es`) |
 | `--debug` | Registro de depuración detallado |
+
+Los valores de lista son un único argumento, separado por comas (`jpn,eng`) o
+por espacios entre comillas (`"jpn eng"`). Pon entre comillas cualquier otro
+valor con espacios: rutas (`"/media/Mi Disco.iso"`), `--tag-title "The
+Matrix"`, `--set "temp.dir=/mnt/disco grande/tmp"`. Solo se permite una
+acción por ejecución (`-t`, `-m`, `-a`, `-i`, `-d`,
+`--multi-edition`, `--settings`). Cada opción de activar/desactivar tiene su
+forma `--no-`, así que un flag puede anular un ajuste guardado en cualquier
+sentido.
 
 ### Ajustes
 

@@ -80,7 +80,7 @@ def test_run_action_rips_only_detected_episodes(
     monkeypatch.setattr(cli, "_rip_title_batch", rip_batch)
 
     cli._run_action(
-        "rip_episodes",
+        "rip_main",
         [regular, episode],
         None,
         None,

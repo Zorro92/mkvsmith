@@ -285,6 +285,7 @@ def test_first_run_misses_every_everyday_setting(
         "tracks.languages",
         "tracks.all_audio",
         "tracks.subtitles",
+        "tracks.all_subtitles",
         "tracks.forced_subtitles",
         "tracks.closed_captions",
         # tracks.cc_format matters once captions aren't "never"
@@ -344,7 +345,10 @@ def _scripted(*answers: str) -> UserPrompts:
     def confirm(_message: str) -> bool:
         return next(replies) == "y"
 
-    return UserPrompts(confirm=confirm, text=text)
+    def secret(_prompt: str) -> str:
+        return next(replies)
+
+    return UserPrompts(confirm=confirm, text=text, secret=secret)
 
 
 def test_setup_asks_only_the_new_setting_and_saves(

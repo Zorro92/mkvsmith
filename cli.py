@@ -68,15 +68,23 @@ from i18n import (
     detect_locale_language,
 )
 from settings import (
+    ASK_MODES,
+    DISCDB_CONTRIBUTE_MODES,
+    TAG_ART_CHOICES,
     LoadedSettings,
     Settings,
     SettingSpec,
+    SETTING_SPECS,
     accept_advanced_defaults,
     format_value,
+    get_setting,
     load_settings,
     missing_settings,
+    reset_setting,
     save_settings,
     set_setting,
+    setting_spec,
+    settings_path,
 )
 from scan import Scanner, _detect_edition_groups, _get_notable_titles, pick_main_feature
 from mkv import MKVCreator
@@ -434,6 +442,29 @@ class _InteractiveRipper:
         if chosen:
             self.split_packed_episodes(chosen)
 
+    def settings_command(self, command: str, args: list[str]) -> None:
+        """``settings`` lists, ``set KEY [VALUE]`` / ``reset KEY`` save.
+
+        Saved changes are the defaults for the next run; this session keeps
+        the options it started with.
+        """
+        state = self.creator.runtime_state
+        if command == "settings":
+            print("\n".join(_settings_lines(state.settings, settings_path())))
+            return
+        if not args:
+            log_warn(tr("Usage: {cmd} KEY", cmd=command))
+            return
+        if command == "set":
+            key, value = args[0], " ".join(args[1:])
+            sets, resets = [f"{key}={value}" if value else key], []
+        else:
+            sets, resets = [], args
+        changed = _save_settings_changes(sets, resets, self.creator.prompts)
+        if changed is not None:
+            state.settings = changed
+            log_info(tr("Takes effect from the next run."))
+
     def _before_rip(self) -> None:
         self.ask_output_dir()
         self.tagging.prepare_for_rip()
@@ -599,6 +630,8 @@ class _InteractiveRipper:
             self._handle_all()
         elif command == "se":
             self.split_packed_episodes(args)
+        elif command in ("settings", "set", "reset"):
+            self.settings_command(command, args)
         else:
             log_warn(tr("Unknown: {cmd}", cmd=command))
         return True
@@ -618,6 +651,7 @@ class _InteractiveRipper:
             print(tr("me N N ...=multi-edition rip"))
         if any(title.packed_segments for title in self.titles):
             print(tr("se [N]=split packed episodes into one title each"))
+        print(tr("settings  set KEY [VALUE]  reset KEY=saved settings"))
 
     def run(self) -> None:
         while True:
@@ -677,65 +711,155 @@ def _ask_closed_captions(titles: list[Title], state: RuntimeState) -> None:
         drop_closed_caption_streams(titles)
 
 
+def _comma_list(text: str) -> list[str]:
+    """argparse type: "a,b,c" -> ["a", "b", "c"].
+
+    Lists are a single argument so they can never swallow the source path
+    that follows them. Commas and/or spaces separate items (no list value
+    contains a space), so the quoted "a b" and "a, b" work too.
+    """
+    items = text.replace(",", " ").split()
+    if not items:
+        raise argparse.ArgumentTypeError(tr("expected a comma-separated list"))
+    return items
+
+
+def _index_list(text: str) -> list[int]:
+    """argparse type: "1,3,5" -> [1, 3, 5]."""
+    try:
+        return [int(item) for item in _comma_list(text)]
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            tr("expected comma-separated title numbers")
+        ) from None
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=tr("DVD/Blu-ray ripper using mkvmerge (MKVToolNix)")
     )
-    p.add_argument("source", type=Path, nargs="?")
+    p.add_argument(
+        "source",
+        type=Path,
+        nargs="?",
+        help=tr(
+            "disc, folder, or image to read; quote paths with spaces, e.g. "
+            '"/media/My Disc.iso"'
+        ),
+    )
     p.add_argument(
         "output",
         type=Path,
         nargs="?",
         default=None,
-        help=tr("output directory (default: current directory)"),
+        help=tr(
+            "output directory (default: current directory), e.g. "
+            '"/media/rips/New Movies"'
+        ),
     )
-    p.add_argument("-t", "--title", type=int)
-    p.add_argument(
+    # One action per run; none opens the interactive prompt.
+    actions = p.add_mutually_exclusive_group()
+    actions.add_argument(
+        "-t",
+        "--title",
+        type=_index_list,
+        metavar="N[,N...]",
+        help=tr('rip title N (or several: 1,3,5 or "1 3 5")'),
+    )
+    actions.add_argument(
         "-m",
         "--main",
         action="store_true",
         help=tr("rip the detected main feature (all episodes on series discs)"),
     )
-    p.add_argument("-a", "--all", action="store_true")
-    # Deprecated alias for --main (kept for scripts; hidden from --help).
-    p.add_argument(
-        "-e",
-        "--episodes",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    p.add_argument(
+    actions.add_argument("-a", "--all", action="store_true")
+    actions.add_argument(
         "--multi-edition",
+        type=_index_list,
         metavar="N,N,...",
         default=None,
-        help=tr("combine playlist titles into one multi-edition MKV"),
+        help=tr(
+            'combine playlist titles into one multi-edition MKV, e.g. 1,2 or "1 2"'
+        ),
     )
+    actions.add_argument("-i", "--info", action="store_true")
+    actions.add_argument("-d", "--details", type=int, metavar="N")
+    actions.add_argument(
+        "--settings",
+        action="store_true",
+        help=tr("show the saved settings and exit"),
+    )
+    # Flags left unset (None) fall back to the settings file (settings.py).
     p.add_argument(
         "--split-episodes",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=None,
         help=tr(
             "split playlists holding several back-to-back episodes into one "
             "title per episode"
         ),
     )
-    p.add_argument("-i", "--info", action="store_true")
-    p.add_argument("-d", "--details", type=int)
-    p.add_argument("-s", "--streams", nargs="+")
-    # Flags left unset (None) fall back to the settings file (settings.py).
-    p.add_argument("-l", "--lang", default=None)
-    p.add_argument("--all-audio", action=argparse.BooleanOptionalAction, default=None)
-    p.add_argument("--no-subs", action="store_true", default=None)
-    p.add_argument("--no-forced", action="store_true", default=None)
     p.add_argument(
-        "--cc-srt",
+        "-s",
+        "--streams",
+        type=_comma_list,
+        metavar="SEL[,SEL...]",
+        help=tr('streams to rip, e.g. v:0,a:eng,s:all or "v:0 a:eng s:all"'),
+    )
+    p.add_argument(
+        "-l",
+        "--languages",
+        dest="lang",
+        type=_comma_list,
+        default=None,
+        metavar="LANG[,LANG...]",
+        help=tr(
+            "preferred track languages, most preferred first: keeps only these "
+            "subtitles (see --all-subs), marks the default audio track, and with "
+            '--no-all-audio drops other audio; e.g. jpn,eng or "jpn eng"'
+        ),
+    )
+    p.add_argument("--lang", dest="lang", type=_comma_list, help=argparse.SUPPRESS)
+    p.add_argument(
+        "--all-audio",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=tr("keep audio in every language, not only the preferred ones"),
+    )
+    p.add_argument(
+        "--subs",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=tr("keep subtitle tracks"),
+    )
+    p.add_argument(
+        "--all-subs",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=tr("keep subtitles in every language, not only the preferred ones"),
+    )
+    p.add_argument(
+        "--forced",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=tr("keep forced subtitle tracks"),
+    )
+    p.add_argument(
         "--cc",
         action=argparse.BooleanOptionalAction,
         default=None,
         help=tr(
             "extract EIA-608 closed captions as a text subtitle track "
-            "(default: off; --no-cc-srt disables)"
+            "(format: --cc-format)"
         ),
+    )
+    # Old spelling, from when captions were SRT only.
+    p.add_argument(
+        "--cc-srt",
+        dest="cc",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--cc-format",
@@ -749,7 +873,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-duration", type=float, default=None)
     p.add_argument(
         "--show-all",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=None,
         help=tr("show all titles including low-quality ones (menus, trailers, etc.)"),
     )
@@ -761,7 +885,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=tr(
             "directory for temporary files (default: /var/tmp when usable, else system temp). "
         )
-        + tr("Set explicitly to use tmpfs/RAM (see --ram-limit) or another disk path."),
+        + tr(
+            "Set explicitly to use tmpfs/RAM (see --ram-limit) or another disk "
+            'path, e.g. "/mnt/big disk/tmp".'
+        ),
     )
     p.add_argument(
         "--ram-limit",
@@ -774,38 +901,44 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--force",
-        action="store_true",
+        "--overwrite",
+        choices=list(ASK_MODES),
         default=None,
-        help=tr("overwrite existing output files without asking"),
+        help=tr(
+            "an output file that already exists: ask first, always overwrite, "
+            "or never (skip the title)"
+        ),
     )
     p.add_argument(
-        "--no-tag",
-        action="store_true",
-        default=None,
-        help=tr("do not tag, even in interactive mode when a TMDB key is available"),
+        "--force",
+        dest="overwrite",
+        action="store_const",
+        const="always",
+        help=tr("same as --overwrite always"),
     )
     p.add_argument(
         "--tag",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=None,
         help=tr("fetch TMDB metadata and tag each rip during muxing"),
     )
     p.add_argument(
         "--tmdb-key",
-        help=tr("TMDB API key (or set TMDB_API_KEY, or store with --save-key)"),
+        help=tr(
+            "TMDB API key for this run (visible to other users; prefer "
+            "TMDB_API_KEY or --set tmdb.api_key)"
+        ),
     )
-    p.add_argument(
-        "--save-key",
-        metavar="KEY",
-        default=None,
-        help=tr("store the TMDB API key to the config file and exit"),
-    )
+    # Old way to store the key; --set tmdb.api_key replaces it.
+    p.add_argument("--save-key", metavar="KEY", default=None, help=argparse.SUPPRESS)
     p.add_argument(
         "--tag-metadata",
-        nargs="+",
-        metavar="PROP",
-        help=tr("metadata properties to fetch (default: a sensible set)"),
+        type=_comma_list,
+        metavar="PROP[,PROP...]",
+        help=tr(
+            "metadata properties to fetch (default: a sensible set), e.g. "
+            'Title,Overview or "Title Overview"'
+        ),
     )
     p.add_argument(
         "--tag-region",
@@ -819,26 +952,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--tag-art",
-        choices=["poster", "backdrop", "both"],
+        choices=list(TAG_ART_CHOICES),
         default=None,
-        help=tr("download and embed cover art from TMDB into the MKV"),
+        help=tr(
+            "cover art to embed from TMDB (ask: the interactive prompt asks per rip)"
+        ),
     )
     p.add_argument(
         "--save-tag-xml",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=None,
         help=tr("keep the XML tag file after muxing"),
     )
     p.add_argument(
-        "--no-tag-confirm",
-        action="store_true",
+        "--tag-confirm",
+        action=argparse.BooleanOptionalAction,
         default=None,
-        help=tr("skip the per-rip tagging confirmation prompt"),
+        help=tr("confirm the TMDB match before tagging each rip"),
     )
     p.add_argument(
         "--tag-title",
         default=None,
-        help=tr("override the movie title used for the TMDB search"),
+        help=tr('override the movie title used for the TMDB search, e.g. "The Matrix"'),
     )
     p.add_argument(
         "--tag-year",
@@ -866,21 +1001,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--discdb-contribute",
-        nargs="?",
-        const="browser",
-        choices=["browser", "manual", "direct"],
+        choices=list(DISCDB_CONTRIBUTE_MODES),
         default=None,
         metavar="MODE",
         help=tr(
-            "write a TheDiscDB contribution bundle "
-            "(browser, manual, or authenticated direct)"
+            "write a TheDiscDB contribution bundle: browser, manual, "
+            "authenticated direct, or off"
         ),
     )
     p.add_argument(
         "--discdb-bundle-dir",
         type=Path,
         default=None,
-        help=tr("output directory for TheDiscDB contribution files"),
+        help=tr(
+            "output directory for TheDiscDB contribution files, e.g. "
+            '"/media/rips/DiscDB bundles"'
+        ),
     )
     p.add_argument(
         "--discdb-open",
@@ -898,12 +1034,38 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--discdb-disc-name",
         default=None,
         metavar="NAME",
-        help=tr("disc name for a direct TheDiscDB contribution (default: Disc 1)"),
+        help=tr(
+            "disc name for a direct TheDiscDB contribution (default: Disc 1), "
+            'e.g. "Bonus Disc"'
+        ),
     )
     p.add_argument(
         "--discdb-cookie",
         default=None,
-        help=tr("authenticated TheDiscDB browser cookie (or set THEDISCDB_COOKIE)"),
+        help=tr(
+            "authenticated TheDiscDB browser cookie (or set THEDISCDB_COOKIE); "
+            'quote it, e.g. "name=value; other=value"'
+        ),
+    )
+    p.add_argument(
+        "--set",
+        dest="set_settings",
+        action="append",
+        default=[],
+        metavar="KEY[=VALUE]",
+        help=tr(
+            "save a setting and exit, e.g. --set tmdb.tagging=never or "
+            '--set "temp.dir=/mnt/big disk/tmp" (no value: ask for it; secrets '
+            "are typed hidden). Repeatable; see --settings"
+        ),
+    )
+    p.add_argument(
+        "--reset",
+        dest="reset_settings",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help=tr("put a saved setting back to its default and exit. Repeatable"),
     )
     p.add_argument("-v", "--version", action="version", version=__version__)
     p.add_argument(
@@ -921,9 +1083,8 @@ def _pick[T](flag: T | None, saved: T) -> T:
 
 def _resolve_discdb_options(a: argparse.Namespace, saved: Settings) -> DiscDbOptions:
     """TheDiscDB options: flag > environment > settings file > default."""
-    contribute_mode = a.discdb_contribute
-    if contribute_mode is None and saved.discdb_contribute != "off":
-        contribute_mode = saved.discdb_contribute
+    mode = _pick(a.discdb_contribute, saved.discdb_contribute)
+    contribute_mode = None if mode == "off" else mode
     timeout = _pick(a.discdb_timeout, saved.discdb_timeout)
     if timeout <= 0:
         timeout = DiscDbOptions().timeout_seconds
@@ -947,12 +1108,10 @@ def _resolve_discdb_options(a: argparse.Namespace, saved: Settings) -> DiscDbOpt
 
 
 def _tagging_mode(a: argparse.Namespace, saved: Settings) -> str:
-    """never / ask / always: --no-tag beats --tag beats the saved setting."""
-    if a.no_tag:
-        return "never"
-    if a.tag:
-        return "always"
-    return saved.tagging
+    """never / ask / always: --tag / --no-tag, else the saved setting."""
+    if a.tag is None:
+        return saved.tagging
+    return "always" if a.tag else "never"
 
 
 def _per_disc(flag: bool | None, saved: str, interactive: bool) -> tuple[bool, bool]:
@@ -968,18 +1127,22 @@ def _per_disc(flag: bool | None, saved: str, interactive: bool) -> tuple[bool, b
     return saved == "always", False
 
 
-def _is_interactive_run(a: argparse.Namespace) -> bool:
-    """Whether *a* opens the interactive prompt (no action flag given)."""
-    return not (
+def _has_action(a: argparse.Namespace) -> bool:
+    """Whether *a* names an action (-t, -m, -a, -i, -d, ...)."""
+    return bool(
         a.details is not None
         or a.main
-        or a.episodes
         or a.title is not None
         or a.all
         or a.info
         or a.multi_edition
-        or a.save_key
+        or a.settings
     )
+
+
+def _is_interactive_run(a: argparse.Namespace) -> bool:
+    """Whether *a* opens the interactive prompt (no action flag given)."""
+    return not (_has_action(a) or a.save_key or a.set_settings or a.reset_settings)
 
 
 def _apply_parsed_args(
@@ -1001,24 +1164,21 @@ def _apply_parsed_args(
     src: Path | None = a.source
     sids: list[str] | None = a.streams
     details: int | None = a.details
-    title_num: int | None = a.title
+    title_num: int | None = a.title[0] if a.title else None
     # Not a setting: the CLI writes to the current directory unless told
     # otherwise; the interactive prompt asks before its first rip.
     config.output_dir = a.output or Path(".")
     config.ask_output_dir = interactive and a.output is None
-    config.preferred_languages = (
-        [lang for lang in a.lang.split(",") if lang]
-        if a.lang
-        else list(saved.languages)
-    )
+    config.preferred_languages = list(a.lang or saved.languages)
     config.keep_all_audio = _pick(a.all_audio, saved.all_audio)
-    config.keep_all_subtitles = not a.no_subs and saved.subtitles
-    config.include_forced = not a.no_forced and saved.forced_subtitles
+    config.keep_all_subtitles = _pick(a.subs, saved.subtitles)
+    config.all_subtitle_languages = _pick(a.all_subs, saved.all_subtitles)
+    config.include_forced = _pick(a.forced, saved.forced_subtitles)
     config.min_duration = _pick(a.min_duration, saved.min_duration)
     config.debug = bool(a.debug)
     config.temp_dir = _pick(a.temp_dir, saved.temp_dir)
     config.ram_limit = _pick(a.ram_limit, saved.ram_limit)
-    config.overwrite = "always" if a.force else saved.overwrite
+    config.overwrite = _pick(a.overwrite, saved.overwrite)
     config.show_all = _pick(a.show_all, saved.show_all)
     config.split_episodes, config.ask_split_episodes = _per_disc(
         a.split_episodes, saved.split_episodes, interactive
@@ -1026,7 +1186,7 @@ def _apply_parsed_args(
     # Asking still detects captions during the scan (on=True), so discs
     # without any skip the question.
     cc_on, config.ask_closed_captions = _per_disc(
-        a.cc_srt, saved.closed_captions, interactive
+        a.cc, saved.closed_captions, interactive
     )
     config.extract_cc608 = cc_on or config.ask_closed_captions
     config.cc608_format = _pick(a.cc_format, saved.cc_format)
@@ -1045,26 +1205,120 @@ def _apply_parsed_args(
     tag_options.region = a.tag_region or saved.tag_region
     tag_options.language = a.tag_language or saved.tag_language
     # The saved "ask" leaves art unset: the interactive prompt asks per rip.
-    tag_options.art = a.tag_art or (None if saved.tag_art == "ask" else saved.tag_art)
+    art = _pick(a.tag_art, saved.tag_art)
+    tag_options.art = None if art == "ask" else art
     tag_options.save_xml = _pick(a.save_tag_xml, saved.tag_save_xml)
-    tag_options.confirm = not a.no_tag_confirm and saved.tag_confirm_match
+    tag_options.confirm = _pick(a.tag_confirm, saved.tag_confirm_match)
     tag_options.title_override = a.tag_title
     tag_options.year_override = a.tag_year
     return src, sids, details, title_num
 
 
-def _save_tmdb_key_and_exit(api_key: str) -> None:
+def _settings_lines(saved: Settings, path: Path) -> list[str]:
+    """The settings listing for --settings / the ``settings`` command."""
+    lines = [tr("Settings file: {path}", path=path)]
+    section = ""
+    for spec in SETTING_SPECS:
+        if spec.section != section:
+            section = spec.section
+            lines.append(f"[{section}]")
+        value = format_value(spec, getattr(saved, spec.attr)) or "-"
+        if spec.key not in saved.answered:
+            value += " " + tr("(default, not chosen yet)")
+        lines.append(f"  {spec.name} = {value}    # {tr(spec.description)}")
+    return lines
+
+
+def _show_settings() -> None:
+    loaded = load_settings()
+    for problem in loaded.problems:
+        log_warn(tr("Settings: {problem}", problem=problem))
+    print("\n".join(_settings_lines(loaded.settings, loaded.path)))
+    sys.exit(0)
+
+
+def _parse_assignment(
+    assignment: str, saved: Settings, prompts: UserPrompts
+) -> tuple[str, str]:
+    """ "key=value" -> (key, value); a bare "key" asks for the value.
+
+    Secrets are typed hidden, so they stay out of the shell history and the
+    process list.
+    """
+    key, separator, value = assignment.partition("=")
+    key = key.strip()
+    if separator:
+        return key, value
+    spec = setting_spec(key)
+    question = tr(spec.description)
+    if spec.secret:
+        return key, prompts.secret(question)
+    current = format_value(spec, getattr(saved, spec.attr))
+    return key, prompts.text(question, current or None)
+
+
+def change_settings(
+    saved: Settings, assignments: list[tuple[str, str]], resets: list[str]
+) -> Settings:
+    """*saved* with each (key, value) set and each key reset.
+
+    Raises ``KeyError`` (unknown key) or ``ValueError`` (bad value) before
+    anything is changed, so a typo saves nothing.
+    """
+    for key, value in assignments:
+        saved = set_setting(saved, key, value)
+    for key in resets:
+        saved = reset_setting(saved, key)
+    return saved
+
+
+def _save_settings_changes(
+    sets: list[str], resets: list[str], prompts: UserPrompts
+) -> Settings | None:
+    """Apply "key[=value]" *sets* and *resets* to the file and save it.
+
+    Shared by --set/--reset and the interactive ``set``/``reset`` commands.
+    Reports what changed; returns the new settings, or None (after
+    reporting why) when nothing was saved.
+    """
     loaded = load_settings()
     if loaded.unreadable:
         log_error(tr("Could not write config: {err}", err="; ".join(loaded.problems)))
-        sys.exit(1)
+        return None
     try:
-        path = save_settings(set_setting(loaded.settings, "tmdb.api_key", api_key))
-        log_info(f"TMDB API key saved to {path}")
-    except (OSError, ValueError) as e:
+        assignments = [
+            _parse_assignment(item, loaded.settings, prompts) for item in sets
+        ]
+        changed = change_settings(loaded.settings, assignments, resets)
+    except KeyError as e:
+        log_error(tr("{err} (see --settings for every key)", err=e.args[0]))
+        return None
+    except ValueError as e:
+        log_error(tr("Invalid value: {err}", err=e))
+        return None
+    try:
+        path = save_settings(changed, loaded.path)
+    except OSError as e:
         log_error(tr("Could not write config: {err}", err=e))
-        sys.exit(1)
-    sys.exit(0)
+        return None
+    for key, _value in assignments:
+        log_info(
+            tr(
+                "{key} = {value}",
+                key=key,
+                value=format_value(setting_spec(key), get_setting(changed, key)),
+            )
+        )
+    for key in resets:
+        log_info(tr("{key} reset to its default", key=key))
+    log_info(tr("Settings saved to {path}", path=path))
+    return changed
+
+
+def _run_settings_changes(sets: list[str], resets: list[str]) -> None:
+    """--set / --reset: change the saved settings and exit."""
+    changed = _save_settings_changes(sets, resets, RUNTIME_STATE.prompts)
+    sys.exit(0 if changed is not None else 1)
 
 
 def _select_action(
@@ -1076,11 +1330,7 @@ def _select_action(
 ) -> tuple[Path | None, str, int | None, list[str] | None]:
     if details is not None:
         return src, "details", details, sids
-    if a.main or a.episodes:
-        if a.episodes and not a.main:
-            log_warn(
-                tr("--episodes is deprecated; use --main (episodes on series discs)")
-            )
+    if a.main:
         return src, "rip_main", None, sids
     if title_num is not None:
         return src, "rip_title", title_num, sids
@@ -1103,21 +1353,23 @@ def parse_args(
     p = _build_arg_parser()
     a = p.parse_args()
 
-    # Persist the TMDB API key and exit (no ripping tools needed for this).
+    # Settings commands exit here (no ripping tools needed for them).
     if a.save_key:
-        _save_tmdb_key_and_exit(a.save_key)
+        a.set_settings.append(f"tmdb.api_key={a.save_key}")
+    if a.set_settings or a.reset_settings:
+        if _has_action(a):
+            p.error(tr("--set/--reset can't be combined with an action"))
+        _run_settings_changes(a.set_settings, a.reset_settings)
+    if a.settings:
+        _show_settings()
 
     interactive = _is_interactive_run(a)
     if before_apply is not None:
         before_apply(interactive)
     src, sids, details, title_num = _apply_parsed_args(a, runtime_state, interactive)
 
-    if a.multi_edition:
-        try:
-            me_idx = [int(x) for x in a.multi_edition.split(",") if x.strip()]
-        except ValueError:
-            log_error(tr("--multi-edition expects comma-separated title numbers"))
-            sys.exit(1)
+    me_idx: list[int] | None = a.multi_edition
+    if me_idx is not None:
         if len(me_idx) < 2:
             log_error(tr("--multi-edition needs at least two titles"))
             sys.exit(1)
@@ -1125,7 +1377,9 @@ def parse_args(
     source, action, number, selected_streams = _select_action(
         a, src, sids, details, title_num
     )
-    return source, action, number, selected_streams, None
+    # -t 1,3,5: every index rides along (number is the first).
+    title_indices: list[int] | None = a.title
+    return source, action, number, selected_streams, title_indices
 
 
 # =============================================================================
@@ -1207,7 +1461,7 @@ def _read_answer(
         raw = prompts.text(tr("yes/no"), tr("yes") if current else tr("no"))
         raw = _YES_NO_ALIASES.get(raw.strip().lower(), raw)
     elif spec.secret:
-        raw = prompts.text(tr("Value (Enter to skip)"), None)
+        raw = prompts.secret(tr("Value (Enter to skip)"))
     else:
         raw = prompts.text(tr("Value"), format_value(spec, current) or None)
     try:
@@ -1642,24 +1896,44 @@ def _show_action_details(titles: list[Title], number: int | None, action: str) -
     display_title_details(titles[index])
 
 
-def _rip_selected_title(
+def _rip_selected_titles(
     titles: list[Title],
-    number: int | None,
+    indices: list[int],
     stream_ids: list[str] | None,
     state: RuntimeState,
 ) -> None:
-    index = _require_title_index("rip_title", number, titles)
-    try:
-        creator = MKVCreator(
-            state.config.output_dir,
-            state.tag_options,
-            runtime_state=state,
+    """Rip each of *indices* (``-t 1,3,5``) with the selected streams.
+
+    Every index is checked before anything is ripped. Exits 1 when any rip
+    failed.
+    """
+    if not indices:
+        _require_title_index("rip_title", None, titles)
+    for index in indices:
+        _require_title_index("rip_title", index, titles)
+    creator = MKVCreator(
+        state.config.output_dir,
+        state.tag_options,
+        runtime_state=state,
+    )
+    failed = 0
+    for index in indices:
+        try:
+            creator.create_mkv(
+                titles[index], creator.select_streams(titles[index], stream_ids)
+            )
+        except RipError as exc:
+            print(exc.format_verbose())
+            failed += 1
+    if len(indices) > 1:
+        print(
+            tr(
+                "\nSummary: {ok} ok, {fail} failed",
+                ok=len(indices) - failed,
+                fail=failed,
+            )
         )
-        creator.create_mkv(
-            titles[index], creator.select_streams(titles[index], stream_ids)
-        )
-    except RipError as exc:
-        print(exc.format_verbose())
+    if failed:
         sys.exit(1)
 
 
@@ -1722,10 +1996,9 @@ def _run_action(
     elif action == "details":
         _show_action_details(titles, number, action)
     elif action == "rip_title":
-        _rip_selected_title(titles, number, stream_ids, state)
-    elif action == "rip_main" or action == "rip_episodes":
-        # "rip_episodes" is the deprecated --episodes alias: same smart
-        # behaviour as --main (episodes on series discs, feature otherwise).
+        indices = edition_indices or ([number] if number is not None else [])
+        _rip_selected_titles(titles, indices, stream_ids, state)
+    elif action == "rip_main":
         _run_main_feature_rip(titles, stream_ids, state)
     elif action == "rip_multi_edition":
         _rip_selected_editions(titles, edition_indices, stream_ids, state)

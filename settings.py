@@ -88,6 +88,7 @@ class Settings:
     languages: list[str] = field(default_factory=lambda: ["eng", "en", "und"])
     all_audio: bool = True
     subtitles: bool = True
+    all_subtitles: bool = False  # False: only the preferred languages
     forced_subtitles: bool = True
     closed_captions: str = "never"
     cc_format: str = "srt"
@@ -335,6 +336,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         _parse_bool,
         "Keep subtitle tracks?",
         prompt=True,
+    ),
+    SettingSpec(
+        "tracks.all_subtitles",
+        "all_subtitles",
+        "bool",
+        _parse_bool,
+        "Keep subtitles in every language, not only the preferred languages?",
+        prompt=True,
+        relevant=lambda s: s.subtitles,
     ),
     SettingSpec(
         "tracks.forced_subtitles",

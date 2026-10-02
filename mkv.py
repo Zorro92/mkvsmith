@@ -121,6 +121,10 @@ def select_streams(
         for s in title.subtitle_streams
         if s.is_muxable
         and effective_config.keep_all_subtitles
+        and (
+            effective_config.all_subtitle_languages
+            or s.language in effective_config.preferred_languages
+        )
         and (effective_config.include_forced or not s.is_forced)
     )
     return sel

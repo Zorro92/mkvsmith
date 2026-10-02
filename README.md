@@ -90,6 +90,7 @@ mkvsmith> n          # show details for title n
 mkvsmith> r 1        # rip title 1
 mkvsmith> rm         # rip the main feature (episodes on series discs)
 mkvsmith> ra         # rip all titles
+mkvsmith> settings   # list saved settings (set KEY VALUE / reset KEY to change)
 mkvsmith> q          # quit
 ```
 
@@ -97,29 +98,46 @@ mkvsmith> q          # quit
 
 | Flag | Description |
 |---|---|
-| `-t, --title N` | Rip a specific title |
+| `-t, --title N[,N...]` | Rip one title, or several (`-t 1,3,5`) |
 | `-m, --main` | Rip the detected main feature (all episodes on series discs) |
 | `-a, --all` | Rip all titles |
 | `-i, --info` | Just scan and list titles |
-| `--split-episodes` | Split playlists holding several back-to-back episodes into one title per episode (default off) |
-| `-s, --streams` | Select streams (e.g. `v:0 a:eng s:all`) |
-| `-l, --lang` | Preferred languages (default `eng,en,und`) |
-| `--all-audio` / `--no-all-audio` | Keep all audio (default on) |
-| `--no-subs` | Drop subtitles |
-| `--no-forced` | Drop forced subtitles |
-| `--cc-srt` / `--no-cc-srt` | EIA-608 closed captions as a text track (default off) |
+| `-d, --details N` | Show one title's tracks and chapters |
+| `--multi-edition N,N,...` | Combine playlist titles into one multi-edition MKV |
+| `--settings` | Show the saved settings and exit |
+| `--set KEY[=VALUE]` / `--reset KEY` | Save a setting (no value: asked, hidden for secrets) or restore its default, then exit |
+| `--split-episodes` / `--no-split-episodes` | Split playlists holding back-to-back episodes into one title per episode |
+| `-s, --streams SEL,...` | Select streams (e.g. `v:0,a:eng,s:all`) |
+| `-l, --languages LANG,...` | Preferred languages (default `eng,en,und`): keeps only these subtitles, marks the default audio |
+| `--all-audio` / `--no-all-audio` | Keep audio in every language (default on) |
+| `--subs` / `--no-subs` | Keep subtitles |
+| `--all-subs` / `--no-all-subs` | Keep subtitles in every language, not only `-l` (default off) |
+| `--forced` / `--no-forced` | Keep forced subtitles |
+| `--cc` / `--no-cc` | EIA-608 closed captions as a text track (default off) |
 | `--cc-format srt\|ass` | CC track format: portable text or positioned ASS |
 | `--min-duration N` | Ignore titles shorter than N seconds |
-| `--show-all` | Show low-quality titles (menus/trailers) |
+| `--show-all` / `--no-show-all` | Show low-quality titles (menus/trailers) |
 | `--temp-dir DIR` | Temp dir (default: /var/tmp; override for tmpfs/RAM or another disk path) |
 | `--ram-limit FRAC` | Max fraction of tmpfs capacity for RAM-backed temp dirs |
-| `--force` | Overwrite existing output files without asking |
-| `--tag` / `--no-tag` | TMDB tagging controls |
+| `--overwrite ask\|always\|never` | An existing output file: ask, overwrite, or skip the title |
+| `--force` | Same as `--overwrite always` |
+| `--tag` / `--no-tag` | TMDB tagging |
+| `--tag-art none\|poster\|backdrop\|both\|ask` | Cover art to embed |
+| `--tag-confirm` / `--no-tag-confirm` | Confirm the TMDB match before tagging |
+| `--tag-metadata PROP,...` | TMDB properties to fetch |
 | `--discdb` / `--no-discdb` | TheDiscDB lookup (opt-in) |
-| `--discdb-contribute[=MODE]` | Write/upload a contribution (`browser`, `manual`, or `direct`) |
+| `--discdb-contribute MODE` | Write/upload a contribution (`browser`, `manual`, `direct`, or `off`) |
 | `--discdb-disc-name NAME` | Disc name used by direct contribution mode |
 | `--ui-lang LANG` | UI language (e.g. `en`, `es`) |
 | `--debug` | Verbose debug logging |
+
+List values are one argument, separated by commas (`jpn,eng`) or by spaces
+inside quotes (`"jpn eng"`). Quote anything else that contains a space: paths
+(`"/media/My Disc.iso"`), `--tag-title "The Matrix"`, `--set "temp.dir=/mnt/big
+disk/tmp"`. Only one action
+(`-t`, `-m`, `-a`, `-i`, `-d`, `--multi-edition`, `--settings`) is allowed
+per run. Every on/off flag has a `--no-` form, so a flag can override a saved
+setting either way.
 
 ### Settings
 

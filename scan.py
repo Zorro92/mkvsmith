@@ -2603,6 +2603,8 @@ def _relabel_dvd_chain(title: Title, edition: int | None) -> None:
 _PROTECTION_MIN_CHAINS = 8
 _FEATURE_SHARE = 0.5  # "film-length": at least half the longest title
 _DECOY_MIN_BACKWARD_JUMPS = 3
+# Chains this long count as duplicates across title sets (see below).
+_CROSS_VTS_MIN_CELLS = 3
 
 
 def _settle_dvd_protection(titles: list[Title]) -> None:
@@ -2637,10 +2639,17 @@ def _settle_dvd_protection(titles: list[Title]) -> None:
     )
     groups: dict[tuple[object, ...], list[Title]] = {}
     for title in kept:
+        # Cell IDs are local to a title set. Within one, the same cells are
+        # the same video; across title sets, only a long run of identical
+        # cells is a copy (Disney's protection repeats 48-cell chains in six
+        # title sets). Short chains match by accident: every one-cell title
+        # set plays "VOB 1, cell 1" (Freedom Downtime's extras disc has 14).
+        across_title_sets = len(title.dvd_cell_fingerprint) >= _CROSS_VTS_MIN_CELLS
         key = (
             title.dvd_cell_fingerprint,
             round(title.duration_seconds),
             tuple((s.stream_type, s.codec, s.language) for s in title.streams),
+            None if across_title_sets else title.dvd_vts_number,
         )
         groups.setdefault(key, []).append(title)
     for members in groups.values():

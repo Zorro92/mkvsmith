@@ -571,7 +571,8 @@ def _chain(
     padded: bool = False,
 ) -> Title:
     title = _feature(index, minutes * 60, dvd_vts_number=vts, dvd_chain_pgc=pgc)
-    title.dvd_cell_fingerprint = ((fingerprint, 1), (fingerprint, 2))
+    # Three cells: enough to count as the same chain across title sets.
+    title.dvd_cell_fingerprint = ((fingerprint, 1), (fingerprint, 2), (fingerprint, 3))
     title.dvd_backward_jumps = jumps
     title.dvd_padded = padded
     return title
@@ -608,6 +609,28 @@ def test_protected_disc_keeps_one_exact_chain_per_version() -> None:
     assert all(t.dvd_decoy for t in decoys)
     assert episode_decoy.episode_number is None
     assert not scan._is_notable_title(decoys[1])
+
+
+def test_one_cell_titles_in_different_title_sets_are_not_duplicates() -> None:
+    """Freedom Downtime's extras disc: 14 one-cell clips, one per title set.
+
+    Every one plays "VOB 1, cell 1" of its own title set; clips that round
+    to the same length were hidden as duplicates of each other.
+    """
+    clips = [_feature(i, 3.4, dvd_vts_number=6 + i, dvd_chain_pgc=1) for i in range(2)]
+    for clip in clips:
+        clip.dvd_cell_fingerprint = ((1, 1),)
+    same_set = [
+        _feature(2 + i, 3.4, dvd_vts_number=20, dvd_chain_pgc=1 + i) for i in range(2)
+    ]
+    for clip in same_set:
+        clip.dvd_cell_fingerprint = ((1, 1),)
+
+    scan._settle_dvd_protection([*clips, *same_set])
+
+    assert not any(clip.dvd_duplicate for clip in clips)
+    # Within one title set the same cell is the same video.
+    assert [clip.dvd_duplicate for clip in same_set] == [False, True]
 
 
 def test_a_lone_scrambled_chain_is_not_a_decoy() -> None:

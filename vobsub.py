@@ -1506,8 +1506,15 @@ def _verify_vobsub_tracks(idx_path: Path) -> list[dict[str, Any]]:
 def _filter_vobsub_streams(
     spus_by_id: dict[int, list[tuple[int, bytes]]],
     lang_by_id: dict[int, str],
+    *,
+    only_listed: bool = False,
 ) -> tuple[dict[int, list[tuple[int, bytes]]], dict[int, str]]:
-    """Filter VOB streams against IFO metadata and recover raw stream zero."""
+    """Filter VOB streams against IFO metadata and recover raw stream zero.
+
+    Streams the VOBs carry but *lang_by_id* doesn't list are kept as "und",
+    unless *only_listed*: then they are left out (a rip passes only the
+    subtitles chosen for it).
+    """
     filtered: dict[int, list[tuple[int, bytes]]] = {}
     languages = dict(lang_by_id)
     if not lang_by_id:
@@ -1544,6 +1551,9 @@ def _filter_vobsub_streams(
             )
             continue
 
+        if only_listed:
+            log_debug("  Skipped sub_id 0x%02x (not chosen)" % sub_stream_id)
+            continue
         log_debug(
             "  Including sub_id 0x%02x from VOB (not in IFO, lang=und)" % sub_stream_id
         )
@@ -1651,7 +1661,13 @@ def _write_vobsub_files(
         % (len(sorted_ids), len(sub_data) // 1024)
     )
 
-    return idx_path, _verify_vobsub_tracks(idx_path)
+    tracks = _verify_vobsub_tracks(idx_path)
+    # The .idx holds the streams in sorted ID order: record each track's
+    # stream ID so callers can match tracks to streams without guessing.
+    if len(tracks) == len(sorted_ids):
+        for track, sub_stream_id in zip(tracks, sorted_ids):
+            track["sub_id"] = sub_stream_id
+    return idx_path, tracks
 
 
 def _extract_dvd_vobsubs(
@@ -1665,6 +1681,7 @@ def _extract_dvd_vobsubs(
     *,
     temp_files: list[Path],
     debug: bool = False,
+    only_listed: bool = False,
 ) -> tuple[Path, list[dict[str, Any]]] | None:
     """Extract DVD VobSub subtitles from VOB files by scanning the MPEG-PS
     bitstream directly.
@@ -1719,7 +1736,9 @@ def _extract_dvd_vobsubs(
         )
         return None
 
-    filtered, lang_by_id = _filter_vobsub_streams(spus, lang_by_id)
+    filtered, lang_by_id = _filter_vobsub_streams(
+        spus, lang_by_id, only_listed=only_listed
+    )
 
     if not filtered:
         log_debug("_extract_dvd_vobsubs: no IFO-matching subpicture streams")

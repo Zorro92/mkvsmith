@@ -1906,11 +1906,19 @@ def _extract_dvd_subtitle_fallback(
         total_duration=title.duration_seconds,
         temp_files=temp_files,
         debug=debug,
+        only_listed=True,
     )
     if result is None:
         return None, [], unmatched_subs
 
     fallback_path, fallback_tracks = result
+    # Line the chosen streams up with the .idx tracks by stream ID: a chosen
+    # stream with no subpictures in the VOBs has no track, and positional
+    # pairing would then label every later track with the wrong language.
+    by_id = {stream.sub_id: stream for stream in unmatched_subs}
+    if fallback_tracks and all("sub_id" in track for track in fallback_tracks):
+        fallback_tracks = [t for t in fallback_tracks if t["sub_id"] in by_id]
+        unmatched_subs = [by_id[t["sub_id"]] for t in fallback_tracks]
     log_debug(
         "DVD subtitle fallback: %d extracted track(s) for %d IFO stream(s)"
         % (len(fallback_tracks), len(unmatched_subs))

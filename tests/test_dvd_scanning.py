@@ -220,15 +220,15 @@ def test_build_dvd_streams_rejects_invalid_ifo() -> None:
     assert dvdbuild._build_dvd_streams_from_ifo(b"NOTDVDVTS\x00\x00", 100.0) == []
 
 
-def test_build_dvd_streams_uses_vts_attribute_table_and_pgc_languages(
+def test_build_dvd_streams_uses_pgc_streams_and_pgc_languages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
 
-    def get_active_pgc_streams(
+    def get_pgc_stream_ids(
         _data: bytes, _pgc_number: int | None
-    ) -> tuple[set[int], set[int]]:
-        return ({0x81}, {0x21})
+    ) -> dvdifo.PgcStreamIds:
+        return dvdifo.PgcStreamIds({0x80: 0x80, 0x81: 0x81}, {0x20: 0x20, 0x21: 0x21})
 
     def parse_vts_video_attrs(_data: bytes) -> dvdifo._IFOVideoAttrs | None:
         return dvdifo._IFOVideoAttrs(
@@ -284,7 +284,7 @@ def test_build_dvd_streams_uses_vts_attribute_table_and_pgc_languages(
             )
         }
 
-    monkeypatch.setattr(dvdbuild, "_get_active_pgc_streams", get_active_pgc_streams)
+    monkeypatch.setattr(dvdbuild, "pgc_stream_ids", get_pgc_stream_ids)
     monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
     monkeypatch.setattr(
@@ -296,10 +296,8 @@ def test_build_dvd_streams_uses_vts_attribute_table_and_pgc_languages(
 
     streams = dvdbuild._build_dvd_streams_from_ifo(ifo_data, 100.0, 2)
 
-    # The VTS attribute-table set (via the merged language map) drives the
-    # listing — streams the PGC marks unavailable must not be dropped
-    # (the reference ripper lists every declared stream). PGC control only overrides
-    # languages.
+    # The PGC's streams drive the listing; attributes and languages come
+    # from each stream's attribute slot, PGC control overriding languages.
     assert [(stream.stream_type, stream.sub_id) for stream in streams] == [
         (StreamType.VIDEO, 0x1E0),
         (StreamType.AUDIO, 0x80),
@@ -339,15 +337,14 @@ def test_build_dvd_streams_uses_vts_attribute_table_and_pgc_languages(
     assert forced_subtitle.type_index == 1
 
 
-def test_build_dvd_streams_uses_vts_language_ids(
+def test_build_dvd_streams_fall_back_to_vts_language_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Without PGC stream control, the attribute tables list the streams."""
     ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
 
-    def get_active_pgc_streams(
-        _data: bytes, _pgc: int | None
-    ) -> tuple[set[int], set[int]]:
-        return (set(), set())
+    def get_pgc_stream_ids(_data: bytes, _pgc: int | None) -> dvdifo.PgcStreamIds:
+        return dvdifo.PgcStreamIds({}, {})
 
     def parse_vts_video_attrs(_data: bytes) -> dvdifo._IFOVideoAttrs | None:
         return None
@@ -365,7 +362,7 @@ def test_build_dvd_streams_uses_vts_language_ids(
     ) -> tuple[dict[int, str], dict[int, str]]:
         return ({}, {})
 
-    monkeypatch.setattr(dvdbuild, "_get_active_pgc_streams", get_active_pgc_streams)
+    monkeypatch.setattr(dvdbuild, "pgc_stream_ids", get_pgc_stream_ids)
     monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
     monkeypatch.setattr(
@@ -402,16 +399,14 @@ def test_build_dvd_streams_uses_vts_language_ids(
     assert streams[1].channels == 2
 
 
-def test_build_dvd_streams_falls_back_to_pgc_active_ids(
+def test_build_dvd_streams_list_pgc_streams_without_attribute_tables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the attribute tables yield no IDs, the PGC active set is used."""
+    """The PGC's streams are listed even when the attribute tables are empty."""
     ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
 
-    def get_active_pgc_streams(
-        _data: bytes, _pgc: int | None
-    ) -> tuple[set[int], set[int]]:
-        return ({0x81}, {0x21})
+    def get_pgc_stream_ids(_data: bytes, _pgc: int | None) -> dvdifo.PgcStreamIds:
+        return dvdifo.PgcStreamIds({0x81: 0x81}, {0x21: 0x21})
 
     def parse_vts_video_attrs(_data: bytes) -> dvdifo._IFOVideoAttrs | None:
         return None
@@ -426,7 +421,7 @@ def test_build_dvd_streams_falls_back_to_pgc_active_ids(
     ) -> tuple[dict[int, str], dict[int, str]]:
         return ({}, {})
 
-    monkeypatch.setattr(dvdbuild, "_get_active_pgc_streams", get_active_pgc_streams)
+    monkeypatch.setattr(dvdbuild, "pgc_stream_ids", get_pgc_stream_ids)
     monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
     monkeypatch.setattr(
@@ -447,6 +442,50 @@ def test_build_dvd_streams_falls_back_to_pgc_active_ids(
     streams = dvdbuild._build_dvd_streams_from_ifo(ifo_data, 100.0)
 
     assert [stream.sub_id for stream in streams] == [0x1E0, 0x81, 0x21]
+
+
+def test_build_dvd_streams_label_a_stream_from_its_attribute_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Physical stream 0x80 played through slot 4 takes slot 4's attributes.
+
+    Cats Don't Dance's trailers do this: slot 4 is English 5.1 and points
+    at the feature's physical stream 0.
+    """
+    ifo_data = dvdifo._VTS_IFO_IDENT + bytes(100)
+    english_51 = dvdifo._IFOAudioAttrs(
+        codec="AC3",
+        channels=6,
+        sample_rate="48 kHz",
+        quantization="DRC",
+        bits_per_sample=None,
+        dsur=False,
+        code_extension=1,
+        lang_code="en",
+    )
+    monkeypatch.setattr(
+        dvdbuild,
+        "pgc_stream_ids",
+        lambda _d, _n: dvdifo.PgcStreamIds({0x80: 0x84}, {0x23: 0x20}),
+    )
+    monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", lambda _d: None)
+    monkeypatch.setattr(
+        dvdbuild,
+        "_parse_vts_ifo_languages",
+        lambda _d: ({0x80: "fr", 0x84: "en"}, {0x20: "en", 0x23: "de"}),
+    )
+    monkeypatch.setattr(
+        dvdbuild, "_parse_pgc_stream_languages", lambda _d, _n: ({}, {})
+    )
+    monkeypatch.setattr(
+        dvdbuild, "_parse_vts_audio_attrs", lambda _d: {0x84: english_51}
+    )
+    monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", lambda _d: {})
+
+    _video, audio, subtitle = dvdbuild._build_dvd_streams_from_ifo(ifo_data, 100.0, 32)
+
+    assert (audio.sub_id, audio.language, audio.channels) == (0x80, "en", 6)
+    assert (subtitle.sub_id, subtitle.language) == (0x23, "en")
 
 
 def test_scan_dvd_source_labels_plain_pgcs_not_editions(

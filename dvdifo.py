@@ -154,11 +154,12 @@ class _IFOVideoAttrs:
         2: "reserved",
         3: "unknown",
     }
+    # DVD-Video VTS_V_ATR bits 3-2: 0 = 4:3, 3 = 16:9 (1 and 2 reserved).
     ASPECT_MAP: ClassVar[dict[int, str]] = {
         0: "4:3",
-        1: "16:9",
+        1: "reserved",
         2: "reserved",
-        3: "unknown",
+        3: "16:9",
     }
     RES_MAP: ClassVar[dict[tuple[str, int], tuple[int, int]]] = {
         ("NTSC", 0): (720, 480),
@@ -2127,94 +2128,105 @@ def _pgc_offset_table_base(
     return pgc_abs + table_offset
 
 
-def _active_pgc_audio_streams_offset_mode(ifo_data: bytes, pgc_abs: int) -> set[int]:
-    asct_base = _pgc_offset_table_base(ifo_data, pgc_abs, _PGCOffset.AST_CTL)
-    if asct_base is None:
-        return set()
+@dataclass(frozen=True)
+class PgcStreamIds:
+    """A title's streams: MPEG sub-stream ID -> its VTS attribute-table key.
 
-    audio_active: set[int] = set()
-    audio_count = min(_read_vts_audio_count(ifo_data), _PGCOffset.NUM_AST_ENTRIES)
-    for index in range(audio_count):
-        offset = asct_base + index * _PGCOffset.AST_NORMAL_ENTRY_LEN
-        if offset + 6 > len(ifo_data):
-            break
-        stream_number = _read_u16(ifo_data, offset)
-        # Bit 15 marks availability; 0xFFFF means no stream.
-        if stream_number != 0xFFFF:
-            audio_active.add(0x80 + (stream_number & 0x7FFF))
-    return audio_active
+    A PGC's stream-control tables map each *logical* stream (the index the
+    VTS attribute tables, and so the languages, are kept by) to the
+    *physical* sub-stream in the VOBs. Keys are physical IDs (audio
+    0x80-0x87, subpicture 0x20-0x3F); values are the attribute keys (0x80 +
+    logical, 0x20 + logical), which usually but not always match.
+    """
+
+    audio: dict[int, int]
+    subtitles: dict[int, int]
 
 
-def _active_pgc_audio_streams_inline(ifo_data: bytes, pgc_abs: int) -> set[int]:
-    audio_active: set[int] = set()
-    ast_base = pgc_abs + _PGCOffset.AST_CTL
-    for index in range(_PGCOffset.NUM_AST_ENTRIES):
-        offset = ast_base + index * 2
+def _pgc_audio_ids(ifo_data: bytes, pgc_abs: int) -> dict[int, int]:
+    """The audio streams a PGC enables: physical ID -> attribute key.
+
+    An AST_CTL entry (8 x 2 bytes at PGC+0x0C) is available when bit 15 is
+    set; bits 10-8 hold the physical stream number.
+    """
+    ids: dict[int, int] = {}
+    for logical in range(_PGCOffset.NUM_AST_ENTRIES):
+        offset = pgc_abs + _PGCOffset.AST_CTL + logical * 2
         if offset + 2 > len(ifo_data):
             break
-        first_byte = ifo_data[offset]
-        available = bool(first_byte & 0x80)
-        stream_number = first_byte & 0x07
-        if available and stream_number != 0x07:
-            audio_active.add(0x80 + stream_number)
-    return audio_active
+        first = ifo_data[offset]
+        if first & 0x80:
+            ids.setdefault(0x80 + (first & 0x07), 0x80 + logical)
+    return ids
 
 
-def _active_pgc_audio_streams(
-    ifo_data: bytes, pgc_abs: int, offset_mode: bool
-) -> set[int]:
-    if offset_mode:
-        return _active_pgc_audio_streams_offset_mode(ifo_data, pgc_abs)
-    return _active_pgc_audio_streams_inline(ifo_data, pgc_abs)
+def _pgc_subpicture_ids(
+    ifo_data: bytes, pgc_abs: int, widescreen: bool
+) -> dict[int, int]:
+    """The subpicture streams a PGC enables: physical ID -> attribute key.
 
-
-def _active_pgc_subpicture_streams(
-    ifo_data: bytes, pgc_abs: int, offset_mode: bool
-) -> set[int]:
-    if offset_mode:
-        spst_base = _pgc_offset_table_base(ifo_data, pgc_abs, _PGCOffset.SPST_CTL)
-        if spst_base is None:
-            return set()
-    else:
-        spst_base = pgc_abs + _PGCOffset.SPST_CTL
-
-    subpicture_active: set[int] = set()
-
-    for index in range(_PGCOffset.NUM_SPST_ENTRIES):
-        entry_offset = spst_base + index * _PGCOffset.SPST_ENTRY_LEN
-        if entry_offset + 4 > len(ifo_data):
+    An SPST_CTL entry (32 x 4 bytes at PGC+0x1C) is available when bit 31 is
+    set and names a physical stream per display mode: 4:3 (byte 0), wide
+    (byte 1), letterbox (byte 2) and pan-scan (byte 3). A 16:9 title plays
+    the wide one: on Beauty and the Beast's Platinum Edition the second
+    subtitle is 0x20 for 4:3 but 0x21 for wide.
+    """
+    ids: dict[int, int] = {}
+    for logical in range(_PGCOffset.NUM_SPST_ENTRIES):
+        offset = pgc_abs + _PGCOffset.SPST_CTL + logical * _PGCOffset.SPST_ENTRY_LEN
+        if offset + _PGCOffset.SPST_ENTRY_LEN > len(ifo_data):
             break
-        first_byte = ifo_data[entry_offset]
-        available = bool(first_byte & 0x80)
-        stream_number = first_byte & 0x1F
-        if available and stream_number != 0x1F:
-            subpicture_active.add(0x20 + stream_number)
-    return subpicture_active
+        if not ifo_data[offset] & 0x80:
+            continue
+        stream = ifo_data[offset + 1 if widescreen else offset] & 0x1F
+        ids.setdefault(0x20 + stream, 0x20 + logical)
+    return ids
 
 
-def _get_active_pgc_streams(
-    ifo_data: bytes,
-    pgc_number: int | None = None,
-) -> tuple[set[int], set[int]]:
-    """Return audio and subpicture IDs active in the selected PGC.
+def pgc_stream_ids(ifo_data: bytes, pgc_number: int | None = None) -> PgcStreamIds:
+    """The audio and subtitle streams a title (its PGC) plays.
 
-    Reads the PGC stream-control tables described by the DVD-Video PGC
-    specification. Returns empty sets on invalid input or a missing PGC;
-    callers then fall back to the authoritative VTS attribute-table IDs.
+    Matches the reference behaviour, checked on four discs:
+
+    - Audio: the streams this PGC enables, plus those enabled by any other
+      PGC playing at least one of its cells. Treasure Planet (2002) disables
+      the commentary in the movie PGC and enables it in a variant playing
+      the same cells, so the movie lists it too; Cats Don't Dance's trailers
+      enable only English but share cells with the feature, so they list
+      its three. Streams only extras' own cells use, or that no PGC enables
+      (Cats declares five in its attribute table, its feature plays three),
+      are left out.
+    - Subtitles: this PGC's own, for the title's display shape.
+
+    Empty maps when the IFO or PGC can't be read; callers then fall back to
+    the attribute tables.
     """
     if len(ifo_data) < 0x200 or ifo_data[:12] != _VTS_IFO_IDENT:
-        return set(), set()
-
+        return PgcStreamIds({}, {})
     main = _find_main_pgc(ifo_data, pgc_number)
     if main is None:
-        return set(), set()
+        return PgcStreamIds({}, {})
+    pgc_abs, _duration, n_cells = main
+    video = _parse_vts_video_attrs(ifo_data)
+    widescreen = video is not None and video.aspect_ratio == "16:9"
 
-    pgc_abs = main[0]
-    pgc_category = _read_u16(ifo_data, pgc_abs)
-    offset_mode = bool(pgc_category & 0x0002)
-    return (
-        _active_pgc_audio_streams(ifo_data, pgc_abs, offset_mode),
-        _active_pgc_subpicture_streams(ifo_data, pgc_abs, offset_mode),
+    audio = _pgc_audio_ids(ifo_data, pgc_abs)
+    cells = set(_pgc_cell_position_signature(ifo_data, pgc_abs, n_cells) or ())
+    if cells:
+        for _number, other_abs, _other_duration, other_cells in _enumerate_vts_pgcs(
+            ifo_data
+        ):
+            if other_abs == pgc_abs:
+                continue
+            shared = cells & set(
+                _pgc_cell_position_signature(ifo_data, other_abs, other_cells) or ()
+            )
+            if shared:
+                for physical, key in _pgc_audio_ids(ifo_data, other_abs).items():
+                    audio.setdefault(physical, key)
+    return PgcStreamIds(
+        dict(sorted(audio.items())),
+        dict(sorted(_pgc_subpicture_ids(ifo_data, pgc_abs, widescreen).items())),
     )
 
 

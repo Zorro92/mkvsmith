@@ -151,7 +151,9 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
         total_duration: float,
         temp_files: list[Path],
         debug: bool,
+        only_listed: bool,
     ) -> tuple[Path, list[dict[str, Any]]]:
+        assert only_listed  # never the subtitles nobody chose
         calls.append(
             (
                 inputs,
@@ -195,6 +197,47 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
             False,
         )
     ]
+
+
+def test_dvd_subtitle_fallback_matches_tracks_to_streams_by_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # English, French and Spanish chosen, but the VOBs hold no French
+    # subpictures: the .idx has two tracks, and Spanish must stay Spanish.
+    title = Title(0, tmp_path / "VTS_01_1.VOB", "Movie", 120)
+    english, french, spanish = (
+        Stream(
+            index=0,
+            stream_type=StreamType.SUBTITLE,
+            codec="dvd_subtitle",
+            language=lang,
+            type_index=n,
+            sub_id=0x20 + n,
+        )
+        for n, lang in enumerate(("en", "fr", "es"))
+    )
+    mapped: list[MappedStream] = [
+        make_mapped_entry(-1, "subtitles", stream)
+        for stream in (english, french, spanish)
+    ]
+
+    def extract(*_args: object, **_kwargs: object) -> tuple[Path, list[dict[str, Any]]]:
+        return tmp_path / "subs.idx", [
+            {"id": 0, "type": "subtitles", "sub_id": 0x20},
+            {"id": 1, "type": "subtitles", "sub_id": 0x22},
+        ]
+
+    monkeypatch.setattr(mkv, "_extract_dvd_vobsubs", extract)
+
+    _path, tracks, streams = mkv._extract_dvd_subtitle_fallback(
+        title, mapped, [title.source_file], None, None, []
+    )
+
+    assert [track["sub_id"] for track in tracks] == [0x20, 0x22]
+    assert streams == [english, spanish]
+    options = mkv._dvd_subtitle_fallback_options(streams, tracks, [{"id": 0}])
+    assert options[options.index("--language") + 1] == "0:en"
+    assert "1:es" in options
 
 
 def test_create_chapters_file_filters_trailing_chapter(

@@ -105,3 +105,17 @@ def test_write_vobsub_files_interleaves_tracks_by_pts(
     assert "timestamp: 00:00:00:000, filepos: 000000000" in idx
     assert "timestamp: 00:00:01:000, filepos: 000001000" in idx
     assert "timestamp: 00:00:00:000, filepos: 000000800" in idx
+
+
+def test_filter_vobsub_streams_only_listed_drops_unchosen_streams() -> None:
+    spus = {0x20: [(1, b"a")], 0x21: [(2, b"b")], 0x22: [(3, b"c")]}
+
+    filtered, languages = _filter_vobsub_streams(spus, {0x21: "fr"}, only_listed=True)
+
+    assert list(filtered) == [0x21]
+    assert languages == {0x21: "fr"}
+
+    # Without it, unlisted streams are kept as "und" (no IFO metadata case).
+    filtered, languages = _filter_vobsub_streams(spus, {0x21: "fr"})
+    assert sorted(filtered) == [0x20, 0x21, 0x22]
+    assert languages[0x20] == "und"

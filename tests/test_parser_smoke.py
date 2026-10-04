@@ -20,8 +20,6 @@ import pytest
 
 from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from dvdifo import (
-    _active_pgc_audio_streams,
-    _active_pgc_subpicture_streams,
     _parse_vts_ifo_languages,
     _parse_pgc_stream_languages,
     _parse_vts_pgc_info,
@@ -117,58 +115,73 @@ def test_parse_vts_vobu_admap_rejects_missing_or_truncated_table() -> None:
     assert _parse_vts_vobu_admap(bytes(truncated[:-3])) is None
 
 
-def test_active_pgc_audio_streams_inline_mode() -> None:
+def test_pgc_audio_ids_map_physical_streams_to_their_logical_slots() -> None:
     data = bytearray(0x300)
-    data[0x202:0x204] = struct.pack(">H", 2)
     pgc_abs = 0x200
-
-    # PGC+0x0C contains eight 2-byte inline audio entries. Bit 7 marks an
-    # entry available; bits 0-2 select stream 0-7.
-    data[pgc_abs + 0x0C : pgc_abs + 0x0C + 6] = bytes([0x80, 0, 0x81, 0, 0x00, 0])
-
-    assert _active_pgc_audio_streams(bytes(data), pgc_abs, offset_mode=False) == {
-        0x80,
-        0x81,
-    }
-
-
-def test_active_pgc_audio_streams_offset_mode() -> None:
-    data = bytearray(0x600)
-    data[0x202:0x204] = struct.pack(">H", 2)
-    pgc_abs = 0x400
-    asct_base = pgc_abs + 0x40
-
-    data[pgc_abs + 0x0C : pgc_abs + 0x0E] = struct.pack(">H", 0x40)
-    data[asct_base : asct_base + 16] = (
-        struct.pack(">H", 0x8001)
-        + b"\x00" * 6
-        + struct.pack(">H", 0x8002)
-        + b"\x00" * 6
+    # PGC+0x0C holds eight 2-byte entries: bit 15 marks one available, bits
+    # 10-8 name the physical stream. Slot 0 -> 0x80, slot 2 -> 0x82, and
+    # slot 4 points back at physical 0 (its attributes are slot 4's).
+    data[pgc_abs + 0x0C : pgc_abs + 0x0C + 10] = bytes(
+        [0x80, 0, 0x00, 0, 0x82, 0, 0, 0, 0x80, 0]
     )
 
-    assert _active_pgc_audio_streams(bytes(data), pgc_abs, offset_mode=True) == {
-        0x81,
-        0x82,
+    assert dvdifo._pgc_audio_ids(bytes(data), pgc_abs) == {0x80: 0x80, 0x82: 0x82}
+
+    data[pgc_abs + 0x0C] = 0x00  # slot 0 off: physical 0 comes from slot 4
+    assert dvdifo._pgc_audio_ids(bytes(data), pgc_abs) == {0x82: 0x82, 0x80: 0x84}
+
+
+def test_pgc_subpicture_ids_use_the_stream_for_the_display_shape() -> None:
+    data = bytearray(0x300)
+    pgc_abs = 0x200
+    # 4-byte entries: availability bit, then the 4:3 / wide / letterbox /
+    # pan-scan stream numbers. Slot 1 is stream 0 in 4:3 but 1 in wide.
+    data[pgc_abs + 0x1C : pgc_abs + 0x1C + 12] = bytes(
+        [0x80, 0, 0, 0, 0x80, 1, 1, 0, 0x03, 3, 3, 3]
+    )
+
+    assert dvdifo._pgc_subpicture_ids(bytes(data), pgc_abs, widescreen=False) == {
+        0x20: 0x20
+    }
+    assert dvdifo._pgc_subpicture_ids(bytes(data), pgc_abs, widescreen=True) == {
+        0x20: 0x20,
+        0x21: 0x21,
     }
 
 
-def test_active_pgc_subpicture_streams_inline_and_offset_modes() -> None:
-    inline = bytearray(0x300)
-    inline[0x200 + 0x1C : 0x200 + 0x1C + 8] = bytes([0x82, 0, 0, 0, 0x83, 0, 0, 0])
-    assert _active_pgc_subpicture_streams(bytes(inline), 0x200, offset_mode=False) == {
-        0x22,
-        0x23,
-    }
+def test_pgc_stream_ids_add_audio_from_pgcs_sharing_cells(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = bytearray(0x800)
+    data[:12] = b"DVDVIDEO-VTS"
+    movie, variant, extra = 0x300, 0x400, 0x500
+    data[movie + 0x0C : movie + 0x0E] = bytes([0x80, 0])
+    data[variant + 0x0C : variant + 0x10] = bytes([0x80, 0, 0x81, 0])
+    data[extra + 0x0C : extra + 0x12] = bytes([0x80, 0, 0, 0, 0x82, 0])
+    data[movie + 0x1C] = 0x80
+    cells = {movie: ((1, 1), (2, 1)), variant: ((2, 1), (3, 1)), extra: ((9, 1),)}
 
-    offset = bytearray(0x600)
-    pgc_abs = 0x400
-    spst_base = pgc_abs + 0x80
-    offset[pgc_abs + 0x1C : pgc_abs + 0x1E] = struct.pack(">H", 0x80)
-    offset[spst_base : spst_base + 8] = bytes([0x84, 0, 0, 0, 0x9F, 5, 0, 0])
+    monkeypatch.setattr(dvdifo, "_find_main_pgc", lambda _d, _n: (movie, 100.0, 2))
+    monkeypatch.setattr(
+        dvdifo,
+        "_enumerate_vts_pgcs",
+        lambda _d: [(1, movie, 100.0, 2), (2, variant, 100.0, 2), (3, extra, 5.0, 1)],
+    )
+    monkeypatch.setattr(
+        dvdifo, "_pgc_cell_position_signature", lambda _d, pgc_abs, _n: cells[pgc_abs]
+    )
+    monkeypatch.setattr(dvdifo, "_parse_vts_video_attrs", lambda _d: None)
 
-    assert _active_pgc_subpicture_streams(bytes(offset), pgc_abs, offset_mode=True) == {
-        0x24
-    }
+    ids = dvdifo.pgc_stream_ids(bytes(data), 1)
+
+    # The variant shares a cell and adds 0x81 (a commentary, say); the extra
+    # plays only its own cell, so its 0x82 stays out.
+    assert ids.audio == {0x80: 0x80, 0x81: 0x81}
+    assert ids.subtitles == {0x20: 0x20}
+
+
+def test_pgc_stream_ids_are_empty_for_an_unreadable_ifo() -> None:
+    assert dvdifo.pgc_stream_ids(b"NOT A VTS") == dvdifo.PgcStreamIds({}, {})
 
 
 def test_pgc_offset_table_base_rejects_missing_or_truncated_pointers() -> None:

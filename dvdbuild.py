@@ -50,7 +50,7 @@ from dvdifo import (
     _parse_vts_ifo_languages,
     _parse_vts_subp_attrs,
     _ifo_audio_title,
-    _get_active_pgc_streams,
+    pgc_stream_ids,
     _parse_pgc_stream_languages,
     _parse_vts_pgc_info,
     _parse_vmg_ifo,
@@ -732,25 +732,18 @@ def _merged_dvd_stream_languages(
 
 def _build_dvd_audio_streams(
     ifo_data: bytes,
-    active_audio: set[int],
+    audio_ids: dict[int, int],
     audio_languages: dict[int, str],
 ) -> list[Stream]:
-    audio_attrs = _parse_vts_audio_attrs(ifo_data)
-    # The VTS attribute-table set (via the merged language map) is
-    # authoritative, matching the reference behaviour: a PGC's stream-control table may mark
-    # streams unavailable for its presentation (commentary tracks enabled
-    # only in an alternate PGC), but the streams exist in the VOBs and
-    # rippers list them. The PGC active set is only a fallback for discs
-    # whose attribute tables yield no stream IDs at all.
-    audio_ids = sorted(audio_languages)
-    if not audio_ids:
-        audio_ids = sorted(active_audio)
-        if audio_ids:
-            log_debug(f"VTS audio IDs empty, using PGC active IDs: {audio_ids}")
+    """Audio streams for *audio_ids* (physical ID -> attribute key).
 
+    The physical ID is what the VOBs carry (the stream's ``sub_id``); the
+    attribute key selects its codec, channels and language.
+    """
+    audio_attrs = _parse_vts_audio_attrs(ifo_data)
     streams: list[Stream] = []
-    for type_index, stream_id in enumerate(audio_ids):
-        attrs = audio_attrs.get(stream_id)
+    for type_index, (stream_id, key) in enumerate(sorted(audio_ids.items())):
+        attrs = audio_attrs.get(key)
         codec_name = attrs.codec.lower() if attrs else "ac3"
         channels = attrs.channels if attrs else 2
         audio_label = _ifo_audio_title(attrs)
@@ -758,7 +751,7 @@ def _build_dvd_audio_streams(
             0,
             StreamType.AUDIO,
             codec_name,
-            audio_languages.get(stream_id, "und"),
+            audio_languages.get(key, "und"),
             "",
             False,
             False,
@@ -779,26 +772,19 @@ def _build_dvd_audio_streams(
 
 def _build_dvd_subtitle_streams(
     ifo_data: bytes,
-    active_subtitles: set[int],
+    subtitle_ids: dict[int, int],
     subtitle_languages: dict[int, str],
 ) -> list[Stream]:
+    """Subpicture streams for *subtitle_ids* (physical ID -> attribute key)."""
     subtitle_attrs = _parse_vts_subp_attrs(ifo_data)
-    # Attribute-table set first, PGC active set as fallback — same reference
-    # rationale as the audio path above.
-    subtitle_ids = sorted(subtitle_languages)
-    if not subtitle_ids:
-        subtitle_ids = sorted(active_subtitles)
-        if subtitle_ids:
-            log_debug(f"VTS sub IDs empty, using PGC active IDs: {subtitle_ids}")
-
     streams: list[Stream] = []
-    for type_index, stream_id in enumerate(subtitle_ids):
-        attrs = subtitle_attrs.get(stream_id)
+    for type_index, (stream_id, key) in enumerate(sorted(subtitle_ids.items())):
+        attrs = subtitle_attrs.get(key)
         stream = Stream(
             0,
             StreamType.SUBTITLE,
             "dvd_subtitle",
-            subtitle_languages.get(stream_id, "und"),
+            subtitle_languages.get(key, "und"),
             "",
             False,
             attrs.is_forced if attrs else False,
@@ -818,28 +804,29 @@ def _build_dvd_streams_from_ifo(
 ) -> list[Stream]:
     """Build authoritative DVD streams from a VTS IFO.
 
-    Returns video, audio, and subpicture streams in mux order. The VTS
-    attribute-table stream set is authoritative — matching the reference
-    behaviour, which lists every stream a VTS declares even when a PGC's
-    stream-control table marks it unavailable (e.g. Treasure Planet's 2002 R1
-    DVD9: the commentary track is disabled in the default movie PGC and
-    enabled only in its alternate, yet the reference lists all four audio
-    streams for both).
-    PGC control entries supply per-stream language overrides; the PGC
-    active set is only a fallback when the attribute table yields nothing.
+    Returns video, audio, and subpicture streams in mux order. The title's
+    streams come from its PGC's stream-control tables (see
+    ``pgc_stream_ids``, which matches the reference behaviour): not every
+    stream the VTS attribute table declares plays in every title (Cats
+    Don't Dance declares five audio streams; its feature plays three). The
+    attribute table is the fallback when the PGC tables yield nothing.
     An invalid IFO returns an empty list so callers can probe instead.
     """
     if len(ifo_data) < 12 or ifo_data[:12] != _VTS_IFO_IDENT:
         return []
 
-    active_audio, active_subtitles = _get_active_pgc_streams(ifo_data, pgc_number)
+    ids = pgc_stream_ids(ifo_data, pgc_number)
     audio_languages, subtitle_languages = _merged_dvd_stream_languages(
         ifo_data, pgc_number
     )
+    audio_ids = ids.audio or {key: key for key in audio_languages}
+    subtitle_ids = ids.subtitles or {key: key for key in subtitle_languages}
+    if not ids.audio and audio_ids:
+        log_debug(f"No PGC audio control; using the VTS attribute IDs: {audio_ids}")
     return [
         _build_dvd_video_stream(ifo_data),
-        *_build_dvd_audio_streams(ifo_data, active_audio, audio_languages),
-        *_build_dvd_subtitle_streams(ifo_data, active_subtitles, subtitle_languages),
+        *_build_dvd_audio_streams(ifo_data, audio_ids, audio_languages),
+        *_build_dvd_subtitle_streams(ifo_data, subtitle_ids, subtitle_languages),
     ]
 
 
@@ -1138,9 +1125,15 @@ def _build_title_from_ifo(
         title.dvd_padded = layout.padded
         title.dvd_cell_durations = layout.cell_durations
 
-    _append_undeclared_dvd_subpictures(
-        title, ifo_data, vob_parts, duration, config, scan_cache
-    )
+    # The PGC's subpicture control table, when it lists any, is the title's
+    # subtitle set (as the reference lists it): the VOBs often carry other
+    # titles' subpictures too (Cats Don't Dance's trailers play the feature's
+    # cells, with its three subtitle streams, but use only their own).
+    # Without one, recover what the VOBs hold.
+    if not pgc_stream_ids(ifo_data, pgc_number).subtitles:
+        _append_undeclared_dvd_subpictures(
+            title, ifo_data, vob_parts, duration, config, scan_cache
+        )
     _append_dvd_closed_captions(title, vob_parts, config)
     log_debug(f"Built from IFO: {ifo_path.name}, {len(chapters)} chapters, {duration}s")
     log_debug(

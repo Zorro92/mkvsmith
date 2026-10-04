@@ -23,6 +23,7 @@ import pytest
 
 from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from dvdifo import (
+    pgc_stream_ids,
     _EditionCell,
     _detect_episode_pgcs,
     _effective_pgc_durations,
@@ -30,7 +31,6 @@ from dvdifo import (
     _episode_part_labels,
     _find_alternate_edition_pgcs,
     _find_main_pgc,
-    _get_active_pgc_streams,
     _parse_pgc_stream_languages,
     _lookup_main_feature_range,
     _parse_vmg_ifo,
@@ -229,21 +229,22 @@ def test_parse_vts_c_adt_and_vobu_admap(fixtures_dir: Path) -> None:
     assert vobus == sorted(vobus)
 
 
-def test_get_active_pgc_streams(fixtures_dir: Path) -> None:
+def test_pgc_stream_ids(fixtures_dir: Path) -> None:
     data = (fixtures_dir / "dvd_vts_01_0.ifo").read_bytes()
 
-    assert _get_active_pgc_streams(data) == (
-        {0x80, 0x81, 0x82},
-        {0x20, 0x21, 0x22},
-    )
-    assert _get_active_pgc_streams(data, 1) == (
-        {0x80, 0x81, 0x82},
-        {0x20, 0x21, 0x22},
-    )
-    assert _get_active_pgc_streams(data, 2) == (
-        {0x80, 0x81, 0x82},
-        {0x20, 0x21, 0x22},
-    )
+    # Cats Don't Dance: the attribute table declares five audio streams,
+    # the feature (PGC 1) plays three, matching the reference listing.
+    feature = pgc_stream_ids(data, 1)
+    assert feature.audio == {0x80: 0x80, 0x81: 0x81, 0x82: 0x82}
+    assert feature.subtitles == {0x20: 0x20, 0x21: 0x21, 0x22: 0x22}
+    assert pgc_stream_ids(data) == feature
+
+    # A trailer (PGC 32) enables only physical audio 0 (through attribute
+    # slot 4) and subtitle 3 (through slot 0, so English); sharing cells with
+    # the feature, it lists the feature's audio too.
+    trailer = pgc_stream_ids(data, 32)
+    assert trailer.audio == {0x80: 0x84, 0x81: 0x81, 0x82: 0x82}
+    assert trailer.subtitles == {0x23: 0x20}
 
 
 def test_find_main_pgc_and_enumerate_vts_pgcs(fixtures_dir: Path) -> None:
@@ -451,8 +452,12 @@ def test_alternate_pgc_recutting_default_is_an_edition(fixtures_dir: Path) -> No
 
     # The default movie PGC's audio-control table marks the commentary
     # stream (0x83) unavailable; the alternate PGC 2 plays the same cells
-    # plus 21 half-second interstitials and enables it.
-    assert _get_active_pgc_streams(data, 1) == ({0x80, 0x81, 0x82}, {0x20})
+    # plus 21 half-second interstitials and enables it, so the movie lists
+    # all four (as the reference does). The 16:9 title's three subtitles
+    # are the "wide" streams of its control entries.
+    movie = pgc_stream_ids(data, 1)
+    assert sorted(movie.audio) == [0x80, 0x81, 0x82, 0x83]
+    assert sorted(movie.subtitles) == [0x20, 0x21, 0x22]
 
     default = _find_main_pgc(data)
     assert default is not None
@@ -647,3 +652,25 @@ def test_episode_part_labels_reject_non_alternating_sets() -> None:
         (4, 40, 285.0, 3),
     ]
     assert _episode_part_labels(grouped) is None
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).parent / "fixtures" / "batb_platinum_mex_vts09.ifo").is_file()
+    or not (Path(__file__).parent / "fixtures" / "beauty_vts_09_0.ifo").is_file(),
+    reason="Beauty and the Beast VTS fixtures not present",
+)
+def test_pgc_stream_ids_beauty_and_the_beast(fixtures_dir: Path) -> None:
+    # Platinum Edition: editions 2 and 3 enable two audio streams but share
+    # cells with edition 1, which enables the third; 16:9, so the second
+    # subtitle is its wide stream 0x21. All as the reference lists them.
+    platinum = (fixtures_dir / "batb_platinum_mex_vts09.ifo").read_bytes()
+    for pgc in (1, 2, 3):
+        ids = pgc_stream_ids(platinum, pgc)
+        assert sorted(ids.audio) == [0x80, 0x81, 0x82]
+        assert sorted(ids.subtitles) == [0x20, 0x21]
+
+    # The Special Edition DVD-R enables one audio stream in every PGC, though
+    # its attribute table declares three.
+    special = pgc_stream_ids((fixtures_dir / "beauty_vts_09_0.ifo").read_bytes(), 1)
+    assert special.audio == {0x80: 0x80}
+    assert sorted(special.subtitles) == [0x20, 0x21]

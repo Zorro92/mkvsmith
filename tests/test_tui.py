@@ -1287,8 +1287,22 @@ def test_dialog_answers_default_once_the_app_has_closed() -> None:
 # =============================================================================
 
 
-def list_fits(app: tui.MkvsmithApp, selector: str) -> None:
+def laid_out(app: tui.MkvsmithApp, selector: str) -> bool:
+    """Whether *selector*'s list has been sized and its lines measured.
+
+    On a slow machine (the Windows CI runner) that can lag the list being
+    filled by a few frames.
+    """
+    found = app.screen.query(selector)
+    if not found:
+        return False
+    options = found.first(OptionList)
+    return options.size.height > 0 and options.virtual_size.height > 0
+
+
+async def list_fits(pilot: Pilot[None], app: tui.MkvsmithApp, selector: str) -> None:
     """*selector*'s list ends on screen and scrolls to show every line."""
+    await wait_until(pilot, lambda: laid_out(app, selector))
     options = app.screen.query_one(selector, OptionList)
     footer = app.screen.query_one("Footer")
     assert options.region.bottom <= footer.region.y
@@ -1300,7 +1314,7 @@ def list_fits(app: tui.MkvsmithApp, selector: str) -> None:
 async def last_line_visible(
     pilot: Pilot[None], app: tui.MkvsmithApp, selector: str
 ) -> None:
-    list_fits(app, selector)
+    await list_fits(pilot, app, selector)
     await pilot.pause()
     options = app.screen.query_one(selector, OptionList)
     assert options.scroll_y == options.max_scroll_y
@@ -1370,6 +1384,7 @@ def test_space_marks_in_place_and_moves_to_the_next_title(tmp_path: Path) -> Non
 
     async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
         screen = await at_titles(pilot, app)
+        await wait_until(pilot, lambda: laid_out(app, "#titles"))
         options = app.screen.query_one("#titles", OptionList)
         start = options.get_option_index("title-8")
         options.highlighted = start

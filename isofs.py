@@ -17,7 +17,7 @@ implementation.
 from __future__ import annotations
 
 import struct
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -130,11 +130,23 @@ class IsoImage:
             pos = run_end
         return bytes(out)
 
-    def copy_to(self, entry: IsoEntry, dest: Path, limit: int | None = None) -> None:
-        """Write *entry* (or its first *limit* bytes) to *dest*."""
+    def copy_to(
+        self,
+        entry: IsoEntry,
+        dest: Path,
+        limit: int | None = None,
+        before_chunk: Callable[[], None] | None = None,
+    ) -> None:
+        """Write *entry* (or its first *limit* bytes) to *dest*.
+
+        *before_chunk* runs before each chunk is copied; raising from it
+        stops the copy (and the exception propagates).
+        """
         total = entry.size if limit is None else min(limit, entry.size)
         with dest.open("wb") as out:
             for offset in range(0, total, _COPY_CHUNK):
+                if before_chunk is not None:
+                    before_chunk()
                 out.write(self.read(entry, offset, min(_COPY_CHUNK, total - offset)))
 
 

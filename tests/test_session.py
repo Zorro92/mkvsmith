@@ -51,6 +51,7 @@ class FakeCreator:
         self.fail = fail or set()
         self.ripped: list[tuple[int, list[Stream] | None]] = []
         self.on_progress: Callable[[str, int], None] | None = None
+        self.cancelled: Callable[[], bool] | None = None
 
     def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path:
         if self.on_progress is not None:
@@ -169,6 +170,32 @@ def test_run_rip_jobs_stops_between_jobs_when_cancelled() -> None:
     assert [index for index, _ in creator.ripped] == [0]
     assert result.cancelled is True
     assert len(result.outcomes) == 1
+
+
+@pytest.mark.parametrize("with_progress", [False, True])
+def test_run_rip_jobs_lets_the_muxer_stop_the_title_in_progress(
+    with_progress: bool,
+) -> None:
+    seen: list[Callable[[], bool] | None] = []
+
+    class SpyCreator(FakeCreator):
+        def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path:
+            seen.append(self.cancelled)
+            return Path(f"{title.name}.mkv")
+
+    creator = SpyCreator()
+
+    def cancelled() -> bool:
+        return False
+
+    callbacks = (
+        RipCallbacks(progress=lambda _job, _pct: None) if with_progress else None
+    )
+
+    run_rip_jobs(creator, [RipJob(make_title(0))], callbacks, cancelled=cancelled)
+
+    assert seen == [cancelled]
+    assert creator.cancelled is None
 
 
 def test_run_rip_jobs_runs_before_each_ahead_of_every_rip() -> None:

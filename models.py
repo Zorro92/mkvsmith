@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, TypedDict, cast, final
+from typing import Any, TypedDict, cast
 
 try:
     from rich.console import Console as _ImportedConsole
@@ -476,7 +476,6 @@ def get_language_name(code: str) -> str:
 # =============================================================================
 
 
-@final
 class RipError(Exception):
     def __init__(
         self,
@@ -529,6 +528,13 @@ class RipError(Exception):
                 ["\n  " + kind + ":", "  " + "\n  ".join(out.strip().split("\n"))]
             )
         return "\n".join(lines) + "\n"
+
+
+class RipCancelled(RipError):
+    """The user stopped the rip; its partial output and temp files are gone."""
+
+    def __init__(self, title: Title | None = None) -> None:
+        super().__init__(message=tr("Stopped"), title=title)
 
 
 # =============================================================================

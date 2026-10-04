@@ -667,9 +667,17 @@ def _registered_temp_file(temp_files: list[Path] | None) -> Path:
 
 
 def _copy_iso_member(
-    image: IsoImage, internal_path: str, dest: Path, limit: int | None = None
+    image: IsoImage,
+    internal_path: str,
+    dest: Path,
+    limit: int | None = None,
+    before_chunk: Callable[[], None] | None = None,
 ) -> bool:
-    """Copy one ISO member to *dest*; on failure log it and leave no file."""
+    """Copy one ISO member to *dest*; on failure log it and leave no file.
+
+    An exception from *before_chunk* (the user stopping the rip) also
+    leaves no file, and propagates.
+    """
     entry = image.entries.get(internal_path)
     if entry is None:
         log_error(
@@ -680,9 +688,11 @@ def _copy_iso_member(
         )
         return False
     try:
-        image.copy_to(entry, dest, limit)
-    except (IsoImageError, OSError) as exc:
+        image.copy_to(entry, dest, limit, before_chunk)
+    except BaseException as exc:
         dest.unlink(missing_ok=True)
+        if not isinstance(exc, (IsoImageError, OSError)):
+            raise
         log_error(
             tr(
                 "Could not extract {path} from the ISO: {err}",
@@ -695,11 +705,16 @@ def _copy_iso_member(
 
 
 def _extract_iso_files(
-    iso_path: Path, internal_paths: list[str], out_dir: Path
+    iso_path: Path,
+    internal_paths: list[str],
+    out_dir: Path,
+    before_chunk: Callable[[], None] | None = None,
 ) -> list[Path]:
     """Extract *internal_paths* into *out_dir*, flattened to their basenames.
 
-    Returns the files that were extracted successfully.
+    Returns the files that were extracted successfully. If *before_chunk*
+    raises, the files extracted so far are removed and the exception
+    propagates.
     """
     if not internal_paths:
         return []
@@ -709,10 +724,15 @@ def _extract_iso_files(
     out_dir.mkdir(parents=True, exist_ok=True)
     extracted: list[Path] = []
     with image:
-        for internal_path in internal_paths:
-            dest = out_dir / Path(internal_path).name
-            if _copy_iso_member(image, internal_path, dest):
-                extracted.append(dest)
+        try:
+            for internal_path in internal_paths:
+                dest = out_dir / Path(internal_path).name
+                if _copy_iso_member(image, internal_path, dest, None, before_chunk):
+                    extracted.append(dest)
+        except BaseException:
+            for path in extracted:
+                path.unlink(missing_ok=True)
+            raise
     return extracted
 
 
@@ -745,6 +765,7 @@ def _extract_full_for_muxing(
     *,
     temp_base: Path | None = None,
     temp_dirs: list[Path] | None = None,
+    before_chunk: Callable[[], None] | None = None,
 ) -> list[Path]:
     """Extract the full set of internal ISO files for muxing into a temp dir.
 
@@ -763,4 +784,4 @@ def _extract_full_for_muxing(
         RUNTIME_STATE.cleanup.register_temp_dir(out_dir)
     else:
         temp_dirs.append(out_dir)
-    return _extract_iso_files(iso_path, list(internals), out_dir)
+    return _extract_iso_files(iso_path, list(internals), out_dir, before_chunk)

@@ -1811,6 +1811,11 @@ class MkvsmithApp(App[None]):
     def on_unmount(self) -> None:
         self.bridge.close()
 
+    async def action_quit(self) -> None:
+        # Textual's own Ctrl+Q quit: ask first while ripping, like q does.
+        # Exiting under a running rip would strand its worker thread.
+        self.request_quit()
+
     # -- navigation ---------------------------------------------------------
 
     def go_back(self) -> None:

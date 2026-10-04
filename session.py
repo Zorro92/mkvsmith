@@ -360,6 +360,7 @@ class Ripper(Protocol):
     """What ``run_rip_jobs`` needs from a muxer (``mkv.MKVCreator``)."""
 
     on_progress: Callable[[str, int], None] | None
+    cancelled: Callable[[], bool] | None
 
     def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path: ...
 
@@ -389,10 +390,29 @@ def run_rip_jobs(
     """Rip each job in turn; a failure never stops the rest of the batch.
 
     *before_each* runs before every rip (e.g. the per-rip tagging question).
-    *cancelled* is polled between jobs; once it returns True the remaining
-    jobs are skipped and the result is marked cancelled.
+    *cancelled* is polled between jobs and, through the muxer, while a
+    title is prepared and muxed; once it returns True the title being
+    ripped stops (``RipCancelled``), the remaining jobs are skipped, and the
+    result is marked cancelled.
     """
     hooks = callbacks or RipCallbacks()
+    if cancelled is not None:
+        saved_cancelled = creator.cancelled
+        creator.cancelled = cancelled
+        try:
+            return _run_reporting(creator, jobs, hooks, before_each, cancelled)
+        finally:
+            creator.cancelled = saved_cancelled
+    return _run_reporting(creator, jobs, hooks, before_each, cancelled)
+
+
+def _run_reporting(
+    creator: Ripper,
+    jobs: Sequence[RipJob],
+    hooks: RipCallbacks,
+    before_each: Callable[[RipJob], None] | None,
+    cancelled: Callable[[], bool] | None,
+) -> RipBatchResult:
     if hooks.progress is None:
         return _run_jobs(creator, jobs, hooks, before_each, cancelled)
     report = hooks.progress

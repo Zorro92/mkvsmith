@@ -27,6 +27,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import bisect
+import contextlib
 import json
 import re
 import shutil
@@ -69,6 +70,7 @@ from models import (
     Stream,
     Title,
     TagOptions,
+    RipCancelled,
     RipError,
     get_language_name,
     log_info,
@@ -2302,18 +2304,62 @@ def _kill_mkvmerge_process(process: subprocess.Popen[str]) -> None:
     _kill_process_group(process.pid)
 
 
+# mkvmerge prints a progress line at least every percent, so a mux that
+# prints nothing for this long is stuck (a disc read hanging, say), not just
+# long: 1% of a 100 GB title read at 2 MB/s still takes under 9 minutes.
+_MKVMERGE_STALL_SECONDS = 15 * 60
+
+
+@final
+class _MkvmergeWatchdog:
+    """Kills mkvmerge once it has printed nothing for *timeout* seconds.
+
+    A whole-mux time limit would kill long titles read from a slow drive;
+    every line mkvmerge prints restarts the clock instead (``poke``).
+    """
+
+    def __init__(
+        self,
+        process: subprocess.Popen[str],
+        timeout_state: _MkvmergeTimeoutState,
+        timeout: int,
+    ) -> None:
+        self._process = process
+        self._timeout_state = timeout_state
+        self.timeout = timeout
+        self._lock = threading.Lock()
+        self._timer: threading.Timer | None = None
+        self._stopped = False
+
+    def _expired(self) -> None:
+        self._timeout_state.timed_out = True
+        _kill_mkvmerge_process(self._process)
+
+    def poke(self) -> None:
+        """mkvmerge printed something: restart the clock."""
+        with self._lock:
+            if self._stopped:
+                return
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(self.timeout, self._expired)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._stopped = True
+            if self._timer is not None:
+                self._timer.cancel()
+
+
 def _start_mkvmerge_watchdog(
     process: subprocess.Popen[str],
     timeout_state: _MkvmergeTimeoutState,
     timeout: int,
-) -> threading.Timer:
-    def on_timeout() -> None:
-        timeout_state.timed_out = True
-        _kill_mkvmerge_process(process)
-
-    watchdog = threading.Timer(timeout, on_timeout)
-    watchdog.daemon = True
-    watchdog.start()
+) -> _MkvmergeWatchdog:
+    watchdog = _MkvmergeWatchdog(process, timeout_state, timeout)
+    watchdog.poke()
     return watchdog
 
 
@@ -2324,7 +2370,11 @@ def _parse_mkvmerge_progress(data: str) -> int | None:
     return min(100, int(matches[-1]))
 
 
-def _read_mkvmerge_output(stdout: IO[str], on_progress: Callable[[int], None]) -> str:
+def _read_mkvmerge_output(
+    stdout: IO[str],
+    on_progress: Callable[[int], None],
+    on_line: Callable[[], None] | None = None,
+) -> str:
     # mkvmerge frames progress as \r-terminated updates ("Progress: N%\r",
     # flushed promptly). readline() returns each update as soon as it
     # arrives; the previous read(n) blocked until n chars accumulated, which
@@ -2335,6 +2385,8 @@ def _read_mkvmerge_output(stdout: IO[str], on_progress: Callable[[int], None]) -
         line = stdout.readline()
         if not line:
             break
+        if on_line is not None:
+            on_line()
         chunks.append(line)
         percentage = _parse_mkvmerge_progress(line)
         if percentage is not None and percentage != last_percentage:
@@ -2366,7 +2418,14 @@ class MKVCreator:
         # Called with (output name, percent) while mkvmerge runs; None draws
         # the terminal progress bar.
         self.on_progress: Callable[[str, int], None] | None = None
+        # Polled while a title is prepared and muxed; once it returns True
+        # the rip stops with RipCancelled and leaves no partial files.
+        self.cancelled: Callable[[], bool] | None = None
         self.out.mkdir(parents=True, exist_ok=True)
+
+    def _stop_if_cancelled(self, title: Title) -> None:
+        if self.cancelled is not None and self.cancelled():
+            raise RipCancelled(title)
 
     def select_streams(
         self, title: Title, force: list[str] | None = None
@@ -2415,6 +2474,7 @@ class MKVCreator:
                 title.iso_internal_paths,
                 temp_base=extract_temp_base,
                 temp_dirs=self.cleanup.temp_dirs,
+                before_chunk=lambda: self._stop_if_cancelled(title),
             )
             cleanup = list(inputs)
         else:
@@ -2510,7 +2570,10 @@ class MKVCreator:
     ) -> None:
         if timed_out:
             raise RipError(
-                message="mkvmerge timed out after 3600s",
+                message=tr(
+                    "mkvmerge stopped responding (no progress for {minutes} minutes)",
+                    minutes=_MKVMERGE_STALL_SECONDS // 60,
+                ),
                 command=command,
                 stderr=output_text,
                 title=title,
@@ -2620,22 +2683,31 @@ class MKVCreator:
         lists each track's SOURCE_ID in its _STATISTICS_TAGS afterwards so
         players surface it (see _apply_source_id_statistics_fix).
         """
+        self._stop_if_cancelled(title)
         log_info(tr("Muxing: {name}...", name=out_file.name))
         # Track the in-progress output so Ctrl+C deletes the partial file
         # instead of leaving a truncated mkv next to completed rips.
         self.active_processes.register_output(out_file)
-        returncode, output_text, timed_out = self._run_mkvmerge(
-            command, out_file.name, title.duration_seconds
-        )
-        self._validate_mux_result(
-            title,
-            streams,
-            command,
-            out_file,
-            returncode,
-            output_text,
-            timed_out,
-        )
+        try:
+            returncode, output_text, timed_out = self._run_mkvmerge(
+                command, out_file.name, title.duration_seconds
+            )
+            self._stop_if_cancelled(title)
+            self._validate_mux_result(
+                title,
+                streams,
+                command,
+                out_file,
+                returncode,
+                output_text,
+                timed_out,
+            )
+        except BaseException:
+            # A failed, stopped, or interrupted mux leaves a truncated file;
+            # don't leave it next to completed rips.
+            with contextlib.suppress(OSError):
+                out_file.unlink(missing_ok=True)
+            raise
         if retime_dropped_inputs is not None:
             _apply_retimed_edition_chapters(
                 out_file, title, retime_dropped_inputs, self.cleanup.temp_files
@@ -2658,21 +2730,26 @@ class MKVCreator:
 
         out_file = _output_file_for_title(self.out, title)
         self._ensure_overwrite_allowed(out_file)
+        self._stop_if_cancelled(title)
         input_plan = self._prepare_inputs(title, streams)
-        prepared_tracks = self._prepare_tracks(title, streams, input_plan)
-        tag_md, tag_art = _prepare_mux_tags(
-            title,
-            self.tag_opts,
-            self.cleanup.temp_files,
-            self.disc_metadata,
-            self.prompts,
-            series_disc=self.runtime_state.series_disc,
-        )
-
-        kept_inputs, dropped_inputs = _drop_incompatible_append_inputs(
-            input_plan.inputs, prepared_tracks.mapped, prepared_tracks.ident_tracks
-        )
         try:
+            self._stop_if_cancelled(title)
+            prepared_tracks = self._prepare_tracks(title, streams, input_plan)
+            self._stop_if_cancelled(title)
+            tag_md, tag_art = _prepare_mux_tags(
+                title,
+                self.tag_opts,
+                self.cleanup.temp_files,
+                self.disc_metadata,
+                self.prompts,
+                series_disc=self.runtime_state.series_disc,
+            )
+
+            kept_inputs, dropped_inputs = _drop_incompatible_append_inputs(
+                input_plan.inputs,
+                prepared_tracks.mapped,
+                prepared_tracks.ident_tracks,
+            )
             seamless_inputs = _prepare_seamless_append(
                 title,
                 kept_inputs,
@@ -2757,7 +2834,11 @@ class MKVCreator:
         sys.stderr.flush()
 
     def _run_mkvmerge(
-        self, cmd: list[str], label: str, duration: float, timeout: int = 3600
+        self,
+        cmd: list[str],
+        label: str,
+        duration: float,
+        timeout: int = _MKVMERGE_STALL_SECONDS,
     ) -> tuple[int, str, bool]:
         """Run mkvmerge, showing live progress parsed from its output."""
         process = subprocess.Popen(
@@ -2777,10 +2858,15 @@ class MKVCreator:
         timeout_state = _MkvmergeTimeoutState()
         watchdog = _start_mkvmerge_watchdog(process, timeout_state, timeout)
         try:
+            if self.cancelled is not None and self.cancelled():
+                # Stopped between the last check and the muxer starting,
+                # too early for the stop's kill to have reached it.
+                _kill_mkvmerge_process(process)
             assert process.stdout is not None
             output = _read_mkvmerge_output(
                 process.stdout,
                 lambda percentage: self._show_progress(label, percentage),
+                watchdog.poke,
             )
         except BaseException as exc:
             _kill_mkvmerge_process(process)

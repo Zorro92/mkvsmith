@@ -284,6 +284,9 @@ _ES: dict[str, str] = {
     "Toggle": "Activar",
     "Ripping {n} title(s)": "Extrayendo {n} título(s)",
     "Stopped": "Detenido",
+    "mkvmerge stopped responding (no progress for {minutes} minutes)": (
+        "mkvmerge dejó de responder (sin progreso durante {minutes} minutos)"
+    ),
     "Failed: {err}": "Error: {err}",
     "Stop ripping? The title being ripped is deleted.": "¿Detener la extracción? Se borrará el título que se está extrayendo.",
     "Stop ripping and quit? The title being ripped is deleted.": "¿Detener la extracción y salir? Se borrará el título que se está extrayendo.",

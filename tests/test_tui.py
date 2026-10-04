@@ -21,7 +21,7 @@ import settings
 import tui
 from drives import OpticalDrive
 from i18n import set_language
-from models import RipError, RuntimeState, Stream, StreamType, Title
+from models import RipCancelled, RipError, RuntimeState, Stream, StreamType, Title
 
 AppTest = Callable[[Pilot[None], tui.MkvsmithApp], Awaitable[None]]
 
@@ -726,6 +726,7 @@ class FakeCreator:
     def __init__(self, out: Path, *_args: object, **_kwargs: object) -> None:
         self.out = out
         self.on_progress: Callable[[str, int], None] | None = None
+        self.cancelled: Callable[[], bool] | None = None
         self.prompts = models.UserPrompts()
 
     def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path:
@@ -733,6 +734,8 @@ class FakeCreator:
             self.on_progress("x.mkv", 40)
         if FakeCreator.gate is not None:
             FakeCreator.gate.wait(10)
+        if self.cancelled is not None and self.cancelled():
+            raise RipCancelled(title)
         if FakeCreator.ask_overwrite and not self.prompts.confirm(
             "'x.mkv' already exists. Overwrite? [y/N]:"
         ):
@@ -1153,17 +1156,21 @@ def test_esc_while_ripping_asks_then_stops(
         await pilot.press("enter")  # Yes, stop
         rip = await rip_done(pilot, app)
         status = str(rip.query_one("#status", Static).content)
-        assert status.startswith("Stopped")
-        assert option_texts(app, "#jobs")[1].endswith("Skipped")
+        assert status == "Stopped · Done: 0 ok, 0 failed"
+        jobs = option_texts(app, "#jobs")
+        assert jobs[0].endswith("Stopped") and jobs[1].endswith("Skipped")
 
     titles_app(body, [make_title(0), make_title(1)], tmp_path, state)
     assert killed == [True]
-    # The first title still finished in this fake; the second never started.
-    assert [index for index, _ in creator.ripped] == [0]
+    assert creator.ripped == []
 
 
+@pytest.mark.parametrize("key", ["q", "ctrl+q"])
 def test_quitting_while_ripping_asks_then_stops_and_quits(
-    tmp_path: Path, creator: type[FakeCreator], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    creator: type[FakeCreator],
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
 ) -> None:
     creator.gate = threading.Event()
     state = ripping_state(tmp_path)
@@ -1177,7 +1184,7 @@ def test_quitting_while_ripping_asks_then_stops_and_quits(
         await at_titles(pilot, app)
         await choose(pilot, app, "#titles", "rip-main")
         await wait_until(pilot, lambda: app.running_rip() is not None)
-        await pilot.press("q")
+        await pilot.press(key)
         await dialog(pilot, app, tui.ConfirmDialog)
         assert app.is_running
         await pilot.press("enter")
@@ -1185,6 +1192,7 @@ def test_quitting_while_ripping_asks_then_stops_and_quits(
 
     app = titles_app(body, [make_title(0)], tmp_path, state)
     assert not app.is_running
+    assert creator.ripped == []
 
 
 # =============================================================================

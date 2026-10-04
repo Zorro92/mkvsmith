@@ -199,6 +199,33 @@ def test_extract_iso_files_flattens_and_skips_missing(
     assert hashlib.sha256(extracted[0].read_bytes()).hexdigest() == digest
 
 
+def test_stopping_an_extraction_removes_what_was_extracted(
+    treasure_planet: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    path, _header = treasure_planet
+    out = tmp_path / "out"
+    chunks: list[None] = []
+
+    class Stopped(Exception):
+        pass
+
+    def before_chunk() -> None:
+        # The IFO is one chunk; stop partway into the VOB.
+        if len(chunks) == 3:
+            raise Stopped
+        chunks.append(None)
+
+    with pytest.raises(Stopped):
+        disc_reader._extract_iso_files(
+            path,
+            ["VIDEO_TS/VIDEO_TS.IFO", "VIDEO_TS/VTS_01_1.VOB"],
+            out,
+            before_chunk,
+        )
+
+    assert list(out.iterdir()) == []
+
+
 def test_extract_iso_prefix_registers_temp_file(
     treasure_planet: tuple[Path, dict[str, Any]],
 ) -> None:

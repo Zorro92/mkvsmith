@@ -662,6 +662,8 @@ def test_prepare_inputs_uses_iso_and_injected_registries(
     video = Stream(index=0, stream_type=StreamType.VIDEO, codec="h264")
     extracted = tmp_path / "extracted.m2ts"
     calls: dict[str, object] = {}
+    stopped: list[bool] = []
+    creator.cancelled = lambda: bool(stopped)
 
     def extract_full(
         _source: Path,
@@ -669,9 +671,15 @@ def test_prepare_inputs_uses_iso_and_injected_registries(
         *,
         temp_base: Path | None,
         temp_dirs: list[Path] | None,
+        before_chunk: Callable[[], None] | None,
     ) -> list[Path]:
         calls["temp_base"] = temp_base
         calls["temp_dirs"] = temp_dirs
+        assert before_chunk is not None
+        before_chunk()  # not stopped: the copy goes on
+        stopped.append(True)
+        with pytest.raises(models.RipCancelled):
+            before_chunk()
         return [extracted]
 
     def fake_temp_base(_size: int, _config: models.Config | None) -> Path | None:
@@ -776,7 +784,7 @@ def test_validate_mux_result_reports_timeout_and_failure(tmp_path: Path) -> None
     out_file = tmp_path / "movie_t00.mkv"
     out_file.write_bytes(b"partial")
 
-    with pytest.raises(models.RipError, match="timed out"):
+    with pytest.raises(models.RipError, match="stopped responding"):
         creator._validate_mux_result(
             title,
             streams,
@@ -855,6 +863,110 @@ def test_execute_mux_finalizes_output_and_metadata(
     assert result.with_suffix(".xml").is_file()
     assert run_calls == [(["mkvmerge"], out_file.name, 100.0, 3600)]
     assert runtime_state.active_processes.output_files == []
+
+
+@pytest.mark.parametrize(
+    ("outcome", "error"),
+    [
+        ("fails", models.RipError),
+        ("reader-error", RuntimeError),
+        ("stopped-during", models.RipCancelled),
+    ],
+)
+def test_execute_mux_deletes_the_partial_output_when_the_mux_does_not_finish(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    outcome: str,
+    error: type[BaseException],
+) -> None:
+    runtime_state = models.RuntimeState()
+    creator = mkv.MKVCreator(tmp_path, runtime_state=runtime_state)
+    title = Title(
+        index=0,
+        source_file=tmp_path / "movie.mkv",
+        name="Movie",
+        duration_seconds=100.0,
+    )
+    streams = [Stream(index=0, stream_type=StreamType.VIDEO)]
+    out_file = tmp_path / "movie_t00.mkv"
+    stopped: list[bool] = []
+    creator.cancelled = lambda: bool(stopped)
+
+    def run(
+        _command: list[str], _label: str, _duration: float
+    ) -> tuple[int, str, bool]:
+        out_file.write_bytes(b"truncated")
+        if outcome == "reader-error":
+            raise RuntimeError("App is not running")
+        if outcome == "stopped-during":
+            stopped.append(True)
+            return 0, "", False
+        return 2, "Error: read failed", False
+
+    monkeypatch.setattr(creator, "_run_mkvmerge", run)
+
+    with pytest.raises(error):
+        creator._execute_mux(title, streams, ["mkvmerge"], out_file, None, [])
+
+    assert not out_file.exists()
+
+
+def test_execute_mux_does_not_start_mkvmerge_once_stopped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    creator = mkv.MKVCreator(tmp_path, runtime_state=models.RuntimeState())
+    title = Title(
+        index=0,
+        source_file=tmp_path / "movie.mkv",
+        name="Movie",
+        duration_seconds=100.0,
+    )
+    creator.cancelled = lambda: True
+
+    def run(*_args: object) -> tuple[int, str, bool]:
+        raise AssertionError("mkvmerge started after the rip was stopped")
+
+    monkeypatch.setattr(creator, "_run_mkvmerge", run)
+
+    with pytest.raises(models.RipCancelled):
+        creator._execute_mux(title, [], ["mkvmerge"], tmp_path / "x.mkv", None, [])
+
+
+def test_run_mkvmerge_kills_a_muxer_started_just_after_a_stop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime_state = models.RuntimeState()
+    creator = mkv.MKVCreator(tmp_path, runtime_state=runtime_state)
+    creator.cancelled = lambda: True
+    process = _FakeMuxProcess(_FakeTextStdout([]), returncode=-9)
+    killed: list[object] = []
+
+    def fake_popen(*_args: object, **_kwargs: object) -> _FakeMuxProcess:
+        return process
+
+    def fake_watchdog(
+        _process: object, _state: object, timeout: int
+    ) -> SimpleNamespace:
+        return SimpleNamespace(cancel=lambda: None, poke=lambda: None)
+
+    monkeypatch.setattr(mkv.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mkv, "_start_mkvmerge_watchdog", fake_watchdog)
+    monkeypatch.setattr(mkv, "_kill_mkvmerge_process", killed.append)
+
+    creator._run_mkvmerge(["mkvmerge"], "movie.mkv", 100.0)
+
+    assert killed == [process]
+
+
+def test_read_mkvmerge_output_reports_every_line() -> None:
+    stdout = _FakeTextStdout(["#GUI#begin\n", "Progress: 5%\r", "Progress: 5%\r"])
+    lines: list[None] = []
+
+    mkv._read_mkvmerge_output(
+        cast(IO[str], stdout), lambda _pct: None, lambda: lines.append(None)
+    )
+
+    assert len(lines) == 3
 
 
 def test_source_id_match_takes_priority_over_position() -> None:
@@ -1067,24 +1179,29 @@ def test_mkvmerge_watchdog_records_timeout_and_kills_process(
     monkeypatch.setattr(mkv, "_kill_mkvmerge_process", fake_kill)
     process = object()
 
-    # threading.Timer is patched to _FakeTimer above.
-    watchdog = cast(
-        _FakeTimer,
-        mkv._start_mkvmerge_watchdog(
-            cast("subprocess.Popen[str]", process),
-            state,
-            timeout=17,
-        ),
+    watchdog = mkv._start_mkvmerge_watchdog(
+        cast("subprocess.Popen[str]", process),
+        state,
+        timeout=17,
     )
 
-    assert watchdog.interval == 17
-    assert watchdog.daemon is True
-    assert watchdog.started is True
+    assert [(t.interval, t.daemon, t.started) for t in timers] == [(17, True, True)]
 
-    watchdog.function()
+    # Every line mkvmerge prints restarts the clock: only a stall kills it.
+    watchdog.poke()
+    assert timers[0].cancelled is True
+    assert [(t.interval, t.started) for t in timers[1:]] == [(17, True)]
+    assert state.timed_out is False and kill_calls == []
+
+    timers[-1].function()
 
     assert state.timed_out is True
     assert kill_calls == [process]
+
+    watchdog.cancel()
+    watchdog.poke()  # a late line after the mux ended starts no new timer
+    assert timers[-1].cancelled is True
+    assert len(timers) == 2
 
 
 class _FakeTextStdout:
@@ -1137,7 +1254,7 @@ def test_run_mkvmerge_collects_output_and_unregisters_muxer(
     ) -> SimpleNamespace:
         return (
             watchdog_timeouts.append(timeout),
-            SimpleNamespace(cancel=lambda: None),
+            SimpleNamespace(cancel=lambda: None, poke=lambda: None),
         )[1]
 
     def fake_show_progress(_label: str, percentage: int) -> None:
@@ -1181,7 +1298,7 @@ def test_run_mkvmerge_interrupt_kills_waits_and_finishes_progress(
     def fake_watchdog(
         _process: object, _state: object, timeout: int
     ) -> SimpleNamespace:
-        return SimpleNamespace(cancel=lambda: None)
+        return SimpleNamespace(cancel=lambda: None, poke=lambda: None)
 
     monkeypatch.setattr(
         mkv,
@@ -1217,7 +1334,7 @@ def test_run_mkvmerge_kills_child_on_unexpected_reader_error(
     def fake_watchdog(
         _process: object, _state: object, timeout: int
     ) -> SimpleNamespace:
-        return SimpleNamespace(cancel=lambda: None)
+        return SimpleNamespace(cancel=lambda: None, poke=lambda: None)
 
     monkeypatch.setattr(
         mkv,

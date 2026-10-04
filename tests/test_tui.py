@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
@@ -100,7 +99,7 @@ def menu_ready(app: tui.MkvsmithApp) -> bool:
 
 
 async def wait_until(
-    pilot: Pilot[None], ready: Callable[[], bool], timeout: float = 10.0
+    pilot: Pilot[None], ready: Callable[[], bool], timeout: float = 30.0
 ) -> None:
     """Pause until *ready* holds (workers report back between pauses)."""
     waited = 0.0
@@ -506,9 +505,12 @@ def test_quitting_while_a_folder_is_loading_does_not_hang(
     # Regression: Textual's DirectoryTree hung the app's shutdown when it was
     # still loading a folder.
     real_list_folder = tui.list_folder
+    # Holds the folder read until the quit has been asked for (a sleep is
+    # timing-dependent: too short on a slow, emulated CI runner).
+    loading = threading.Event()
 
     def slow(folder: Path) -> list[tuple[Path, bool]]:
-        time.sleep(0.5)
+        loading.wait(10)
         return real_list_folder(folder)
 
     monkeypatch.setattr(tui, "list_folder", slow)
@@ -520,8 +522,12 @@ def test_quitting_while_a_folder_is_loading_does_not_hang(
         await pilot.pause()
         assert option_texts(app, "#entries") == ["Loading..."]
         await pilot.press("q")
+        loading.set()
 
-    app = run_app(body)
+    try:
+        app = run_app(body)
+    finally:
+        loading.set()
     assert not app.is_running and app.opened == []
 
 

@@ -69,6 +69,10 @@ def _linux_drives(sysfs: Path, dev: Path) -> list[OpticalDrive]:
 
 
 def _linux_has_disc(path: Path) -> bool | None:
+    # A sys.platform test type checkers understand: os.O_NONBLOCK and
+    # fcntl.ioctl don't exist on Windows.
+    if sys.platform == "win32":
+        return None
     try:
         import fcntl
 
@@ -130,7 +134,7 @@ def can_eject() -> bool:
 
 def eject(path: Path) -> None:
     """Open the tray of drive *path* (Linux). Raises OSError on failure."""
-    if not can_eject():
+    if sys.platform == "win32" or not can_eject():
         raise OSError("ejecting is not supported on this platform")
     import fcntl
 

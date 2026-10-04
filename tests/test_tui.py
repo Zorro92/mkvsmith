@@ -83,14 +83,20 @@ def run_app(
     async def drive() -> None:
         async with app.run_test(size=size) as pilot:
             if wait_for_menu:
-                await wait_until(
-                    pilot,
-                    lambda: any(isinstance(x, tui.MainMenu) for x in app.screen_stack),
-                )
+                await wait_until(pilot, lambda: menu_ready(app))
             await body(pilot, app)
 
     asyncio.run(drive())
     return app
+
+
+def menu_ready(app: tui.MkvsmithApp) -> bool:
+    """The main menu is open, built and filled (not just pushed)."""
+    for screen in app.screen_stack:
+        if isinstance(screen, tui.MainMenu):
+            found = screen.query("#menu")
+            return bool(found) and found.first(OptionList).option_count > 0
+    return False
 
 
 async def wait_until(
@@ -110,8 +116,21 @@ def screen_name(app: tui.MkvsmithApp) -> str:
 
 
 async def open_menu_item(pilot: Pilot[None], index: int) -> None:
+    """Choose main-menu line *index*; return once its screen is built."""
+    app = pilot.app
+    menu = app.screen
     await pilot.press(*["down"] * index, "enter")
-    await pilot.pause()
+
+    def settled() -> bool:
+        screen = app.screen
+        if screen is menu or not app.is_running:
+            return not app.is_running
+        lists = screen.query(OptionList)
+        if lists:
+            return lists.first().option_count > 0
+        return bool(screen.query("Footer"))
+
+    await wait_until(pilot, settled)
 
 
 async def wait_for_workers(app: tui.MkvsmithApp, pilot: Pilot[None]) -> None:

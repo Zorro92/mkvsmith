@@ -64,7 +64,10 @@ chmod +x main.py
 ## Uso
 
 ```sh
-# escanea una carpeta de disco / ISO y entra en modo interactivo
+# abre el menú principal (elige una unidad, ISO o carpeta de disco; ajustes)
+uv run ./main.py
+
+# escanea una carpeta de disco / ISO y abre sus títulos en modo interactivo
 uv run ./main.py /ruta/al/disco
 uv run ./main.py pelicula.iso
 
@@ -88,16 +91,35 @@ uv run ./main.py /ruta/al/disco -m ~/rips
 
 ### Modo interactivo
 
-Ejecuta sin `-t/-m/-a` para entrar en el prompt interactivo:
+Ejecuta en una terminal sin `-t/-m/-a/-i/-d` para abrir la interfaz a
+pantalla completa: sin origen empieza en el menú principal; con uno lo
+escanea enseguida. Cada pantalla es una lista: muévete con las flechas o la
+rueda del ratón y elige con Intro o un clic; la línea resaltada va en
+naranja. `Esc` vuelve atrás y `q` sale (la barra de teclas de abajo también
+se puede pulsar).
 
-```text
-mkvsmith> n          # muestra los detalles del título n
-mkvsmith> r 1        # extrae el título 1
-mkvsmith> rm         # extrae la película principal (episodios en series)
-mkvsmith> ra         # extrae todos los títulos
-mkvsmith> settings   # lista los ajustes guardados (set CLAVE VALOR / reset CLAVE)
-mkvsmith> q          # salir
-```
+- **Menú principal**: extraer un disco, ajustes, acerca de / teclas, salir.
+  La primera vez pregunta antes los ajustes habituales.
+- **Elegir un disco**: las unidades ópticas con la etiqueta de su disco (en
+  Linux, `e` expulsa la resaltada), o buscar una ISO o carpeta de disco. El
+  explorador muestra una carpeta a la vez: `..` sube, una carpeta se abre y
+  una ISO se usa. Dentro de una carpeta de DVD / Blu-ray / HD DVD aparece
+  la línea "Usar esta carpeta" bajo `..`. `/` permite escribir una ruta.
+- **Títulos**: primero lo que se puede extraer (la película principal o
+  todos los episodios, todos los títulos de la lista, ediciones que combinar
+  en un MKV multiedición, episodios empaquetados que dividir) y después los
+  títulos. `Espacio` marca títulos para extraer en lote; Intro abre un
+  título.
+- **Un título**: extraerlo, marcarlo o elegir las pistas de audio y
+  subtítulos que se conservan (`Espacio` o Intro activa o desactiva una).
+- **Extracción**: una línea por archivo con su progreso, y el registro
+  debajo. Las preguntas (la carpeta de salida antes de la primera
+  extracción, sobrescribir un archivo, el etiquetado de TMDB) aparecen como
+  diálogos. `Esc` o `q` detienen la extracción tras preguntar; el título que
+  se está extrayendo se borra.
+- **Ajustes**: todos los ajustes guardados; Intro cambia uno y lo guarda al
+  momento, `d` restablece su valor por defecto. Los cambios se aplican al
+  siguiente disco que abras.
 
 ### Opciones comunes
 
@@ -257,8 +279,8 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   menor entre la RAM total y el tamaño del tmpfs (un tmpfs suele estar limitado
   a una fracción de la RAM), con comprobaciones adicionales para la RAM
   disponible y el espacio libre del tmpfs, ya que `/tmp` es compartido.
-- **La salida MKV multi-edición** (`--multi-edition`, o el comando interactivo
-  `me`) combina versiones con ramificación continua de una película
+- **La salida MKV multi-edición** (`--multi-edition`, o "Combinar" en la lista
+  de títulos interactiva) combina versiones con ramificación continua de una película
   (playlists de Blu-ray, o cadenas de DVD que comparten celdas) en un solo
   archivo con
   uniones sin pausas y capítulos exactos. Requiere un reproductor con
@@ -275,7 +297,7 @@ identificación humana porque mkvsmith no expone IDs de celdas DVD.
   reproducen todos los episodios del disco desde una sola playlist de 15-20
   horas. `mkvsmith` los detecta a partir de las marcas de capítulo y lista la
   playlist como de costumbre, con un aviso; por defecto no se divide nada.
-  Usa `--split-episodes`, o el comando interactivo `se N`, para obtener un
+  Usa `--split-episodes`, o "Dividir" en la lista de títulos interactiva, para obtener un
   título por episodio (más cualquier extra final), cada uno recortado a su
   propio rango y con sus propios capítulos.
   El vídeo de Blu-ray suele tener un fotograma IDR solo al inicio de cada clip,

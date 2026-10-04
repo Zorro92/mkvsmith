@@ -70,6 +70,10 @@ class RuntimeLogger:
 
     console: _Console = field(default_factory=_Console)
     debug_enabled: bool = False
+    # When set, messages go to sink(level, message) instead of the console
+    # (level is "info", "warn", "error" or "debug"), e.g. a full-screen
+    # UI's log pane.
+    sink: Callable[[str, str], None] | None = None
 
     def configure(self, config: Config) -> None:
         # Config is declared later; runtime annotations defer resolution.
@@ -79,19 +83,25 @@ class RuntimeLogger:
         self.debug_enabled = enabled
 
     def info(self, message: str) -> None:
-        if HAS_RICH:
+        if self.sink is not None:
+            self.sink("info", message)
+        elif HAS_RICH:
             self.console.print(f"[green][INFO][/green] {message}")
         else:
             print(f"[INFO] {message}")
 
     def warn(self, message: str) -> None:
-        if HAS_RICH:
+        if self.sink is not None:
+            self.sink("warn", message)
+        elif HAS_RICH:
             self.console.print(f"[yellow][WARN][/yellow] {message}")
         else:
             print(f"[WARN] {message}", file=sys.stderr)
 
     def error(self, message: str) -> None:
-        if HAS_RICH:
+        if self.sink is not None:
+            self.sink("error", message)
+        elif HAS_RICH:
             self.console.print(f"[red][ERROR][/red] {message}")
         else:
             print(f"[ERROR] {message}", file=sys.stderr)
@@ -99,7 +109,9 @@ class RuntimeLogger:
     def debug(self, message: str) -> None:
         if not self.debug_enabled:
             return
-        if HAS_RICH:
+        if self.sink is not None:
+            self.sink("debug", message)
+        elif HAS_RICH:
             self.console.print(f"[blue][DEBUG][/blue] {message}")
         else:
             print(f"[DEBUG] {message}")
@@ -1082,6 +1094,13 @@ ConfirmFn = Callable[[str], bool]
 TextPromptFn = Callable[[str, str | None], str]
 """Free-text hook: receives (prompt, default), returns the entered text."""
 
+ChooseFn = Callable[[str, list[str], int], int]
+"""Pick-one hook: receives (question, options, default index), returns the
+chosen index."""
+
+ShowTableFn = Callable[[str, list[tuple[str, str]]], None]
+"""Display hook for a titled list of (label, value) rows, e.g. a preview."""
+
 
 def _stdin_confirm(message: str) -> bool:
     """Default confirm hook: ask on stdin, treating close/interrupt as No."""
@@ -1113,6 +1132,36 @@ def _stdin_secret(prompt: str) -> str:
         return ""
 
 
+def _stdin_choose(question: str, options: list[str], default: int = 0) -> int:
+    """Default pick-one hook: a numbered list, answered on stdin."""
+    print(question)
+    for number, option in enumerate(options, start=1):
+        print(f"  {number}. {option}")
+    answer = _stdin_text(tr("Choose"), str(default + 1))
+    try:
+        index = int(answer) - 1
+    except ValueError:
+        return default
+    return index if 0 <= index < len(options) else default
+
+
+def _stdout_table(title: str, rows: list[tuple[str, str]]) -> None:
+    """Default table hook: a Rich table, or plain "label: value" lines."""
+    if HAS_RICH:
+        from rich.table import Table
+
+        table = Table(title=title)
+        table.add_column(tr("Property"), style="cyan")
+        table.add_column(tr("Value"), style="green")
+        for label, value in rows:
+            table.add_row(label, value)
+        RUNTIME_STATE.logger.console.print(table)
+        return
+    print(title)
+    for label, value in rows:
+        print(f"  {label}: {value}")
+
+
 @dataclass
 class UserPrompts:
     """Injectable user-interaction hooks (default: stdin).
@@ -1127,6 +1176,8 @@ class UserPrompts:
     text: TextPromptFn = _stdin_text
     # Like text, but not echoed (API keys).
     secret: Callable[[str], str] = _stdin_secret
+    choose: ChooseFn = _stdin_choose
+    show_table: ShowTableFn = _stdout_table
 
 
 @dataclass

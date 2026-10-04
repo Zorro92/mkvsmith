@@ -13,7 +13,7 @@ import pytest
 import cli
 import mkv
 import tagger
-from models import PackedSegment, RuntimeState, TagOptions, Title
+from models import RuntimeState, TagOptions, Title
 
 
 def _title(index: int = 0, **episode: int) -> Title:
@@ -108,27 +108,3 @@ def test_creator_passes_the_series_flag(tmp_path: Path) -> None:
     assert creator.runtime_state is state
     state.series_disc = True
     assert creator.runtime_state.series_disc
-
-
-def test_splitting_packed_episodes_makes_a_series_disc(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    def no_display(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    monkeypatch.setattr(cli, "display_titles", no_display)
-    packed = _title()
-    packed.clip_durations = [2800.0]
-    packed.playlist_name = "00000"
-    packed.packed_segments = [
-        PackedSegment(0.0, 1400.0, 1),
-        PackedSegment(1400.0, 2800.0, 2),
-    ]
-    state = RuntimeState()
-    creator = cli.MKVCreator(tmp_path, runtime_state=state)
-    tagging = cli._InteractiveTagState.from_options(state.tag_options, state.prompts)
-    ripper = cli._InteractiveRipper([packed], creator, tagging, [])
-
-    assert state.series_disc is False
-    ripper.split_packed_episodes([])
-    assert state.series_disc is True

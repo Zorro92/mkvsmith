@@ -176,11 +176,13 @@ def _select_streams_for_selector(title: Title, selector: str) -> list[Stream]:
 
 
 def _deduplicate_streams(streams: list[Stream]) -> list[Stream]:
-    seen_indexes: set[int] = set()
+    # By identity: Stream.index isn't unique (every DVD stream has index 0),
+    # so deduplicating on it kept only the first of "a:0,a:1,s:0".
+    seen: set[int] = set()
     unique: list[Stream] = []
     for stream in streams:
-        if stream.index not in seen_indexes:
-            seen_indexes.add(stream.index)
+        if id(stream) not in seen:
+            seen.add(id(stream))
             unique.append(stream)
     return unique
 
@@ -2353,6 +2355,9 @@ class MKVCreator:
         self.logger = state.logger
         self.cleanup = state.cleanup
         self.active_processes = state.active_processes
+        # Called with (output name, percent) while mkvmerge runs; None draws
+        # the terminal progress bar.
+        self.on_progress: Callable[[str, int], None] | None = None
         self.out.mkdir(parents=True, exist_ok=True)
 
     def select_streams(
@@ -2733,6 +2738,9 @@ class MKVCreator:
             display /= 1024
 
     def _show_progress(self, label: str, pct: int) -> None:
+        if self.on_progress is not None:
+            self.on_progress(label, pct)
+            return
         name = label if len(label) <= 24 else label[:21] + "..."
         filled = max(0, min(20, pct // 5))
         bar = "█" * filled + "░" * (20 - filled)

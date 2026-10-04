@@ -13,6 +13,7 @@ from typing import Any, NoReturn
 
 import pytest
 import cli
+import session
 import scan
 import disc_reader
 
@@ -801,7 +802,7 @@ def test_cli_lookup_failure_is_nonfatal(
 
     monkeypatch.setattr(DiscDbClient, "lookup", failing_lookup)
 
-    cli._apply_discdb_lookup([title], DiscMetadata(), state)
+    session.apply_discdb_lookup([title], DiscMetadata(), state)
 
     assert title.name == "Title 0"
     captured = capsys.readouterr()

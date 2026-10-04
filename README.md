@@ -59,7 +59,10 @@ chmod +x main.py
 ## Usage
 
 ```sh
-# scan a disc folder / ISO and enter interactive mode
+# open the main menu (pick a drive, ISO or disc folder; change settings)
+uv run ./main.py
+
+# scan a disc folder / ISO and open its titles in interactive mode
 uv run ./main.py /path/to/disc
 uv run ./main.py movie.iso
 
@@ -83,16 +86,31 @@ uv run ./main.py /path/to/disc -m ~/rips
 
 ### Interactive mode
 
-Run without `-t/-m/-a` to drop into the interactive prompt:
+Run at a terminal without `-t/-m/-a/-i/-d` to open the full-screen
+interface: with no source it starts at the main menu, with one it scans it
+straight away. Every screen is a list: move with the arrows or the mouse
+wheel, choose with Enter or a click, the highlighted line in orange. `Esc`
+goes back and `q` quits (the key bar at the bottom is clickable too).
 
-```text
-mkvsmith> n          # show details for title n
-mkvsmith> r 1        # rip title 1
-mkvsmith> rm         # rip the main feature (episodes on series discs)
-mkvsmith> ra         # rip all titles
-mkvsmith> settings   # list saved settings (set KEY VALUE / reset KEY to change)
-mkvsmith> q          # quit
-```
+- **Main menu**: rip a disc, settings, about / keys, quit. The first run
+  asks the everyday settings here first.
+- **Choose a disc**: the optical drives with their disc labels (on Linux,
+  `e` ejects the highlighted one), or browse for an ISO or disc folder. The
+  browser shows one folder at a time: `..` goes up, a folder opens, an ISO
+  is used. Inside a DVD / Blu-ray / HD DVD folder, a "Use this folder" line
+  appears under `..`. `/` types a path instead.
+- **Titles**: what you can rip comes first (the main feature or all
+  episodes, every listed title, editions to combine into one multi-edition
+  MKV, packed episodes to split), then the titles. `Space` marks titles for
+  a batch rip; Enter opens a title.
+- **A title**: rip it, mark it, or tick the audio and subtitle tracks to
+  keep (`Space` or Enter toggles one).
+- **Ripping**: one line per file with its progress, and the log below.
+  Questions (the output folder before the first rip, overwriting a file,
+  TMDB tagging) appear as dialogs. `Esc` or `q` stops the rip after asking;
+  the title being ripped is deleted.
+- **Settings**: every saved setting; Enter changes one and saves it at
+  once, `d` restores its default. Changes apply to the disc you open next.
 
 ### Common options
 
@@ -241,8 +259,8 @@ not expose DVD cell IDs.
   `--ram-limit` of the smaller of total RAM and the tmpfs size (a tmpfs is
   frequently capped at a fraction of RAM), with extra guards for
   currently-available RAM and tmpfs free space, since `/tmp` is shared.
-- **Multi-edition MKV output** (`--multi-edition`, or the interactive `me`
-  command) combines seamless-branching versions of a film (Blu-ray
+- **Multi-edition MKV output** (`--multi-edition`, or "Combine" in the
+  interactive title list) combines seamless-branching versions of a film (Blu-ray
   playlists, or DVD program chains sharing cells) into one file with
   gapless joins and exact chapter placement. It needs a player with
   ordered-chapters support (e.g. mpv, VLC) to switch editions.
@@ -256,8 +274,8 @@ not expose DVD cell IDs.
 - **Packed episodes.** Some series Blu-rays (e.g. Sgt. Frog) play a whole
   disc's episodes from one 15-20 hour playlist. `mkvsmith` detects these
   from the playlist's chapter marks and lists the playlist as usual, with a
-  hint; nothing is split by default. Pass `--split-episodes`, or use the
-  interactive `se N` command, to turn it into one title per episode (plus any
+  hint; nothing is split by default. Pass `--split-episodes`, or choose "Split"
+  in the interactive title list, to turn it into one title per episode (plus any
   trailing extra), each cut to its own range with its own chapters.
   Blu-ray video usually has an IDR frame only at the start of each disc clip,
   so episodes cut mid-clip start on a recovery-point frame instead. Software

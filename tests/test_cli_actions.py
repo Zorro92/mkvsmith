@@ -168,23 +168,24 @@ def test_run_action_rip_title_uses_injected_runtime_state(
     assert creators[0].rips == [(title, ["0:v:0"])]
 
 
-def test_run_action_forwards_interactive_runtime_state(
+def test_run_action_opens_the_scanned_titles_in_the_tui(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = models.RuntimeState()
     title = make_title(0)
     metadata = DiscMetadata(name="Test Disc")
-    calls: list[tuple[list[Title], DiscMetadata | None, models.RuntimeState]] = []
+    calls: list[tuple[object, ...]] = []
 
     def interactive(
-        titles: list[Title],
+        source: Path | None,
+        runtime_state: models.RuntimeState,
+        *,
+        titles: list[Title] | None = None,
         disc_metadata: DiscMetadata | None = None,
-        runtime_state: models.RuntimeState | None = None,
     ) -> None:
-        assert runtime_state is not None
-        calls.append((titles, disc_metadata, runtime_state))
+        calls.append((source, runtime_state, titles, disc_metadata))
 
-    monkeypatch.setattr(cli, "interactive_mode", interactive)
+    monkeypatch.setattr(cli, "_run_interactive", interactive)
 
     cli._run_action(
         "interactive",
@@ -196,7 +197,39 @@ def test_run_action_forwards_interactive_runtime_state(
         runtime_state=state,
     )
 
-    assert calls == [([title], metadata, state)]
+    assert calls == [(None, state, [title], metadata)]
+
+
+def test_interactive_mode_needs_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_can_run_tui", lambda: False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli._run_interactive(None, models.RuntimeState())
+
+    assert exc_info.value.code == 1
+
+
+def test_interactive_mode_runs_the_tui_with_the_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tui
+
+    state = models.RuntimeState()
+    runs: list[tuple[object, ...]] = []
+
+    def fake_run_tui(
+        runtime_state: models.RuntimeState,
+        source: Path | None = None,
+        **kwargs: object,
+    ) -> None:
+        runs.append((runtime_state, source, sorted(kwargs)))
+
+    monkeypatch.setattr(cli, "_can_run_tui", lambda: True)
+    monkeypatch.setattr(tui, "run_tui", fake_run_tui)
+
+    cli._run_interactive(Path("/dev/sr0"), state)
+
+    assert runs == [(state, Path("/dev/sr0"), ["disc_metadata", "reapply", "titles"])]
 
 
 def test_run_main_feature_rip_falls_back_to_episodes_on_series_discs(

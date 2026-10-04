@@ -2,8 +2,9 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "rich",
-#   "xdg-base-dirs",
+#   "rich>=15.0.0",
+#   "textual>=8.2.8",
+#   "xdg-base-dirs>=6.0.3",
 # ]
 # ///
 """

@@ -204,28 +204,24 @@ def test_display_preview_prints_plain_rows_when_rich_is_unavailable(
 
     client.display_preview(MovieMetadata(title="Plain Preview"))
 
-    assert capsys.readouterr().out == "  Title: Plain Preview\n"
+    assert capsys.readouterr().out == "Metadata Preview\n  Title: Plain Preview\n"
 
 
-def test_display_preview_uses_rich_renderer(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_display_preview_goes_through_the_table_hook(
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(models, "HAS_RICH", True)
-    rendered: list[list[tuple[str, str]]] = []
+    rendered: list[tuple[str, list[tuple[str, str]]]] = []
 
-    def record_rows(rows: list[tuple[str, str]]) -> None:
-        rendered.append(rows)
+    def record_table(title: str, rows: list[tuple[str, str]]) -> None:
+        rendered.append((title, rows))
 
-    monkeypatch.setattr(
-        tagger,
-        "_print_rich_metadata_rows",
-        record_rows,
-    )
     client = TmdbClient("test-key")
 
-    client.display_preview(MovieMetadata(title="Rich Preview"))
+    client.display_preview(
+        MovieMetadata(title="Rich Preview"), models.UserPrompts(show_table=record_table)
+    )
 
-    assert rendered == [[("Title", "Rich Preview")]]
+    assert rendered == [("Metadata Preview", [("Title", "Rich Preview")])]
     assert capsys.readouterr().out == ""
 
 
@@ -277,7 +273,7 @@ def test_fetch_and_confirm_metadata_uses_search_and_options(
         calls.append(("metadata", movie_id, None, region, language))
         return metadata
 
-    def fake_display_preview(preview: MovieMetadata) -> None:
+    def fake_display_preview(preview: MovieMetadata, *_a: object) -> None:
         calls.append(("preview", preview.title, None, "", None))
 
     monkeypatch.setattr(
@@ -327,7 +323,11 @@ def test_fetch_and_confirm_metadata_honours_user_cancellation(
 
     monkeypatch.setattr(client, "get_movie_id", fake_get_movie_id)
     monkeypatch.setattr(client, "get_metadata", fake_get_metadata)
-    monkeypatch.setattr(client, "display_preview", previews.append)
+
+    def record_preview(preview: MovieMetadata, *_a: object) -> None:
+        previews.append(preview)
+
+    monkeypatch.setattr(client, "display_preview", record_preview)
     monkeypatch.setattr(tagger, "_tag_confirm", fake_tag_confirm)
 
     assert tagger._fetch_and_confirm_metadata(client, "Title", None, opts) is None
@@ -350,7 +350,7 @@ def test_fetch_and_confirm_metadata_uses_injected_prompts(
     def fake_get_metadata(*_a: object, **_k: object) -> MovieMetadata:
         return metadata
 
-    def fake_display_preview(_p: MovieMetadata) -> None:
+    def fake_display_preview(_p: MovieMetadata, *_a: object) -> None:
         return None
 
     def forbidden_input(_p: object) -> str:
@@ -472,7 +472,9 @@ def test_prepare_tagging_fetches_metadata_and_artwork(
             assert movie_id == 42
             return metadata
 
-        def display_preview(self, preview: MovieMetadata) -> None:
+        def display_preview(
+            self, preview: MovieMetadata, prompts: models.UserPrompts | None = None
+        ) -> None:
             assert preview is metadata
 
         def download_image(

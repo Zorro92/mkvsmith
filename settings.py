@@ -75,6 +75,19 @@ TAG_ART_CHOICES = ("none", "poster", "backdrop", "both", "ask")
 CC_FORMATS = ("srt", "ass")
 DISCDB_CONTRIBUTE_MODES = ("off", "browser", "manual", "direct")
 
+# How a settings screen shows each choice (translate with i18n.tr).
+CHOICE_LABELS = {
+    "never": "never",
+    "ask": "ask every time",
+    "always": "always",
+    "none": "none",
+    "poster": "poster",
+    "backdrop": "backdrop",
+    "both": "poster and backdrop",
+    "srt": "srt",
+    "ass": "ass",
+}
+
 
 @dataclass
 class Settings:
@@ -781,6 +794,64 @@ def reset_setting(settings: Settings, key: str) -> Settings:
         answered=settings.answered | {key},
         **{spec.attr: getattr(Settings(), spec.attr)},
     )
+
+
+def complete_settings(
+    loaded: LoadedSettings,
+    ask: Callable[[SettingSpec, Settings], object | None],
+    on_answer: Callable[[SettingSpec, Settings], None] | None = None,
+) -> Settings:
+    """*loaded*'s settings with every missing everyday setting answered.
+
+    Everything on a first run; only the new settings after an update.
+    ``ask(spec, settings)`` returns the answer (None keeps the suggested
+    value); an answer the setting doesn't accept is asked again.
+    *on_answer* runs after each answer (e.g. to switch the interface
+    language straight away). Missing advanced settings take their
+    defaults, so the result is complete; the caller saves it when its
+    ``answered`` differs from *loaded*'s. An unreadable file is left alone.
+    """
+    saved = loaded.settings
+    if loaded.unreadable:
+        return saved
+    while pending := missing_settings(saved):
+        spec = pending[0]
+        answer = ask(spec, saved)
+        try:
+            saved = set_setting(
+                saved, spec.key, getattr(saved, spec.attr) if answer is None else answer
+            )
+        except ValueError:
+            continue
+        if on_answer is not None:
+            on_answer(spec, saved)
+    return accept_advanced_defaults(saved)
+
+
+class SettingsFileUnreadable(OSError):
+    """The settings file exists but can't be read, so it mustn't be saved over."""
+
+
+def update_saved_setting(
+    key: str, value: object = None, *, reset: bool = False, path: Path | None = None
+) -> Settings:
+    """Change one setting in the settings file and save it right away.
+
+    Re-reads the file first, so changes made elsewhere are kept. *reset*
+    answers *key* with its built-in default instead of *value*. Raises
+    ``KeyError`` / ``ValueError`` like ``set_setting`` (nothing is saved),
+    ``SettingsFileUnreadable`` when the file can't be read, and ``OSError``
+    when it can't be written. Returns the saved settings.
+    """
+    loaded = load_settings(path)
+    if loaded.unreadable:
+        raise SettingsFileUnreadable("; ".join(loaded.problems))
+    if reset:
+        changed = reset_setting(loaded.settings, key)
+    else:
+        changed = set_setting(loaded.settings, key, value)
+    save_settings(changed, loaded.path)
+    return changed
 
 
 def format_setting(settings: Settings, key: str) -> str:

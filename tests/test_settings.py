@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
@@ -21,16 +22,11 @@ import pytest
 
 import cli
 import settings
-from cc608 import CC608_CODEC_SRT
 from models import (
-    PackedSegment,
     RuntimeState,
-    Stream,
-    StreamType,
-    Title,
     UserPrompts,
 )
-from settings import Settings
+from settings import SettingSpec, Settings
 
 
 def _point_settings(
@@ -120,7 +116,7 @@ def test_corrupt_file_is_reported_not_overwritten(new_path: Path) -> None:
     assert loaded.settings == Settings()
     assert loaded.unreadable and loaded.exists
     assert "not valid JSON" in loaded.problems[0]
-    assert cli._complete_settings(loaded) == Settings()
+    assert settings.complete_settings(loaded, _forbidden_ask) == Settings()
     assert new_path.read_text(encoding="utf-8") == "{not json"
 
 
@@ -353,54 +349,68 @@ def _scripted(*answers: str) -> UserPrompts:
     return UserPrompts(confirm=confirm, text=text, secret=secret)
 
 
-def test_setup_asks_only_the_new_setting_and_saves(
-    new_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def _answers(*answers: object | None) -> Callable[[SettingSpec, Settings], object]:
+    """A setup ``ask`` answering from *answers* in order (None = suggested)."""
+    replies = iter(answers)
+
+    def ask(_spec: SettingSpec, _saved: Settings) -> object | None:
+        return next(replies)
+
+    return ask
+
+
+def _forbidden_ask(_spec: SettingSpec, _saved: Settings) -> NoReturn:
+    raise AssertionError("asked a question")
+
+
+def test_setup_asks_only_the_new_setting(new_path: Path) -> None:
     saved = _complete(split_episodes="never")
     saved.answered -= {"scan.split_episodes", "temp.ram_limit"}
     settings.save_settings(saved)
     loaded = settings.load_settings()
+    asked: list[str] = []
 
-    # Choice 2 of never/ask/always.
-    result = cli._complete_settings(loaded, _scripted("2"))
+    def ask(spec: SettingSpec, _saved: Settings) -> str:
+        asked.append(spec.key)
+        return "ask"
 
+    result = settings.complete_settings(loaded, ask)
+
+    assert asked == ["scan.split_episodes"]
     assert result.split_episodes == "ask"
-    assert "1 new setting(s)" in capsys.readouterr().out
-    data = json.loads(new_path.read_text(encoding="utf-8"))
-    assert data["scan"]["split_episodes"] == "ask"
-    assert data["temp"]["ram_limit"] == 0.8  # advanced default filled in
+    # The advanced setting takes its default, so the file can be completed.
+    assert {"scan.split_episodes", "temp.ram_limit"} <= result.answered
+    assert settings.missing_settings(result) == []
 
 
-def test_setup_reasks_invalid_answers_and_keeps_defaults_on_enter(
+def test_setup_reasks_invalid_answers_and_keeps_suggestions(
     new_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("TMDB_API_KEY", raising=False)
     saved = _complete()
     saved.answered -= {"tracks.languages", "tracks.subtitles", "tmdb.api_key"}
     settings.save_settings(saved)
+    seen: list[str] = []
 
-    result = cli._complete_settings(
+    result = settings.complete_settings(
         settings.load_settings(),
-        _scripted(" , ", "jpn,eng", "maybe", "n", ""),
+        _answers(" , ", "jpn,eng", "maybe", None, ""),
+        lambda spec, _saved: seen.append(spec.key),
     )
 
     assert result.languages == ["jpn", "eng"]
-    assert result.subtitles is False
+    assert result.subtitles is Settings().subtitles  # None keeps the suggestion
     assert result.tmdb_api_key is None and "tmdb.api_key" in result.answered
-    assert settings.missing_settings(settings.load_settings().settings) == []
+    assert seen == ["tracks.languages", "tracks.subtitles", "tmdb.api_key"]
 
 
 def test_complete_settings_ask_nothing(new_path: Path) -> None:
     settings.save_settings(_complete())
-    before = new_path.read_text(encoding="utf-8")
+    loaded = settings.load_settings()
 
-    def forbidden(*_args: object) -> NoReturn:
-        raise AssertionError("asked a question")
+    result = settings.complete_settings(loaded, _forbidden_ask)
 
-    cli._complete_settings(
-        settings.load_settings(), UserPrompts(confirm=forbidden, text=forbidden)
-    )
-    assert new_path.read_text(encoding="utf-8") == before
+    assert result.answered == loaded.settings.answered
 
 
 # -----------------------------------------------------------------------------
@@ -559,90 +569,3 @@ def test_flags_answer_ask_every_time() -> None:
 def test_interactive_run_detection(argv: tuple[str, ...], interactive: bool) -> None:
     args = cli._build_arg_parser().parse_args(["src", *argv])
     assert cli._is_interactive_run(args) is interactive
-
-
-# -----------------------------------------------------------------------------
-# Per-disc questions in the interactive prompt
-# -----------------------------------------------------------------------------
-
-
-def _ripper(
-    tmp_path: Path, titles: list[Title], prompts: UserPrompts, **config: bool
-) -> cli._InteractiveRipper:
-    state = RuntimeState(prompts=prompts)
-    for name, value in config.items():
-        setattr(state.config, name, value)
-    creator = cli.MKVCreator(tmp_path, runtime_state=state)
-    tagging = cli._InteractiveTagState.from_options(state.tag_options, prompts)
-    return cli._InteractiveRipper(titles, creator, tagging, [])
-
-
-def test_output_folder_is_asked_once(tmp_path: Path) -> None:
-    ripper = _ripper(
-        tmp_path, [], _scripted(str(tmp_path / "rips")), ask_output_dir=True
-    )
-
-    ripper.ask_output_dir()
-    ripper.ask_output_dir()  # a second question would exhaust the script
-
-    assert ripper.creator.out == tmp_path / "rips"
-    assert ripper.creator.config.output_dir == tmp_path / "rips"
-    assert (tmp_path / "rips").is_dir()
-
-
-def _captioned_title() -> Title:
-    title = Title(
-        index=0, source_file=Path("VTS_01_1.VOB"), name="x", duration_seconds=1400.0
-    )
-    title.streams = [
-        Stream(index=0, stream_type=StreamType.VIDEO, codec="mpeg2"),
-        Stream(index=1, stream_type=StreamType.SUBTITLE, codec="dvd_subtitle"),
-        Stream(index=2, stream_type=StreamType.SUBTITLE, codec=CC608_CODEC_SRT),
-    ]
-    return title
-
-
-@pytest.mark.parametrize(("answer", "kept"), [("y", 3), ("n", 2)])
-def test_closed_captions_asked_per_disc(answer: str, kept: int) -> None:
-    title = _captioned_title()
-    state = RuntimeState(prompts=_scripted(answer))
-    state.config.ask_closed_captions = True
-
-    cli._ask_closed_captions([title], state)
-
-    assert len(title.streams) == kept
-    assert title.streams[1].codec == "dvd_subtitle"
-
-
-def test_closed_captions_not_asked_without_captions_or_ask() -> None:
-    title = _captioned_title()
-    title.streams.pop()
-    state = RuntimeState(prompts=_scripted())
-    state.config.ask_closed_captions = True
-    cli._ask_closed_captions([title], state)  # nothing to ask about
-
-    state.config.ask_closed_captions = False
-    cli._ask_closed_captions([_captioned_title()], state)  # not "ask"
-
-
-def test_packed_split_is_offered(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    def no_display(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    monkeypatch.setattr(cli, "display_titles", no_display)
-    packed = Title(
-        index=0, source_file=Path("00000.m2ts"), name="Show", duration_seconds=2800.0
-    )
-    packed.clip_durations = [2800.0]
-    packed.playlist_name = "00000"
-    packed.packed_segments = [
-        PackedSegment(0.0, 1400.0, 1),
-        PackedSegment(1400.0, 2800.0, 2),
-    ]
-    ripper = _ripper(tmp_path, [packed], _scripted("y"))
-
-    ripper.offer_packed_split()
-
-    assert [t.packed_episode_number for t in ripper.titles] == [1, 2]

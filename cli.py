@@ -34,9 +34,7 @@ import sys
 import tempfile
 import webbrowser
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import final
 
 import dvdifo
 from models import (
@@ -44,7 +42,6 @@ from models import (
     DiscMetadata,
     DiscDbOptions,
     RuntimeState,
-    TagOptions,
     RUNTIME_STATE,
     UserPrompts,
     Stream,
@@ -64,30 +61,34 @@ from i18n import (
     set_language,
     get_language,
     language_name,
-    available_languages,
     detect_locale_language,
 )
 from settings import (
     ASK_MODES,
     DISCDB_CONTRIBUTE_MODES,
     TAG_ART_CHOICES,
-    LoadedSettings,
     Settings,
-    SettingSpec,
     SETTING_SPECS,
-    accept_advanced_defaults,
     format_value,
     get_setting,
     load_settings,
-    missing_settings,
     reset_setting,
     save_settings,
     set_setting,
     setting_spec,
-    settings_path,
 )
-from scan import Scanner, _detect_edition_groups, _get_notable_titles, pick_main_feature
+from scan import _get_notable_titles, pick_main_feature
 from mkv import MKVCreator
+from session import (
+    RipCallbacks,
+    RipJob,
+    RipOutcome,
+    scan_source,
+    episode_titles,
+    main_feature_titles,
+    prepare_multi_edition,
+    run_rip_jobs,
+)
 from discdb import DiscDbError
 
 __version__ = MKVSMITH_VERSION
@@ -340,411 +341,29 @@ def display_title_details(title: Title) -> None:
 # =============================================================================
 # CLI & Interactive
 # =============================================================================
-@dataclass(frozen=True)
-class _InteractiveTagState:
-    tag_from_flag: bool
-    offer_tag: bool
-    art_from_flag: str | None
-    options: TagOptions = field(default_factory=lambda: RUNTIME_STATE.tag_options)
-    prompts: UserPrompts | None = None
-
-    @classmethod
-    def from_options(
-        cls, opts: TagOptions, prompts: UserPrompts | None = None
-    ) -> "_InteractiveTagState":
-        from tagger import _resolve_tmdb_key
-
-        return cls(
-            tag_from_flag=opts.enabled,
-            offer_tag=(not opts.no_tag) and bool(_resolve_tmdb_key(opts)),
-            art_from_flag=opts.art,
-            options=opts,
-            prompts=prompts,
-        )
-
-    def announce(self) -> None:
-        if self.offer_tag and not self.tag_from_flag:
-            print(tr("TMDB tagging available (key found) -- you'll be asked per rip."))
-
-    def prepare_for_rip(self) -> None:
-        """Decide per-rip whether to tag and which artwork to attach."""
-        from tagger import _prompt_art_choice, _tag_confirm
-
-        if self.tag_from_flag:
-            want = True
-        elif self.offer_tag:
-            want = _tag_confirm(tr("Look up & tag this rip on TMDB?"), self.prompts)
-        else:
-            want = False
-        self.options.enabled = want
-        if want and self.art_from_flag is None:
-            self.options.art = _prompt_art_choice(self.prompts)
-
-
-def _print_packed_episode_hints(titles: list[Title], *, interactive: bool) -> None:
+def _print_packed_episode_hints(titles: list[Title]) -> None:
     """Point out playlists holding back-to-back episodes (split on request)."""
     from packed_episodes import packed_episode_count
 
     for title in titles:
         if not title.packed_segments:
             continue
-        n = packed_episode_count(title)
-        if interactive:
-            print(
-                tr(
-                    "Title {idx} holds {n} episodes in one playlist - "
-                    "split it with: se {idx}",
-                    idx=title.index,
-                    n=n,
-                )
-            )
-        else:
-            print(
-                tr(
-                    "Title {idx} holds {n} episodes in one playlist - "
-                    "split it with --split-episodes",
-                    idx=title.index,
-                    n=n,
-                )
-            )
-
-
-def _interactive_edition_groups(titles: list[Title]) -> list[list[Title]]:
-    edition_groups = _detect_edition_groups(titles)
-    for group in edition_groups:
-        indices = ", ".join(str(titles.index(title)) for title in group)
         print(
             tr(
-                "Titles {idxs} look like editions of the same movie - "
-                "combine them with: me {idxs}",
-                idxs=indices,
+                "Title {idx} holds {n} episodes in one playlist - "
+                "split it with --split-episodes",
+                idx=title.index,
+                n=packed_episode_count(title),
             )
         )
-    return edition_groups
 
 
-@final
-class _InteractiveRipper:
-    def __init__(
-        self,
-        titles: list[Title],
-        creator: MKVCreator,
-        tagging: _InteractiveTagState,
-        edition_groups: list[list[Title]],
-        disc_metadata: DiscMetadata | None = None,
-    ):
-        self.titles = titles
-        self.creator = creator
-        self.tagging = tagging
-        self.edition_groups = edition_groups
-        self.disc_metadata = disc_metadata
-
-    def ask_output_dir(self) -> None:
-        """Ask where this session's rips go (once, before the first rip)."""
-        config = self.creator.config
-        if not config.ask_output_dir:
-            return
-        prompts = self.creator.prompts
-        while True:
-            raw = prompts.text(tr("Output folder"), str(self.creator.out))
-            path = Path(raw).expanduser()
-            try:
-                path.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                log_warn(tr("Cannot use {path}: {err}", path=path, err=e))
-                continue
-            break
-        self.creator.out = config.output_dir = path
-        config.ask_output_dir = False
-
-    def offer_packed_split(self) -> None:
-        """Ask, per packed playlist, whether to split it into episodes."""
-        from packed_episodes import packed_episode_count
-
-        prompts = self.creator.prompts
-        chosen = [
-            str(title.index)
-            for title in self.titles
-            if title.packed_segments
-            and prompts.confirm(
-                tr(
-                    "Title {idx} holds {n} episodes in one playlist. Split it "
-                    "into one title per episode? [y/N]",
-                    idx=title.index,
-                    n=packed_episode_count(title),
-                )
-            )
-        ]
-        if chosen:
-            self.split_packed_episodes(chosen)
-
-    def settings_command(self, command: str, args: list[str]) -> None:
-        """``settings`` lists, ``set KEY [VALUE]`` / ``reset KEY`` save.
-
-        Saved changes are the defaults for the next run; this session keeps
-        the options it started with.
-        """
-        state = self.creator.runtime_state
-        if command == "settings":
-            print("\n".join(_settings_lines(state.settings, settings_path())))
-            return
-        if not args:
-            log_warn(tr("Usage: {cmd} KEY", cmd=command))
-            return
-        if command == "set":
-            key, value = args[0], " ".join(args[1:])
-            sets, resets = [f"{key}={value}" if value else key], []
-        else:
-            sets, resets = [], args
-        changed = _save_settings_changes(sets, resets, self.creator.prompts)
-        if changed is not None:
-            state.settings = changed
-            log_info(tr("Takes effect from the next run."))
-
-    def _before_rip(self) -> None:
-        self.ask_output_dir()
-        self.tagging.prepare_for_rip()
-
-    def split_packed_episodes(self, args: list[str]) -> None:
-        """Split title N (or every packed playlist) into one title per episode."""
-        from packed_episodes import expand_packed_titles
-
-        packed = [t.index for t in self.titles if t.packed_segments]
-        if not packed:
-            log_warn(tr("No playlist on this disc holds packed episodes"))
-            return
-        indices: list[int] = []
-        for arg in args:
-            if not arg.isdigit() or int(arg) not in packed:
-                log_warn(tr("Title {idx} holds no packed episodes", idx=arg))
-                return
-            indices.append(int(arg))
-        series = self.disc_metadata.series_info if self.disc_metadata else None
-        self.titles[:] = expand_packed_titles(self.titles, indices or None, series)
-        self.creator.runtime_state.refresh_series_disc(self.titles)
-        display_titles(self.titles, self.disc_metadata, self.creator.config)
-
-    def rip_index(self, idx: int, stream_ids: list[str] | None = None) -> None:
-        if not 0 <= idx < len(self.titles):
-            log_warn(tr("Invalid: {idx}", idx=idx))
-            return
-        self._before_rip()
-        try:
-            self.creator.create_mkv(
-                self.titles[idx],
-                self.creator.select_streams(self.titles[idx], stream_ids),
-            )
-        except RipError as exc:
-            print(exc.format_verbose())
-
-    def multi_edition_indices(self, args: list[str]) -> list[int] | None:
-        if not args:
-            if not self.edition_groups:
-                log_error(tr("No edition groups detected; specify titles: me N N ..."))
-                return None
-            best = max(
-                self.edition_groups,
-                key=lambda group: sum(t.duration_seconds for t in group),
-            )
-            indices = [self.titles.index(title) for title in best]
-            log_info(
-                tr(
-                    "Using detected edition group: {idxs}",
-                    idxs=", ".join(str(index) for index in indices),
-                )
-            )
-            return indices
-
-        indices: list[int] = []
-        for token in args:
-            try:
-                indices.append(int(token))
-            except ValueError:
-                log_error(tr("Num required"))
-                return None
-        return indices
-
-    def rip_multi_edition(self, indices: list[int]) -> None:
-        if len(indices) < 2:
-            log_error(tr("Multi-edition needs at least two titles"))
-            return
-        try:
-            combined = _prepare_multi_edition(self.titles, indices)
-        except ValueError as exc:
-            log_error(str(exc))
-            return
-        names = _prompt_edition_names(self.titles, indices)
-        if names != _default_edition_names(self.titles, indices):
-            combined = _prepare_multi_edition(self.titles, indices, names)
-        self._before_rip()
-        try:
-            self.creator.create_mkv(combined, self.creator.select_streams(combined))
-        except RipError as exc:
-            print(exc.format_verbose())
-
-    def rip_collection(self, selected_titles: list[Title]) -> tuple[int, int]:
-        self._before_rip()
-        ok = failed = 0
-        for title in selected_titles:
-            try:
-                self.creator.create_mkv(title)
-                ok += 1
-            except RipError as exc:
-                print(exc.format_verbose())
-                failed += 1
-        return ok, failed
-
-    def _handle_rip_command(self, command: str, args: list[str]) -> None:
-        if command == "r":
-            if not args:
-                log_error(tr("Usage: r N  (e.g. 'r 1')"))
-                return
-            target, stream_args = args[0], args[1:]
-        else:
-            target, stream_args = command[1:], args
-        try:
-            idx = int(target)
-        except ValueError:
-            log_error(tr("Num required"))
-            return
-        self.rip_index(idx, stream_args if stream_args else None)
-
-    def _handle_main_feature(self) -> None:
-        # A series disc has no single main feature; ripping "the feature"
-        # means the episodes.
-        if any(_is_episode_title(title) for title in self.titles):
-            log_info(tr("Series disc: no single main feature; ripping all episodes"))
-            self._handle_episodes()
-            return
-        idx = pick_main_feature(self.titles, self.creator.config)
-        if idx < 0:
-            log_warn(tr("No titles"))
-            return
-        log_info(
-            tr(
-                "Main feature: #{idx} {name}",
-                idx=idx,
-                name=self.titles[idx].name,
-            )
-        )
-        self.rip_index(idx)
-
-    def _handle_all(self) -> None:
-        ok, failed = self.rip_collection(self.titles)
-        print(tr("\nDone: {ok} ok, {fail} failed", ok=ok, fail=failed))
-
-    def _handle_episodes(self) -> None:
-        episode_titles = [title for title in self.titles if _is_episode_title(title)]
-        if not episode_titles:
-            log_warn(tr("No episodes detected on this disc"))
-            return
-        log_info(tr("Ripping {n} episode(s)...", n=len(episode_titles)))
-        ok, failed = self.rip_collection(episode_titles)
-        print(tr("\nDone: {ok} ok, {fail} failed", ok=ok, fail=failed))
-
-    def _dispatch(self, command: str, args: list[str]) -> bool:
-        if command in ("q", "quit", "exit"):
-            log_info(tr("Goodbye!"))
-            return False
-        if command.isdigit():
-            idx = int(command)
-            if 0 <= idx < len(self.titles):
-                display_title_details(self.titles[idx])
-            else:
-                log_warn(tr("Invalid: {idx}", idx=idx))
-        elif command == "r" or (command.startswith("r") and command[1:].isdigit()):
-            self._handle_rip_command(command, args)
-        elif command == "rm" or command == "re":
-            if command == "re":
-                log_warn(tr("re is deprecated; use rm (episodes on series discs)"))
-            self._handle_main_feature()
-        elif command == "me":
-            indices = self.multi_edition_indices(args)
-            if indices:
-                self.rip_multi_edition(indices)
-        elif command == "ra":
-            self._handle_all()
-        elif command == "se":
-            self.split_packed_episodes(args)
-        elif command in ("settings", "set", "reset"):
-            self.settings_command(command, args)
-        else:
-            log_warn(tr("Unknown: {cmd}", cmd=command))
-        return True
-
-    def _print_prompt(self, has_episodes: bool) -> None:
-        if has_episodes:
-            print(
-                tr("[n]=details  r N=rip title N  rm=rip episodes  ra=rip all  q=quit")
-            )
-        else:
-            print(
-                tr("[n]=details  r N=rip title N  rm=main feature  ra=rip all  q=quit")
-            )
-        if self.edition_groups:
-            print(tr("me N N ...=multi-edition rip (no args = auto-detect)"))
-        else:
-            print(tr("me N N ...=multi-edition rip"))
-        if any(title.packed_segments for title in self.titles):
-            print(tr("se [N]=split packed episodes into one title each"))
-        print(tr("settings  set KEY [VALUE]  reset KEY=saved settings"))
-
-    def run(self) -> None:
-        while True:
-            # Re-checked each round: "se" can turn a packed playlist into episodes.
-            self._print_prompt(any(_is_episode_title(t) for t in self.titles))
-            try:
-                command_line = input("mkvsmith> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return
-            if not command_line:
-                continue
-            parts = command_line.split()
-            if not self._dispatch(parts[0], parts[1:]):
-                return
+def _print_rip_failure(outcome: RipOutcome) -> None:
+    if outcome.error is not None:
+        print(outcome.error.format_verbose())
 
 
-def interactive_mode(
-    titles: list[Title],
-    disc_metadata: DiscMetadata | None = None,
-    runtime_state: RuntimeState | None = None,
-) -> None:
-    state = runtime_state or RUNTIME_STATE
-    _ask_closed_captions(titles, state)
-    display_titles(titles, disc_metadata, state.config)
-    creator = MKVCreator(
-        state.config.output_dir,
-        state.tag_options,
-        runtime_state=state,
-    )
-    tagging = _InteractiveTagState.from_options(state.tag_options, state.prompts)
-    ripper = _InteractiveRipper(
-        titles,
-        creator,
-        tagging,
-        _interactive_edition_groups(titles),
-        disc_metadata,
-    )
-    if state.config.ask_split_episodes:
-        ripper.offer_packed_split()
-    else:
-        _print_packed_episode_hints(titles, interactive=True)
-    tagging.announce()
-    print()
-    ripper.run()
-
-
-def _ask_closed_captions(titles: list[Title], state: RuntimeState) -> None:
-    """Closed captions saved as "ask": keep this disc's captions, or not?"""
-    from dvdbuild import drop_closed_caption_streams, has_closed_captions
-
-    if not state.config.ask_closed_captions or not has_closed_captions(titles):
-        return
-    if not state.prompts.confirm(
-        tr("This disc has closed captions. Add them as a subtitle track? [y/N]")
-    ):
-        drop_closed_caption_streams(titles)
+_CLI_RIP_CALLBACKS = RipCallbacks(finished=_print_rip_failure)
 
 
 def _comma_list(text: str) -> list[str]:
@@ -1636,186 +1255,6 @@ def _init_ui_language(saved: Settings) -> str:
 
 
 # Choice values as shown when asking (the saved value stays the English word).
-_CHOICE_LABELS = {
-    "never": "never",
-    "ask": "ask every time",
-    "always": "always",
-    "none": "none",
-    "poster": "poster",
-    "backdrop": "backdrop",
-    "both": "poster and backdrop",
-    "srt": "srt",
-    "ass": "ass",
-}
-# Spanish yes/no answers, accepted alongside the English ones.
-_YES_NO_ALIASES = {"s": "yes", "si": "yes", "sí": "yes"}
-
-
-def _read_answer(
-    spec: SettingSpec, saved: Settings, prompts: UserPrompts
-) -> Settings | None:
-    """One answer for *spec*, or None when it doesn't parse (ask again)."""
-    current = getattr(saved, spec.attr)
-    if spec.kind == "language":
-        langs = available_languages()
-        for n, (_code, name) in enumerate(langs, 1):
-            print(tr("  {n}. {name}", n=n, name=name))
-        codes = [code for code, _name in langs]
-        default = codes.index(get_language()) + 1 if get_language() in codes else 1
-        raw = prompts.text(tr("Choice"), str(default))
-        if not raw.isdigit() or not 1 <= int(raw) <= len(codes):
-            return None
-        set_language(codes[int(raw) - 1])
-        return set_setting(saved, spec.key, codes[int(raw) - 1])
-    if spec.kind == "choice":
-        for n, choice in enumerate(spec.choices, 1):
-            print(f"  {n}. {tr(_CHOICE_LABELS.get(choice, choice))}")
-        raw = prompts.text(tr("Choice"), str(spec.choices.index(current) + 1))
-        if raw.isdigit() and 1 <= int(raw) <= len(spec.choices):
-            raw = spec.choices[int(raw) - 1]
-    elif spec.kind == "bool":
-        raw = prompts.text(tr("yes/no"), tr("yes") if current else tr("no"))
-        raw = _YES_NO_ALIASES.get(raw.strip().lower(), raw)
-    elif spec.secret:
-        raw = prompts.secret(tr("Value (Enter to skip)"))
-    else:
-        raw = prompts.text(tr("Value"), format_value(spec, current) or None)
-    try:
-        return set_setting(saved, spec.key, raw)
-    except ValueError as e:
-        log_warn(tr("Invalid value: {err}", err=e))
-        return None
-
-
-def _ask_setting(spec: SettingSpec, saved: Settings, prompts: UserPrompts) -> Settings:
-    """Ask for *spec* until the answer is valid; returns *saved* with it."""
-    print()
-    print(tr(spec.description))
-    while (answered := _read_answer(spec, saved, prompts)) is None:
-        pass
-    return answered
-
-
-def _complete_settings(
-    loaded: LoadedSettings, prompts: UserPrompts | None = None
-) -> Settings:
-    """Ask for every everyday setting the file is missing, then save.
-
-    Everything on a first run; only the new settings after an update. The
-    answers are saved together with the defaults of any advanced settings
-    the file is missing, so the file is complete. An unreadable file is
-    left alone (its problem was already reported).
-    """
-    saved = loaded.settings
-    if loaded.unreadable:
-        return saved
-    prompts = prompts or RUNTIME_STATE.prompts
-    pending = missing_settings(saved)
-    asked = bool(pending)
-    if pending:
-        if loaded.exists:
-            print(
-                tr(
-                    "{n} new setting(s) to choose since your last run",
-                    n=len(pending),
-                )
-            )
-        else:
-            print(tr("First-time setup"))
-        print("=" * 40)
-        print(tr("Press Enter to keep the suggested value."))
-        while pending:
-            saved = _ask_setting(pending[0], saved, prompts)
-            pending = missing_settings(saved)
-    saved = accept_advanced_defaults(saved)
-    if saved.answered == loaded.settings.answered:
-        return saved
-    try:
-        path = save_settings(saved, loaded.path)
-    except OSError as e:
-        log_error(tr("Could not write config: {err}", err=e))
-        return saved
-    if asked:
-        print()
-        log_info(tr("Settings saved to {path}", path=path))
-    return saved
-
-
-def _confirm(prompt: str) -> bool:
-    """Tiny y/N confirmation (local helper to avoid importing tagger early)."""
-    try:
-        ans = input(f"{prompt} [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return False
-    return ans in ("y", "yes")
-
-
-def _prepare_multi_edition(
-    titles: list[Title], indices: list[int], names: list[str] | None = None
-) -> Title:
-    """Validate title indices and build the combined multi-edition Title."""
-    from scan import build_multi_edition_title
-
-    if len(indices) < 2:
-        raise ValueError(tr("Multi-edition needs at least two titles"))
-    for idx in indices:
-        if not 0 <= idx < len(titles):
-            raise ValueError(tr("Invalid: {idx}", idx=idx))
-    edition_titles = [titles[i] for i in indices]
-    if len({t.source_file for t in edition_titles}) > 1:
-        raise ValueError(tr("Multi-edition titles must come from the same source disc"))
-    combined = build_multi_edition_title(edition_titles, names)
-    for n, ed in enumerate(combined.editions, start=1):
-        log_info(
-            tr(
-                "Edition {n}/{total}: {name} ({dur})",
-                n=n,
-                total=len(combined.editions),
-                name=ed.name,
-                dur=_fmt_edition_duration(ed.duration),
-            )
-        )
-    log_info(
-        tr(
-            "Combining {n} editions into one multi-edition MKV "
-            "(requires a player with ordered-chapters support)",
-            n=len(combined.editions),
-        )
-    )
-    return combined
-
-
-def _default_edition_names(titles: list[Title], indices: list[int]) -> list[str]:
-    """Default edition labels: uniform Edition 1/2/... numbering."""
-    return [tr("Edition {n}", n=pos + 1) for pos in range(len(indices))]
-
-
-def _prompt_edition_names(titles: list[Title], indices: list[int]) -> list[str]:
-    """Prompt for edition display names with sensible defaults.
-
-    Callers must validate *indices* first (see ``_prepare_multi_edition``).
-    """
-    defaults = _default_edition_names(titles, indices)
-    print(
-        tr(
-            "Name each edition (shown by players in the edition picker)."
-            " Press Enter to accept the default."
-        )
-    )
-    names: list[str] = []
-    for pos, idx in enumerate(indices):
-        try:
-            raw = input(
-                tr("Edition {n} (title {idx}) name", n=pos + 1, idx=idx)
-                + f" [{defaults[pos]}]: "
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            raw = ""
-        names.append(raw or defaults[pos])
-    return names
-
-
 def _rip_multi_edition(
     creator: MKVCreator,
     titles: list[Title],
@@ -1824,14 +1263,8 @@ def _rip_multi_edition(
     streams: list[str] | None = None,
 ) -> None:
     """Build the combined title and rip it."""
-    combined = _prepare_multi_edition(titles, indices, names)
+    combined = prepare_multi_edition(titles, indices, names)
     creator.create_mkv(combined, creator.select_streams(combined, streams))
-
-
-def _fmt_edition_duration(seconds: float) -> str:
-    h, rem = divmod(int(seconds), 3600)
-    m, s = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def _initialize_cli(
@@ -1847,14 +1280,9 @@ def _initialize_cli(
         log_error(tr("Missing: mkvmerge (install mkvtoolnix)"))
         sys.exit(1)
 
-    def check_settings(interactive: bool) -> None:
-        # Only the interactive prompt asks (and only at a terminal); plain
-        # CLI runs and scripts use the built-in default for anything missing.
-        if interactive and sys.stdin.isatty():
-            state.settings = _complete_settings(loaded, state.prompts)
-            _init_ui_language(state.settings)
-
-    parsed = parse_args(state, check_settings)
+    # Missing settings are asked by the full-screen UI's setup screen; plain
+    # CLI runs and scripts use the built-in default for anything missing.
+    parsed = parse_args(state)
     if state.config.ui_lang:
         set_language(state.config.ui_lang)
     log_debug(
@@ -1913,61 +1341,6 @@ def _sweep_stale_temp(bases: list[Path]) -> None:
         log_debug(f"Removed stale session dir {path}")
 
 
-def _apply_discdb_lookup(
-    titles: list[Title], disc_metadata: DiscMetadata | None, state: RuntimeState
-) -> None:
-    from discdb import DiscDbClient, DiscDbError, apply_discdb_match
-
-    if disc_metadata is None:
-        return
-    try:
-        result = DiscDbClient(state.discdb_options).lookup(disc_metadata)
-        applied = apply_discdb_match(titles, disc_metadata, result)
-    except DiscDbError as exc:
-        log_warn(tr("TheDiscDB lookup failed (using local metadata): {err}", err=exc))
-        return
-    except (KeyError, TypeError, ValueError) as exc:
-        log_warn(
-            tr(
-                "TheDiscDB returned unusable match data; local metadata retained: {err}",
-                err=exc,
-            )
-        )
-        return
-
-    if not result.items:
-        log_info(tr("No TheDiscDB match found"))
-        return
-    if result.ambiguous:
-        log_warn(tr("Multiple TheDiscDB disc layouts matched; local metadata retained"))
-        return
-
-    if applied is None:
-        if result.match is None:
-            log_warn(tr("TheDiscDB results were ambiguous; local metadata retained"))
-        else:
-            log_warn(
-                tr(
-                    "TheDiscDB disc matched, but no local title correlated uniquely; "
-                    "local metadata retained"
-                )
-            )
-        return
-
-    media_title = applied.media_item["title"]
-    release_title = applied.release.get("title") or media_title
-    log_info(
-        tr(
-            "TheDiscDB match: {media} ({release}); applied {count} title name(s)",
-            media=media_title,
-            release=release_title,
-            count=len(applied.title_indexes),
-        )
-    )
-    # A match can label titles as episodes.
-    state.refresh_series_disc(titles)
-
-
 def _prepare_discdb_contribution(
     source: Path,
     titles: list[Title],
@@ -2021,17 +1394,15 @@ def _prepare_discdb_contribution(
 def _scan_source(
     source: Path, runtime_state: RuntimeState | None = None
 ) -> tuple[list[Title], DiscMetadata | None]:
-    from disc_reader import _is_device_path
-
-    if not source.exists() and not _is_device_path(source):
-        log_error(tr("Not found: {path}", path=source))
+    try:
+        titles, disc_metadata = scan_source(source, runtime_state or RUNTIME_STATE)
+    except FileNotFoundError as exc:
+        log_error(str(exc))
         sys.exit(1)
-    scanner = Scanner(source, runtime_state=runtime_state)
-    titles = scanner.scan()
     if not titles:
         log_warn(tr("No titles found"))
         sys.exit(0)
-    return titles, scanner.disc_metadata
+    return titles, disc_metadata
 
 
 def _run_main_feature_rip(
@@ -2040,36 +1411,33 @@ def _run_main_feature_rip(
     runtime_state: RuntimeState | None = None,
 ) -> None:
     state = runtime_state or RUNTIME_STATE
+    targets = main_feature_titles(titles, state.config)
+    if not targets:
+        log_warn(tr("No titles found"))
+        sys.exit(0)
     # A series disc has no single main feature; -m (and deprecated -e)
     # means the episodes.
-    if any(_is_episode_title(title) for title in titles):
+    if targets[0].is_episode:
         log_info(tr("Series disc: no single main feature; ripping all episodes"))
         _rip_episode_batch(titles, state)
         return
-    index = pick_main_feature(titles, state.config)
-    if index < 0:
-        log_warn(tr("No titles found"))
-        sys.exit(0)
+    title = targets[0]
     log_info(
         tr(
             "Main feature: #{idx} {name} ({dur})",
-            idx=index,
-            name=titles[index].name,
-            dur=titles[index].duration_display,
+            idx=title.index,
+            name=title.name,
+            dur=title.duration_display,
         )
     )
-    try:
-        creator = MKVCreator(
-            state.config.output_dir,
-            state.tag_options,
-            runtime_state=state,
-        )
-        creator.create_mkv(
-            titles[index],
-            creator.select_streams(titles[index], stream_ids),
-        )
-    except RipError as exc:
-        print(exc.format_verbose())
+    creator = MKVCreator(
+        state.config.output_dir,
+        state.tag_options,
+        runtime_state=state,
+    )
+    streams = creator.select_streams(title, stream_ids) if stream_ids else None
+    result = run_rip_jobs(creator, [RipJob(title, streams)], _CLI_RIP_CALLBACKS)
+    if result.failed:
         sys.exit(1)
 
 
@@ -2077,20 +1445,15 @@ def _rip_title_batch(
     titles: list[Title], runtime_state: RuntimeState | None = None
 ) -> None:
     state = runtime_state or RUNTIME_STATE
-    ok = failed = 0
     creator = MKVCreator(
         state.config.output_dir,
         state.tag_options,
         runtime_state=state,
     )
-    for title in titles:
-        try:
-            creator.create_mkv(title)
-            ok += 1
-        except RipError as exc:
-            print(exc.format_verbose())
-            failed += 1
-    print(tr("\nSummary: {ok} ok, {fail} failed", ok=ok, fail=failed))
+    result = run_rip_jobs(
+        creator, [RipJob(title) for title in titles], _CLI_RIP_CALLBACKS
+    )
+    print(tr("\nSummary: {ok} ok, {fail} failed", ok=result.ok, fail=result.failed))
 
 
 def _require_title_index(action: str, number: int | None, titles: list[Title]) -> int:
@@ -2104,7 +1467,7 @@ def _show_action_info(
     titles: list[Title], disc_metadata: DiscMetadata | None, state: RuntimeState
 ) -> None:
     display_titles(titles, disc_metadata, state.config)
-    _print_packed_episode_hints(titles, interactive=False)
+    _print_packed_episode_hints(titles)
 
 
 def _show_action_details(titles: list[Title], number: int | None, action: str) -> None:
@@ -2132,24 +1495,23 @@ def _rip_selected_titles(
         state.tag_options,
         runtime_state=state,
     )
-    failed = 0
-    for index in indices:
-        try:
-            creator.create_mkv(
-                titles[index], creator.select_streams(titles[index], stream_ids)
-            )
-        except RipError as exc:
-            print(exc.format_verbose())
-            failed += 1
+    jobs = [
+        RipJob(
+            titles[index],
+            creator.select_streams(titles[index], stream_ids) if stream_ids else None,
+        )
+        for index in indices
+    ]
+    result = run_rip_jobs(creator, jobs, _CLI_RIP_CALLBACKS)
     if len(indices) > 1:
         print(
             tr(
                 "\nSummary: {ok} ok, {fail} failed",
-                ok=len(indices) - failed,
-                fail=failed,
+                ok=result.ok,
+                fail=result.failed,
             )
         )
-    if failed:
+    if result.failed:
         sys.exit(1)
 
 
@@ -2184,12 +1546,12 @@ def _rip_selected_editions(
 
 
 def _rip_episode_batch(titles: list[Title], state: RuntimeState) -> None:
-    episode_titles = [title for title in titles if _is_episode_title(title)]
-    if not episode_titles:
+    episodes = episode_titles(titles)
+    if not episodes:
         log_warn(tr("No episodes detected on this disc"))
         sys.exit(0)
-    log_info(tr("Ripping {n} episode(s)...", n=len(episode_titles)))
-    _rip_title_batch(episode_titles, state)
+    log_info(tr("Ripping {n} episode(s)...", n=len(episodes)))
+    _rip_title_batch(episodes, state)
 
 
 def _reject_unknown_action(action: str) -> None:
@@ -2221,23 +1583,78 @@ def _run_action(
     elif action == "rip_all":
         _rip_title_batch(titles, state)
     elif action == "interactive":
-        interactive_mode(titles, disc_metadata, state)
+        _run_interactive(None, state, titles=titles, disc_metadata=disc_metadata)
     else:
         _reject_unknown_action(action)
+
+
+def _can_run_tui() -> bool:
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _reapply_options(state: RuntimeState) -> None:
+    """Resolve the run's options again after the saved settings changed.
+
+    The full-screen UI calls this after its setup and settings screens, so
+    changes apply to the disc being ripped; flags still win. The temp folder
+    stays: this run's is already set up.
+    """
+    from disc_reader import init_ram_budget
+
+    temp_dir = state.config.temp_dir
+    output_dir = state.config.output_dir
+    ask_output_dir = state.config.ask_output_dir
+    _apply_parsed_args(_build_arg_parser().parse_args(), state, interactive=True)
+    state.config.temp_dir = temp_dir
+    # A folder already chosen this session stays chosen.
+    if not ask_output_dir:
+        state.config.output_dir = output_dir
+        state.config.ask_output_dir = False
+    init_ram_budget(state.config)
+
+
+def _run_interactive(
+    source: Path | None,
+    state: RuntimeState,
+    *,
+    titles: list[Title] | None = None,
+    disc_metadata: DiscMetadata | None = None,
+) -> None:
+    """The full-screen UI: the main menu, or *source* / *titles* straight away."""
+    if not _can_run_tui():
+        log_error(
+            tr(
+                "The interactive mode needs a terminal; rip with -t, -m or -a, "
+                "or list titles with -i"
+            )
+        )
+        sys.exit(1)
+    from tui import run_tui
+
+    run_tui(
+        state,
+        source,
+        titles=titles,
+        disc_metadata=disc_metadata,
+        reapply=lambda: _reapply_options(state),
+    )
 
 
 def main():
     runtime_state = RUNTIME_STATE
     source, action, number, stream_ids, edition_indices = _initialize_cli(runtime_state)
     _configure_runtime(runtime_state)
+    # The full-screen UI scans and rips by itself. (A TheDiscDB contribution
+    # stops after preparing it, so it takes the plain path below.)
+    if action == "interactive" and not runtime_state.discdb_options.contribute:
+        _run_interactive(source, runtime_state)
+        return
     if source is None:
         log_error(tr("A source path is required"))
         log_error(tr("Run with -h to see usage, e.g. script.py /path/to/media"))
         sys.exit(1)
 
     titles, disc_metadata = _scan_source(source, runtime_state)
-    if runtime_state.discdb_options.enabled:
-        _apply_discdb_lookup(titles, disc_metadata, runtime_state)
 
     if runtime_state.discdb_options.contribute:
         try:

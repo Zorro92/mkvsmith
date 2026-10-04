@@ -333,22 +333,6 @@ def _metadata_preview_rows(
     ]
 
 
-def _print_plain_metadata_rows(rows: list[tuple[str, str]]) -> None:
-    for prop, value in rows:
-        print(f"  {prop}: {value}")
-
-
-def _print_rich_metadata_rows(rows: list[tuple[str, str]]) -> None:
-    from rich.table import Table
-
-    table = Table(title=tr("Metadata Preview"))
-    table.add_column("Property", style="cyan")
-    table.add_column("Value", style="green")
-    for prop, value in rows:
-        table.add_row(prop, value)
-    RUNTIME_STATE.logger.console.print(table)
-
-
 @final
 class TmdbClient:
     """Minimal TMDB v3 client using only the standard library."""
@@ -408,18 +392,16 @@ class TmdbClient:
             if year_matches:
                 results = year_matches
         if len(results) > 1:
-            log_info(f"Multiple TMDB matches for '{title}':")
             shown = results[:MAX_SEARCH_RESULTS]
-            for i, m in enumerate(shown):
-                print(
-                    f"  {i + 1}. {m.get('title', 'Unknown')} "
-                    f"({m.get('release_date', '?')})"
-                )
-            sel = _tag_prompt("Select the correct movie", default="1", prompts=prompts)
-            try:
-                idx = int(sel) - 1
-            except ValueError:
-                idx = 0
+            hooks = prompts or RUNTIME_STATE.prompts
+            idx = hooks.choose(
+                tr("Multiple TMDB matches for '{title}':", title=title),
+                [
+                    f"{m.get('title', 'Unknown')} ({m.get('release_date', '?')})"
+                    for m in shown
+                ],
+                0,
+            )
             idx = max(0, min(idx, len(shown) - 1))
             return int(shown[idx]["id"])
         return int(results[0]["id"])
@@ -452,17 +434,11 @@ class TmdbClient:
         _apply_custom_metadata(metadata, info, props)
         return metadata
 
-    def display_preview(self, metadata: MovieMetadata) -> None:
-        from models import HAS_RICH
-
-        rows = _metadata_preview_rows(metadata)
-        if HAS_RICH:
-            try:
-                _print_rich_metadata_rows(rows)
-                return
-            except ImportError:
-                pass
-        _print_plain_metadata_rows(rows)
+    def display_preview(
+        self, metadata: MovieMetadata, prompts: UserPrompts | None = None
+    ) -> None:
+        hooks = prompts or RUNTIME_STATE.prompts
+        hooks.show_table(tr("Metadata Preview"), _metadata_preview_rows(metadata))
 
     def download_image(self, image_path: str, size: str = "original") -> bytes | None:
         if not image_path:
@@ -495,19 +471,18 @@ def _tag_confirm(prompt: str, prompts: UserPrompts | None = None) -> bool:
     return hooks.confirm(f"{prompt} [y/N]:")
 
 
-_ART_CHOICES = {"1": None, "2": "poster", "3": "backdrop", "4": "both"}
+_ART_CHOICES: list[str | None] = [None, "poster", "backdrop", "both"]
+
+
+def _art_choice_labels() -> list[str]:
+    return [tr("None"), tr("Poster"), tr("Backdrop"), tr("Both")]
 
 
 def _prompt_art_choice(prompts: UserPrompts | None = None) -> str | None:
     """Interactively ask which artwork to attach; returns None for 'none'."""
-    print(tr("Attach artwork?"))
-    print(tr("  1. None"))
-    print(tr("  2. Poster"))
-    print(tr("  3. Backdrop"))
-    print(tr("  4. Both"))
-    return _ART_CHOICES.get(
-        _tag_prompt(tr("Choose"), default="1", prompts=prompts), None
-    )
+    hooks = prompts or RUNTIME_STATE.prompts
+    index = hooks.choose(tr("Attach artwork?"), _art_choice_labels(), 0)
+    return _ART_CHOICES[index] if 0 <= index < len(_ART_CHOICES) else None
 
 
 # =============================================================================
@@ -616,7 +591,7 @@ def _fetch_and_confirm_metadata(
         region=opts.region,
         language=opts.language,
     )
-    client.display_preview(metadata)
+    client.display_preview(metadata, prompts)
 
     if opts.confirm and not _tag_confirm(
         "Tag this rip with the above metadata?", prompts

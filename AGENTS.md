@@ -5,7 +5,8 @@
 Do NOT shell out to `ffmpeg` or `ffprobe` from the production code
 (`main.py`, `cli.py`, `probe.py`, `bluray.py`, `dvdbuild.py`, `scan.py`,
 `mkv.py`, `m2ts.py`, `dvdifo.py`, `vobsub.py`, `disc_reader.py`, `tagger.py`,
-`models.py`, `settings.py`, `i18n.py`). This is a hard project constraint, not
+`models.py`, `settings.py`, `i18n.py`, `session.py`, `drives.py`, `tui.py`).
+This is a hard project constraint, not
 a preference. The project depends on **mkvtoolnix** (`mkvmerge`) as its only
 external media tool.
 
@@ -44,25 +45,27 @@ committed). Comments that say "matches the reference behaviour" are
 intentional — don't "improve" on them, and don't "fix" the deliberate
 output divergences that policy documents.
 
-## CLI, interactive prompt, and future GUI
+## CLI, TUI, and future GUI
 
 Every user-facing capability must be designed for three surfaces: the
-non-interactive CLI flags, the interactive prompt (the current TUI), and a
+non-interactive CLI flags, the full-screen interactive TUI (`tui.py`), and a
 future GUI that does not exist yet. Do not build the GUI — just keep it
 unblocked:
 
 - **Core logic lives in UI-agnostic modules** (`scan.py`, `mkv.py`,
-  `models.py`, `discdb.py`, `tagger.py`, ...). `cli.py` owns only argparse,
-  terminal display, `input()` prompts, and `sys.exit()` mapping. Never put
+  `models.py`, `discdb.py`, `tagger.py`, `session.py`, `drives.py`, ...).
+  `cli.py` owns only argparse, terminal display, and `sys.exit()` mapping;
+  `tui.py` owns the full-screen Textual screens and dialogs. Never put
   `input()`, `print()`, or `sys.exit()` in a core module; core returns data or
   raises (`RipError`, `ValueError`) and the caller decides what to show.
 - **Every new capability needs all three surfaces**: a non-interactive path
-  wired through `_select_action` / `_run_action`, an interactive-prompt command
-  wired through `_InteractiveRipper._dispatch` + `_print_prompt`, and an
-  underlying helper callable with explicit parameters (titles, options,
-  `runtime_state`) that a GUI could invoke without argv or stdin. The existing
-  `_rip_title_batch` / `_run_main_feature_rip` / `_prepare_multi_edition`
-  helpers are the pattern.
+  wired through `_select_action` / `_run_action`, a TUI screen or list line
+  in `tui.py`, and an underlying helper callable with explicit parameters
+  (titles, options, `runtime_state`) that a GUI could invoke without argv or
+  stdin. `session.py` (`scan_source`, `run_rip_jobs`, `track_plan`,
+  `prepare_multi_edition`, the per-disc questions) is the pattern. Core code
+  that must ask the user goes through `UserPrompts` hooks; the TUI answers
+  them with dialogs from its worker threads.
 - **User-facing strings go through `tr()`** with a Spanish entry in `i18n.py`,
   whichever surface shows them — `--help` text, prompt labels, and warnings
   alike.

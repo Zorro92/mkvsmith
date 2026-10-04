@@ -323,29 +323,6 @@ def test_scan_offers_but_only_splits_on_request(tmp_path: Path, split: bool) -> 
         assert packed_episode_count(scanner.titles[0]) == 4
 
 
-def test_interactive_se_splits_in_place(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    shown: list[int] = []
-
-    def record_display(titles: list[Title], *_args: object, **_kwargs: object) -> None:
-        shown.append(len(titles))
-
-    monkeypatch.setattr(cli, "display_titles", record_display)
-    titles = [_packed_title(tmp_path)]
-    state = RuntimeState()
-    creator = cli.MKVCreator(tmp_path, runtime_state=state)
-    tagging = cli._InteractiveTagState.from_options(state.tag_options, state.prompts)
-    ripper = cli._InteractiveRipper(titles, creator, tagging, [])
-
-    assert ripper._dispatch("se", ["7"]) is True
-    assert len(ripper.titles) == 1  # invalid index: nothing split
-    assert ripper._dispatch("se", []) is True
-    assert len(ripper.titles) == 5 and titles is ripper.titles
-    assert shown == [5]
-    assert all(cli._is_episode_title(t) for t in ripper.titles[:4])
-
-
 def test_split_episodes_flag_reaches_config() -> None:
     parser = cli._build_arg_parser()
     # Unset falls back to the saved setting (scan.split_episodes).

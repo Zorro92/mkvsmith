@@ -353,24 +353,6 @@ def test_settings_listing_marks_unchosen_and_masks_secrets() -> None:
     assert "(default, not chosen yet)" in region
 
 
-def test_interactive_settings_commands(
-    settings_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    state = RuntimeState(prompts=_prompts())
-    creator = cli.MKVCreator(tmp_path, runtime_state=state)
-    tagging = cli._InteractiveTagState.from_options(state.tag_options, state.prompts)
-    ripper = cli._InteractiveRipper([], creator, tagging, [])
-
-    ripper._dispatch("set", ["tracks.languages", "jpn,eng"])
-    ripper._dispatch("settings", [])
-    ripper._dispatch("reset", ["tracks.languages"])
-
-    out = capsys.readouterr().out
-    assert "Takes effect from the next run." in out
-    assert "languages = jpn,eng" in out
-    assert state.settings.languages == ["eng", "en", "und"]
-
-
 # -----------------------------------------------------------------------------
 # -h shows the everyday options; --help-all shows everything
 # -----------------------------------------------------------------------------

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -223,6 +223,34 @@ def relabel_keys() -> None:
             each._merged_bindings = each._merge_bindings()
 
 
+class Lines(OptionList):
+    """The app's list: the mouse wheel moves the highlight, like the arrows.
+
+    A plain OptionList scrolls its view under a still highlight instead.
+    The view follows the highlight, so long lists still scroll. Unlike the
+    arrow keys, the wheel stops at the ends instead of wrapping around.
+    """
+
+    def _wheel(self, event: events.MouseEvent, down: bool) -> None:
+        event.stop()
+        event.prevent_default()
+        self.focus()
+        before = self.highlighted
+        if down:
+            self.action_cursor_down()
+        else:
+            self.action_cursor_up()
+        after = self.highlighted
+        if before is not None and after is not None and (after < before) == down:
+            self.highlighted = before  # it wrapped around an end
+
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        self._wheel(event, down=True)
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        self._wheel(event, down=False)
+
+
 def _restore_highlight(options: OptionList, index: int | None) -> None:
     """Highlight line *index* again after a refill, else the first usable line.
 
@@ -339,7 +367,7 @@ class ChoiceDialog(_Dialog[str | None]):
             ]
             if self._cancel:
                 options += [None, Option(tr("Cancel"), id="cancel")]
-            yield OptionList(*options, id="choices")
+            yield Lines(*options, id="choices")
 
     def on_mount(self) -> None:
         options = self.query_one("#choices", OptionList)
@@ -367,7 +395,7 @@ class ConfirmDialog(_Dialog[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
             yield from self.compose_question()
-            yield OptionList(
+            yield Lines(
                 Option(tr("Yes"), id="yes"), Option(tr("No"), id="no"), id="choices"
             )
 
@@ -411,7 +439,7 @@ class TextDialog(_Dialog[str | None]):
             yield from self.compose_question()
             yield Input(self._current, password=self._secret, id="value")
             yield Label("", id="error")
-            yield OptionList(
+            yield Lines(
                 Option(tr("OK"), id="save"),
                 Option(tr("Cancel"), id="cancel"),
                 id="actions",
@@ -460,7 +488,7 @@ class InfoDialog(_Dialog[None]):
                 classes="rows",
                 markup=False,
             )
-            yield OptionList(Option(tr("OK"), id="ok"), id="actions")
+            yield Lines(Option(tr("OK"), id="ok"), id="actions")
 
     def on_mount(self) -> None:
         options = self.query_one("#actions", OptionList)
@@ -601,7 +629,7 @@ class _Page(Screen[None]):
 class MainMenu(_Page):
     def compose_body(self) -> ComposeResult:
         yield Static(tr("What would you like to do?"), classes="heading")
-        yield OptionList(
+        yield Lines(
             Option(tr("Rip a disc"), id="rip"),
             Option(tr("Settings"), id="settings"),
             Option(tr("About / keys"), id="about"),
@@ -657,7 +685,7 @@ class SourceScreen(_Page):
 
     def compose_body(self) -> ComposeResult:
         yield Static(tr("Choose a disc"), classes="heading")
-        yield OptionList(id="sources")
+        yield Lines(id="sources")
 
     def on_mount(self) -> None:
         self.action_refresh()
@@ -767,7 +795,7 @@ class BrowseScreen(_Page):
 
     def compose_body(self) -> ComposeResult:
         yield Static(str(self.folder), id="folder", classes="heading", markup=False)
-        yield OptionList(id="entries")
+        yield Lines(id="entries")
 
     def on_mount(self) -> None:
         self.open_folder(self.folder)
@@ -994,7 +1022,7 @@ class TitlesScreen(_Page):
 
     def compose_body(self) -> ComposeResult:
         yield Static("", id="disc", classes="heading", markup=False)
-        yield OptionList(id="titles")
+        yield Lines(id="titles")
 
     def on_mount(self) -> None:
         self.refill()
@@ -1228,7 +1256,7 @@ class TitleScreen(_Page):
             classes="heading",
             markup=False,
         )
-        yield OptionList(id="tracks")
+        yield Lines(id="tracks")
 
     def on_mount(self) -> None:
         self.refill()
@@ -1373,7 +1401,7 @@ class RipScreen(_LogPage):
             id="status",
             classes="heading",
         )
-        yield OptionList(
+        yield Lines(
             *(
                 Option(self._job_prompt(job, tr("Waiting")), id=f"job-{n}")
                 for n, job in enumerate(self.jobs)
@@ -1580,7 +1608,7 @@ class SettingsScreen(_Page):
         yield Static(
             tr("Saved settings: the defaults for every disc"), classes="heading"
         )
-        yield OptionList(id="settings")
+        yield Lines(id="settings")
 
     def on_mount(self) -> None:
         self._fill()

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from textual import events
 from textual.pilot import Pilot
 from textual.widgets import Input, Label, OptionList, Static
 from textual.widgets._footer import FooterKey
@@ -1377,6 +1378,41 @@ def screen_row(options: OptionList, option_id: str) -> int:
     """Where line *option_id* sits on screen, counted from the list's top."""
     index = options.get_option_index(option_id)
     return options._index_to_line[index] - round(options.scroll_y)
+
+
+def test_the_mouse_wheel_moves_the_highlight(tmp_path: Path) -> None:
+    titles = [make_title(n, 6000.0 - n) for n in range(20)]
+
+    async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        await at_titles(pilot, app)
+        await wait_until(pilot, lambda: laid_out(app, "#titles"))
+        options = app.screen.query_one("#titles", OptionList)
+        start = options.get_option_index("title-0")
+        options.highlighted = start
+        await pilot.pause()
+
+        for _ in range(3):
+            await pilot._post_mouse_events([events.MouseScrollDown], "#titles")
+        await pilot._post_mouse_events([events.MouseScrollUp], "#titles")
+        await pilot.pause()
+
+        assert options.highlighted_option is not None
+        assert options.highlighted_option.id == "title-2"
+
+        # Past the bottom of the view, the list scrolls to keep it in sight.
+        # ...and stops at the last line rather than wrapping to the top.
+        for _ in range(25):
+            await pilot._post_mouse_events([events.MouseScrollDown], "#titles")
+        await pilot.pause()
+        assert options.highlighted == options.option_count - 1
+        assert options.scroll_y == options.max_scroll_y > 0
+
+        for _ in range(25):
+            await pilot._post_mouse_events([events.MouseScrollUp], "#titles")
+        await pilot.pause()
+        assert options.highlighted == 0
+
+    titles_app(body, titles, tmp_path)
 
 
 def test_space_marks_in_place_and_moves_to_the_next_title(tmp_path: Path) -> None:

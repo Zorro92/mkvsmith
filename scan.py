@@ -1599,6 +1599,7 @@ class Scanner:
         # (within-VTS episodes are numbered during scanning and already
         # do).
         _demote_dwarfed_episode_groups(self.titles, self.config)
+        _log_dvd_episode_groups(self.titles)
         _label_cross_vts_episodes(self.titles, self.config)
         _label_bluray_episodes(self.titles, self.config)
         _sort_and_reindex_titles(self.titles)
@@ -2720,6 +2721,24 @@ def _is_looped_playlist(title: Title) -> bool:
         return False
     top_share = Counter(clips).most_common(1)[0][1] / len(clips)
     return top_share >= 0.9
+
+
+def _log_dvd_episode_groups(titles: list[Title]) -> None:
+    """Report each title set's episodes that will actually be listed.
+
+    Runs after dwarfed groups are demoted, so a movie disc's bonus
+    featurettes (clustered as "episodes" while scanning) aren't announced.
+    """
+    counts = Counter(
+        title.dvd_vts_number
+        for title in titles
+        if title.episode_number is not None
+        and not title.play_all
+        and title.dvd_vts_number is not None
+        and _is_notable_title(title)
+    )
+    for vts, count in sorted(counts.items()):
+        log_info(tr("Detected {n} episode(s) in VTS {vts}", n=count, vts=vts))
 
 
 def _is_notable_title(title: Title) -> bool:

@@ -482,13 +482,11 @@ def _label_cross_vts_episodes(
 def _log_dvd_episode_group(
     episode_count: int, vts: int, play_all_pgc: int | None
 ) -> None:
-    log_info(
-        tr(
-            "Detected {n} episode(s) in VTS {vts}",
-            n=episode_count,
-            vts=vts,
-        )
-        + (tr(" (play-all PGC {pgc})", pgc=play_all_pgc) if play_all_pgc else "")
+    # Debug only: the group may yet be demoted (bonus content on a movie
+    # disc) or hidden. The scan reports the episodes that survive.
+    log_debug(
+        f"  Episode group in VTS {vts}: {episode_count} episode(s)"
+        + (f" (play-all PGC {play_all_pgc})" if play_all_pgc else "")
     )
 
 

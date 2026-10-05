@@ -113,6 +113,25 @@ def apply_discdb_lookup(
     state.refresh_series_disc(titles)
 
 
+def ask_list_encrypted(
+    disc_metadata: DiscMetadata | None, prompts: UserPrompts
+) -> bool:
+    """For a CSS-encrypted DVD, ask whether to list its titles anyway.
+
+    Nothing on such a disc can be ripped, so this comes before the other
+    per-disc questions. True (go on) for any other disc.
+    """
+    if disc_metadata is None or not disc_metadata.css_encrypted:
+        return True
+    return prompts.confirm(
+        tr(
+            "This DVD is CSS-encrypted, so mkvsmith can't rip its titles. "
+            "Decrypt it first (for example with a full disc backup) and rip "
+            "the copy.\n\nShow its titles anyway? [y/N]:"
+        )
+    )
+
+
 def ask_closed_captions(
     titles: list[Title], config: Config, prompts: UserPrompts
 ) -> None:

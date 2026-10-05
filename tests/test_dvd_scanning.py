@@ -8,6 +8,7 @@ from typing import NoReturn
 import dvdifo
 import pytest
 import dvdbuild
+import scan
 from cc608 import CC608_CODEC_SRT
 from dvdifo import VmgInfo
 from models import Config, Stream, StreamType, Title
@@ -1083,6 +1084,36 @@ def test_demote_dwarfed_episode_groups_strips_movie_disc_labels(
     dvdbuild._demote_dwarfed_episode_groups(titles, config=Config(min_duration=60))
 
     assert all(title.episode_number is None for title in titles)
+
+
+def test_episode_groups_are_reported_only_when_listed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only episodes that make the list are announced: Beauty and the Beast
+    (Diamond) clusters two short VTS 6 bonus clips as "episodes", which the
+    list then hides."""
+    titles: list[Title] = []
+    for vts, duration, episode in (
+        (3, 1146.0, 1),
+        (3, 1150.0, 2),
+        (6, 70.0, 1),  # under two minutes: hidden
+        (6, 72.0, 2),
+        (3, 2296.0, None),  # play-all, not an episode
+    ):
+        title = Title(len(titles), tmp_path / "v.vob", "Title", duration)
+        title.dvd_vts_number = vts
+        title.episode_number = episode
+        title.streams = [
+            Stream(index=0, stream_type=StreamType.VIDEO),
+            Stream(index=1, stream_type=StreamType.AUDIO, language="eng"),
+        ]
+        titles.append(title)
+
+    scan._log_dvd_episode_groups(titles)
+
+    out = capsys.readouterr().out
+    assert "Detected 2 episode(s) in VTS 3" in out
+    assert "VTS 6" not in out
 
 
 def test_demote_dwarfed_episode_groups_keeps_series_discs(tmp_path: Path) -> None:

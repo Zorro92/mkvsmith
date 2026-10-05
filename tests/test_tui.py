@@ -854,11 +854,46 @@ def test_scanning_opens_the_title_list(
         texts = option_texts(app, "#titles")
         assert texts[0] == "Rip main feature: Movie - Title 0"
         assert any(t.startswith("[ ]  0  Title 0 ★") for t in texts)
+        assert not screen.query_one("#css-warning", Static).display
         # Back from the list goes to the menu, not to the finished scan.
         await pilot.press("escape")
         assert screen_name(app) == "MainMenu"
 
     run_app(body, source=Path("/discs/movie.iso"))
+
+
+@pytest.mark.parametrize("answer", ["yes", "no"])
+def test_an_encrypted_dvd_asks_before_listing_and_warns_above_it(
+    monkeypatch: pytest.MonkeyPatch, answer: str
+) -> None:
+    titles = [make_title(0)]
+    asked_captions: list[bool] = []
+
+    def fake_scan(source: Path, state: RuntimeState) -> tuple[list[Title], object]:
+        return titles, models.DiscMetadata(name="Movie", css_encrypted=True)
+
+    monkeypatch.setattr(tui, "scan_source", fake_scan)
+    monkeypatch.setattr(
+        tui, "ask_closed_captions", lambda *_a: asked_captions.append(True)
+    )
+
+    async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        await dialog(pilot, app, tui.ConfirmDialog)
+        question = str(app.screen.query(Label).first().content)
+        assert question.startswith("This DVD is CSS-encrypted")
+        assert question.endswith("Show its titles anyway?")
+        await choose(pilot, app, "#choices", answer)
+        if answer == "no":
+            await wait_until(pilot, lambda: screen_name(app) == "MainMenu")
+            return
+        screen = await at_titles(pilot, app)
+        warning = screen.query_one("#css-warning", Static)
+        assert warning.display
+        assert "CSS-encrypted" in str(warning.content)
+
+    run_app(body, source=Path("/discs/movie.iso"))
+    # Nothing can be ripped, so the other per-disc questions aren't asked.
+    assert asked_captions == []
 
 
 def test_scan_failure_is_shown_and_esc_goes_back(

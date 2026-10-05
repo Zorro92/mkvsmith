@@ -102,6 +102,8 @@ _ES: dict[str, str] = {
     "Select language / Seleccione el idioma:": "Seleccione el idioma:",
     "Using language: {name} ({code})": "Usando idioma: {name} ({code})",
     "Settings: {problem}": "Ajustes: {problem}",
+    "This DVD is CSS-encrypted, so mkvsmith can't rip its titles. Decrypt it first (for example with a full disc backup) and rip the copy.\n\nShow its titles anyway? [y/N]:": "Este DVD está cifrado con CSS, así que mkvsmith no puede extraer sus títulos. Descífralo primero (por ejemplo, con una copia de seguridad completa del disco) y extrae la copia.\n\n¿Mostrar sus títulos de todos modos? [y/N]:",
+    "⚠ This DVD is CSS-encrypted: its titles can't be ripped until it's decrypted.": "⚠ Este DVD está cifrado con CSS: sus títulos no se pueden extraer hasta descifrarlo.",
     "This DVD is CSS-encrypted; decrypt it first": "Este DVD está cifrado con CSS; descífralo primero",
     "This DVD is CSS-encrypted. mkvsmith can't decrypt it, so its titles can't be ripped; decrypt it first (for example with a full disc backup) and rip the copy.": "Este DVD está cifrado con CSS. mkvsmith no puede descifrarlo, así que sus títulos no se pueden extraer; descífralo primero (por ejemplo, con una copia de seguridad completa del disco) y extrae la copia.",
     "Title {idx} looks mis-authored: its angle blocks have angles of different lengths, so it plays parts of the film out of order (on players too)": "El título {idx} parece mal creado: sus bloques de ángulos tienen ángulos de distinta duración, así que reproduce partes de la película desordenadas (también en reproductores)",
@@ -345,7 +347,6 @@ _ES: dict[str, str] = {
     "VMG disc name: {name}": "Nombre del disco VMG: {name}",
     "Detected DVD VIDEO_TS structure in ISO": "Estructura DVD VIDEO_TS detectada en la ISO",
     "Detected {n} episode(s) in VTS {vts}": "Se detectaron {n} episodio(s) en el VTS {vts}",
-    " (play-all PGC {pgc})": " (PGC reproducir-todos {pgc})",
     "mkvmerge not available, cannot scan video file.": "mkvmerge no disponible, no se puede escanear el archivo de vídeo.",
     "Device read failed (needs libdvdcss/libaacs)": "Error de lectura del dispositivo (necesita libdvdcss/libaacs)",
     # --- disc_reader ------------------------------------------------------------

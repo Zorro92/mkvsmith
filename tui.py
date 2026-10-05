@@ -63,6 +63,7 @@ from session import (
     RipJob,
     RipOutcome,
     TaggingChoice,
+    ask_list_encrypted,
     ask_closed_captions,
     ask_edition_names,
     ask_output_dir,
@@ -981,12 +982,21 @@ class ScanScreen(_LogPage):
             return
         # The per-disc questions, asked before the list.
         prompts = app.bridge.prompts()
-        ask_closed_captions(titles, state.config, prompts)
-        if state.config.ask_split_episodes:
-            chosen = packed_split_offers(titles, prompts)
-            if chosen:
-                split_packed_episodes(titles, chosen, metadata, state)
+        if not ask_list_encrypted(metadata, prompts):
+            app.call_from_thread(self._abandon)
+            return
+        # An encrypted disc's titles can't be ripped: skip asking how to.
+        if metadata is None or not metadata.css_encrypted:
+            ask_closed_captions(titles, state.config, prompts)
+            if state.config.ask_split_episodes:
+                chosen = packed_split_offers(titles, prompts)
+                if chosen:
+                    split_packed_episodes(titles, chosen, metadata, state)
         app.call_from_thread(self._scanned, titles, metadata)
+
+    def _abandon(self) -> None:
+        if self.app.screen is self:
+            self.app.pop_screen()
 
     def _failed(self, message: str) -> None:
         self.query_one("#status", Static).update(message)
@@ -1022,9 +1032,24 @@ class TitlesScreen(_Page):
 
     def compose_body(self) -> ComposeResult:
         yield Static("", id="disc", classes="heading", markup=False)
+        yield Static(
+            tr(
+                "⚠ This DVD is CSS-encrypted: its titles can't be ripped "
+                "until it's decrypted."
+            ),
+            id="css-warning",
+            classes="warning",
+            markup=False,
+        )
         yield Lines(id="titles")
 
+    @property
+    def css_encrypted(self) -> bool:
+        metadata = self.metadata or self.state.disc_metadata
+        return metadata.css_encrypted
+
     def on_mount(self) -> None:
+        self.query_one("#css-warning", Static).display = self.css_encrypted
         self.refill()
         self.query_one("#titles", OptionList).focus()
 
@@ -1713,6 +1738,7 @@ class MkvsmithApp(App[None]):
     CSS = """
     #body { padding: 0 1; }
     .heading { margin: 1 0; text-style: bold; }
+    .warning { margin-bottom: 1; color: $warning; text-style: bold; }
     OptionList, OptionList:focus {
         border: none;
         padding: 0;

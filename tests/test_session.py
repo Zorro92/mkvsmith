@@ -13,11 +13,21 @@ import models
 import session
 import tagger
 from mkv import MKVCreator
-from models import Config, RipError, RuntimeState, Stream, StreamType, Title
+from models import (
+    Config,
+    DiscMetadata,
+    RipError,
+    RuntimeState,
+    Stream,
+    StreamType,
+    Title,
+    UserPrompts,
+)
 from session import (
     RipCallbacks,
     RipJob,
     RipOutcome,
+    ask_list_encrypted,
     episode_titles,
     main_feature_titles,
     run_rip_jobs,
@@ -506,3 +516,23 @@ def test_explicit_track_selection_keeps_streams_sharing_an_index() -> None:
     picked = select_streams(title, ["a:0", "a:1", "s:0", "a:0"], Config())
 
     assert [s.display_id for s in picked] == ["a:0", "a:1", "s:0"]
+
+
+@pytest.mark.parametrize(
+    ("encrypted", "answer", "expected", "asked"),
+    [(False, False, True, False), (True, True, True, True), (True, False, False, True)],
+)
+def test_ask_list_encrypted_only_asks_about_encrypted_dvds(
+    encrypted: bool, answer: bool, expected: bool, asked: bool
+) -> None:
+    questions: list[str] = []
+
+    def confirm(message: str) -> bool:
+        questions.append(message)
+        return answer
+
+    metadata = DiscMetadata(css_encrypted=encrypted)
+
+    assert ask_list_encrypted(metadata, UserPrompts(confirm=confirm)) is expected
+    assert bool(questions) is asked
+    assert ask_list_encrypted(None, UserPrompts(confirm=confirm)) is True

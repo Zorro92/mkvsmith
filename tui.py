@@ -950,6 +950,7 @@ class ScanScreen(_LogPage):
     def __init__(self, source: Path) -> None:
         super().__init__()
         self.source = source
+        self._next: Callable[[], object] | None = None
 
     def compose_body(self) -> ComposeResult:
         yield Static(
@@ -994,18 +995,35 @@ class ScanScreen(_LogPage):
                     split_packed_episodes(titles, chosen, metadata, state)
         app.call_from_thread(self._scanned, titles, metadata)
 
-    def _abandon(self) -> None:
+    def _when_on_top(self, then: Callable[[], object]) -> None:
+        """Run *then* once this screen is on top again, unless the user left.
+
+        A dialog the scan asked through can still be closing when the
+        scan's thread carries on, so wait for it to go rather than mistake
+        it for the user having gone back.
+        """
         if self.app.screen is self:
-            self.app.pop_screen()
+            then()
+        elif self in self.app.screen_stack:
+            self._next = then
+
+    def on_screen_resume(self) -> None:
+        then, self._next = self._next, None
+        if then is not None:
+            then()
+
+    def _abandon(self) -> None:
+        self._when_on_top(self.app.pop_screen)
 
     def _failed(self, message: str) -> None:
         self.query_one("#status", Static).update(message)
         self.notify(message, severity="error")
 
     def _scanned(self, titles: list[Title], metadata: DiscMetadata | None) -> None:
-        if self.app.screen is not self:
-            return  # the user went back while it scanned
-        self.app.switch_screen(TitlesScreen(titles, metadata))
+        # Gone from the stack: the user went back while it scanned.
+        self._when_on_top(
+            lambda: self.app.switch_screen(TitlesScreen(titles, metadata))
+        )
 
 
 # =============================================================================

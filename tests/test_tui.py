@@ -896,6 +896,55 @@ def test_an_encrypted_dvd_asks_before_listing_and_warns_above_it(
     assert asked_captions == []
 
 
+@pytest.mark.parametrize("outcome", ["listed", "abandoned"])
+def test_a_scan_finishing_under_a_closing_dialog_still_moves_on(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """The scan's thread can carry on before the dialog it asked through
+    has closed; that is not the user going back."""
+    titles = [make_title(0)]
+    gate = threading.Event()
+
+    def fake_scan(source: Path, state: RuntimeState) -> tuple[list[Title], object]:
+        gate.wait(120)  # longer than wait_until gives up
+        return titles, None
+
+    monkeypatch.setattr(tui, "scan_source", fake_scan)
+
+    async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        try:
+            await checks(pilot, app)
+        finally:
+            gate.set()  # let the scan thread finish, or shutdown waits on it
+
+    async def checks(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        await wait_until(pilot, lambda: isinstance(app.screen, tui.ScanScreen))
+        scan = app.screen
+        assert isinstance(scan, tui.ScanScreen)
+        app.push_screen(tui.InfoDialog("Question", []))
+        await dialog(pilot, app, tui.InfoDialog)
+        # The answer is in, but the dialog is still on top.
+        if outcome == "listed":
+            scan._scanned(titles, None)
+        else:
+            scan._abandon()
+        await pilot.pause()
+        assert isinstance(app.screen, tui.InfoDialog)
+
+        await pilot.press("escape")
+        if outcome == "listed":
+            await at_titles(pilot, app)
+        else:
+            await wait_until(pilot, lambda: screen_name(app) == "MainMenu")
+        gate.set()  # the real scan ends after the user has moved on: ignored
+        await pilot.pause()
+        assert screen_name(app) == (
+            "TitlesScreen" if outcome == "listed" else "MainMenu"
+        )
+
+    run_app(body, source=Path("/discs/movie.iso"))
+
+
 def test_scan_failure_is_shown_and_esc_goes_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

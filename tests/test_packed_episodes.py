@@ -3,7 +3,7 @@
 Synthetic chapter layouts cover the detection rules; the real Sgt. Frog
 playlists (``sgtfrog_s1d1_00000.mpls``, ``sgtfrog_s2d1_00003.mpls``) guard
 them end to end. Those fixtures are not committed; the tests skip without
-them (see the README "Disc fixtures" section).
+them (see docs/DEVELOPMENT.md "Disc fixtures" section).
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _starts(segments: list[PackedSegment]) -> list[float]:
 def _needs(*names: str) -> pytest.MarkDecorator:
     return pytest.mark.skipif(
         not all((_FIXTURES / name).exists() for name in names),
-        reason="disc fixtures not present; capture them locally (see README)",
+        reason="disc fixtures not present; capture them locally (see docs/DEVELOPMENT.md)",
     )
 
 

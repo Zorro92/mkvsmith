@@ -2,357 +2,162 @@
 
 > [English](README.md) · [Español](README.es.md)
 
-Extractor de DVD/Blu-ray que produce archivos MKV usando
-[mkvmerge](https://mkvtoolnix.download/) (MKVToolNix).
+Convierte tus DVD, Blu-ray y HD DVD en archivos MKV, con todo su audio,
+subtítulos y capítulos.
 
-`mkvsmith` lee las estructuras del disco directamente — metadatos
-`.mpls` / `.clpi` / `.ifo` / BDMV — en lugar de sondear los flujos de medios.
-Eso hace que el escaneo sea rápido y con pocas dependencias: la única
-herramienta de medios externa que necesita es `mkvmerge`. Sigue las convenciones
-de extracción de facto cuando son el valor por defecto más sensato, pero es
-una reimplementación independiente con licencia GPL.
+mkvsmith lee la propia estructura del disco para saber qué contiene: qué
+título es la película, cuáles son episodios, cuáles son extras y cuáles son
+menús o relleno. Después deja la copia en sí a
+[mkvmerge](https://mkvtoolnix.download/). Escanear un disco lleva segundos,
+y mkvmerge es el único otro programa que necesitas.
 
-## Características
+## Qué hace
 
-- **Extrae discos DVD (VIDEO_TS) y Blu-ray (BDMV), ISOs, archivos
-  `.m2ts`/`.vob` sueltos y archivos de vídeo normales** a Matroska (`.mkv`).
-- **Extrae discos e ISOs HD DVD** (`HVDVD_TS/*.evo` + listas XPL, con
-  capítulos, idiomas XPL y extracción de subimágenes EVO).
-- **Conserva el audio, los subtítulos y los capítulos**, incluidos los flujos
-  de subimagen de DVD que otros escáneres más simples pasan por alto.
-- **Escribe etiquetas `SOURCE_ID` por pista** (PID de
-  Blu-ray / IDs de flujo+VTS de DVD) junto a las etiquetas estadísticas de
-  mkvmerge.
-- **Muestra identificadores estables del disco**, incluida la huella
-  [matrix256v1](https://github.com/shitwolfymakes/matrix256) del sistema de
-  archivos y los identificadores de metadatos DVD/Blu-ray.
-- **Consulta opcional de [TheDiscDB](https://thediscdb.com/)** — identifica
-  discos, aplica nombres comunitarios y resuelve playlists principales
-  ofuscadas.
-- **Etiquetado TMDB opcional** — metadatos y carátulas incrustados directamente
-  en el mux.
+- **Extrae DVD, Blu-ray y HD DVD**: desde una unidad, una imagen ISO o una
+  carpeta de disco (`VIDEO_TS`, `BDMV`, `HVDVD_TS`).
+- **Encuentra la película principal por ti**, o todos los episodios de un
+  disco de serie, y oculta menús, tráileres y títulos señuelo.
+- **Conserva lo importante**: las pistas de audio que quieras, los
+  subtítulos (incluidos los subtítulos de DVD que otras herramientas pasan
+  por alto), los capítulos y, si quieres, los subtítulos ocultos (CC).
+- **Une los distintos montajes de una película** (cines, extendido, …) en un
+  solo MKV cuyas ediciones puedes cambiar en tu reproductor.
+- **Extras opcionales**: datos de la película y carátula de
+  [TMDB](https://www.themoviedb.org/), y nombres del disco y de los episodios
+  de [TheDiscDB](https://thediscdb.com/).
 
-## Requisitos
+## Primeros pasos
 
-- **Python 3.12+**
-- **mkvmerge** (MKVToolNix) — la única herramienta externa y un requisito
-  imprescindible para el multiplexado. Las imágenes ISO (UDF e ISO9660) se
-  leen de forma nativa.
-- **libdvdcss / libaacs** — necesarios para que tu sistema lea discos
-  comerciales *cifrados* (igual que cualquier extractor). `mkvsmith` no incluye
-  ni elude DRM.
+Necesitas:
 
-## Instalación
+1. **Python 3.12 o posterior**.
+2. **MKVToolNix**, por `mkvmerge`: `sudo apt install mkvtoolnix` en
+   Debian/Ubuntu, `brew install mkvtoolnix` en macOS, o el instalador de
+   [mkvtoolnix.download](https://mkvtoolnix.download/).
+3. **[uv](https://docs.astral.sh/uv/)**, que instala todo lo demás por ti.
 
-`mkvsmith` es un script de un solo archivo más unos cuantos módulos. La forma
-más fácil de ejecutarlo es con [uv](https://docs.astral.sh/uv/):
+Después:
 
 ```sh
 git clone https://github.com/Zorro92/mkvsmith
 cd mkvsmith
-uv run ./main.py --help
-```
-
-`main.py` también lleva un shebang `uv run --script`, así que una vez que sea
-ejecutable se puede lanzar directamente:
-
-```sh
-chmod +x main.py
-./main.py --help
-```
-
-## Uso
-
-```sh
-# abre el menú principal (elige una unidad, ISO o carpeta de disco; ajustes)
 uv run ./main.py
-
-# escanea una carpeta de disco / ISO y abre sus títulos en modo interactivo
-uv run ./main.py /ruta/al/disco
-uv run ./main.py pelicula.iso
-
-# extrae la película principal directamente al directorio actual
-uv run ./main.py /ruta/al/disco -m
-
-# extrae un título concreto
-uv run ./main.py /ruta/al/disco -t 1
-
-# extrae todos los títulos
-uv run ./main.py /ruta/al/disco -a
-
-# -m es inteligente: película principal en cine, episodios en series
-# (DVD: grupos de PGC y un episodio por VTS; Blu-ray: una playlist por
-#  episodio, p. ej. con una playlist «reproducir todo»)
-uv run ./main.py /ruta/al/disco -m
-
-# escribe la salida en un directorio concreto (segundo argumento posicional)
-uv run ./main.py /ruta/al/disco -m ~/rips
 ```
 
-### Modo interactivo
+Eso abre mkvsmith. La primera vez hace unas preguntas (tus idiomas, si
+quieres conservar los subtítulos, etc.). Pulsa Intro para quedarte con cada
+sugerencia. Después, elige un disco y extráelo.
 
-Ejecuta en una terminal sin `-t/-m/-a/-i/-d` para abrir la interfaz a
-pantalla completa: sin origen empieza en el menú principal; con uno lo
-escanea enseguida. Cada pantalla es una lista: muévete con las flechas o la
-rueda del ratón y elige con Intro o un clic; la línea resaltada va en
-naranja. `Esc` vuelve atrás y `q` sale (la barra de teclas de abajo también
-se puede pulsar).
+> **Discos cifrados:** como con cualquier extractor, leer un disco comprado
+> necesita `libdvdcss` (DVD) o `libaacs` (Blu-ray) instalados en tu sistema.
+> mkvsmith no descifra nada por sí mismo, y te avisa cuando un disco sigue
+> cifrado.
 
-- **Menú principal**: extraer un disco, ajustes, acerca de / teclas, salir.
-  La primera vez pregunta antes los ajustes habituales.
-- **Elegir un disco**: las unidades ópticas con la etiqueta de su disco (en
-  Linux, `e` expulsa la resaltada), o buscar una ISO o carpeta de disco. El
-  explorador muestra una carpeta a la vez: `..` sube, una carpeta se abre y
-  una ISO se usa. Dentro de una carpeta de DVD / Blu-ray / HD DVD aparece
-  la línea "Usar esta carpeta" bajo `..`. `/` permite escribir una ruta.
-- **Títulos**: primero lo que se puede extraer (la película principal o
-  todos los episodios, todos los títulos de la lista, ediciones que combinar
-  en un MKV multiedición, episodios empaquetados que dividir) y después los
-  títulos. `Espacio` marca títulos para extraer en lote; Intro abre un
-  título.
-- **Un título**: extraerlo, marcarlo o elegir las pistas de audio y
-  subtítulos que se conservan (`Espacio` o Intro activa o desactiva una).
-- **Extracción**: una línea por archivo con su progreso, y el registro
-  debajo. Las preguntas (la carpeta de salida antes de la primera
-  extracción, sobrescribir un archivo, el etiquetado de TMDB) aparecen como
-  diálogos. `Esc` o `q` detienen la extracción tras preguntar; el título que
-  se está extrayendo se borra.
-- **Ajustes**: todos los ajustes guardados; Intro cambia uno y lo guarda al
-  momento, `d` restablece su valor por defecto. Los cambios se aplican al
-  siguiente disco que abras.
+## Cómo se usa
 
-### Opciones comunes
+Todo es una lista. Muévete con las flechas o la rueda del ratón, y elige
+una línea con Intro o con un clic. **Esc** vuelve atrás y **q** sale. La
+barra de abajo muestra las teclas de cada pantalla, y también puedes hacer
+clic en ellas.
 
-`-h` muestra las opciones habituales; `--help-all` lista todas las opciones,
-agrupadas por sección (pistas, títulos, etiquetado TMDB, TheDiscDB, archivos
-temporales, ...).
+1. **Elige un disco.** Escoge una unidad, o busca una ISO o una carpeta de
+   disco. También puedes abrir uno directamente:
+   `uv run ./main.py pelicula.iso`.
+2. **Elige qué extraer.** Arriba de la lista está la opción más probable: la
+   película principal, o todos los episodios en un disco de serie. Debajo
+   están todos los títulos. **Espacio** marca varios para extraerlos de una
+   vez, e Intro sobre un título muestra sus pistas de audio y subtítulos,
+   para que elijas cuáles conservar.
+3. **Extrae.** La primera vez, mkvsmith pregunta dónde guardar; después
+   muestra el progreso de cada archivo. Esc pregunta antes de detener, y
+   luego borra el archivo sin terminar.
 
-| Opción | Descripción |
-|---|---|
-| `-t, --title N[,N...]` | Extrae un título, o varios (`-t 1,3,5`) |
-| `-m, --main` | Extrae la película principal detectada (todos los episodios en series) |
-| `-a, --all` | Extrae todos los títulos |
-| `-i, --info` | Solo escanea y lista los títulos |
-| `-d, --details N` | Muestra las pistas y capítulos de un título |
-| `--multi-edition N,N,...` | Combina títulos de playlist en un MKV multiedición |
-| `--settings` | Muestra los ajustes guardados y sale |
-| `--set CLAVE[=VALOR]` / `--reset CLAVE` | Guarda un ajuste (sin valor: se pregunta, oculto si es secreto) o restaura su valor predeterminado, y sale |
-| `--split-episodes` / `--no-split-episodes` | Divide las playlists con episodios seguidos en un título por episodio |
-| `-s, --streams SEL,...` | Selecciona pistas (p. ej. `v:0,a:eng,s:all`) |
-| `-l, --languages LANG,...` | Idiomas preferidos (por defecto `eng,en,und`): conserva solo estos subtítulos y marca el audio predeterminado |
-| `--all-audio` / `--no-all-audio` | Conserva el audio en todos los idiomas (activado por defecto) |
-| `--subs` / `--no-subs` | Conserva los subtítulos |
-| `--all-subs` / `--no-all-subs` | Conserva los subtítulos en todos los idiomas, no solo los de `-l` (desactivado por defecto) |
-| `--forced` / `--no-forced` | Conserva los subtítulos forzados |
-| `--cc` / `--no-cc` | Subtítulos ocultos EIA-608 como pista de texto (desactivado por defecto) |
-| `--cc-format srt\|ass` | Formato de los subtítulos ocultos: texto portátil o ASS con posición |
-| `--min-duration N` | Ignora los títulos de menos de N segundos |
-| `--show-all` / `--no-show-all` | Muestra los títulos de baja calidad (menús/tráileres) |
-| `--temp-dir DIR` | Directorio temporal (predeterminado: /var/tmp; para tmpfs/RAM u otra ruta en disco) |
-| `--ram-limit FRAC` | Fracción máxima de capacidad tmpfs para directorios temporales en RAM |
-| `--overwrite ask\|always\|never` | Un archivo de salida existente: preguntar, sobrescribir u omitir el título |
-| `--force` | Igual que `--overwrite always` |
-| `--tag` / `--no-tag` | Etiquetado TMDB |
-| `--tag-art none\|poster\|backdrop\|both\|ask` | Arte de portada a incrustar |
-| `--tag-confirm` / `--no-tag-confirm` | Confirma la coincidencia de TMDB antes de etiquetar |
-| `--tag-metadata PROP,...` | Propiedades de TMDB a obtener |
-| `--discdb` / `--no-discdb` | Consulta de TheDiscDB (participativa) |
-| `--discdb-contribute MODO` | Prepara o sube una contribución (`browser`, `manual`, `direct` u `off`) |
-| `--discdb-disc-name NOMBRE` | Nombre de disco usado en el modo directo |
-| `--ui-lang LANG` | Idioma de la interfaz (p. ej. `en`, `es`) |
-| `--debug` | Registro de depuración detallado |
+Tus elecciones se guardan, y puedes cambiarlas cuando quieras en
+**Ajustes**, en el menú principal.
 
-Los valores de lista son un único argumento, separado por comas (`jpn,eng`) o
-por espacios entre comillas (`"jpn eng"`). Pon entre comillas cualquier otro
-valor con espacios: rutas (`"/media/Mi Disco.iso"`), `--tag-title "The
-Matrix"`, `--set "temp.dir=/mnt/disco grande/tmp"`. Solo se permite una
-acción por ejecución (`-t`, `-m`, `-a`, `-i`, `-d`,
-`--multi-edition`, `--settings`). Cada opción de activar/desactivar tiene su
-forma `--no-`, así que un flag puede anular un ajuste guardado en cualquier
-sentido.
+## Extras opcionales
 
-### Ajustes
+### Datos y carátula de la película (TMDB)
 
-Tus valores predeterminados viven en `$XDG_CONFIG_HOME/mkvsmith/config.json`
-(por defecto `~/.config/mkvsmith/config.json`; define `MKVSMITH_CONFIG` para
-usar otro archivo, p. ej. desde un script). Cada opción se resuelve como
-**flag > variable de entorno > archivo de ajustes > valor integrado**, así que
-un flag solo cambia la ejecución en la que aparece.
+mkvsmith puede etiquetar cada extracción con el título, el año, el reparto,
+el argumento y la carátula de la película, sacados de TMDB. Necesitas una
+[clave de API de TMDB](https://www.themoviedb.org/settings/api) gratuita.
+Escríbela en **Ajustes → tmdb.api_key** y pon **tmdb.tagging** en `ask`
+(pregunta en cada disco) o `always`.
 
-El modo interactivo comprueba que el archivo esté completo cada vez que
-arranca: la primera ejecución pregunta todos los ajustes habituales (Enter
-mantiene la sugerencia) y, tras una actualización, solo los ajustes nuevos.
-Las preguntas de seguimiento aparecen cuando importan (el formato de
-subtítulos ocultos una vez activados, las opciones de etiquetado una vez hay
-clave de TMDB). Los ajustes avanzados (directorio temporal, límite de RAM,
-región y campos de TMDB, servidor de TheDiscDB) nunca se preguntan; sus
-valores predeterminados se escriben en el archivo para editarlos. Las
-ejecuciones CLI simples nunca preguntan: lo que falte usa el valor integrado.
+### Nombres del disco (TheDiscDB)
 
-```json
-{
-  "version": 2,
-  "output": {"overwrite": "ask"},
-  "tracks": {"languages": ["spa", "es", "und"], "closed_captions": "ask"},
-  "scan": {"split_episodes": "never"},
-  "tmdb": {"api_key": "...", "tagging": "never", "art": "ask"}
-}
-```
+[TheDiscDB](https://thediscdb.com/) es una base de datos de discos hecha por
+la comunidad. Con **discdb.enabled** activado, mkvsmith busca tu disco y usa
+sus títulos y nombres de episodio. Ayuda sobre todo en discos que esconden
+la película real entre docenas de títulos falsos. Solo se envían los números
+de identificación del disco, nunca su contenido. mkvsmith también puede
+preparar los archivos para [aportar un disco](https://thediscdb.com/) que
+hayas escaneado (`--discdb-contribute`).
 
-Las opciones por disco aceptan `never`, `ask` (preguntar cada vez) o
-`always`: `output.overwrite`, `tracks.closed_captions`, `scan.split_episodes`,
-`tmdb.tagging` y `tmdb.art` (`none` / `poster` / `backdrop` / `both` / `ask`).
-El modo interactivo las pregunta en cada disco (los subtítulos ocultos solo
-si el disco los tiene); una ejecución CLI simple trata `ask` como el valor
-integrado. Así, una clave de TMDB guardada con `"tagging": "never"` ya no
-requiere `--no-tag` en cada ejecución. La carpeta de salida no es un ajuste:
-la CLI escribe en el directorio actual salvo que se indique otra, y el modo
-interactivo la pregunta antes de la primera extracción. Los valores no
-válidos se notifican y se vuelven a preguntar; los archivos de configuración
-planos antiguos se migran automáticamente.
+## La línea de comandos
 
-### TheDiscDB
-
-La consulta a TheDiscDB está desactivada por defecto. Actívala con `--discdb` o
-persistela en el [archivo de ajustes](#ajustes) bajo `"discdb": {"enabled": true}`. La consulta envía solo identificadores del
-disco; nunca envía datos de playlists ni contenidos multimedia.
+Para scripts, o si simplemente prefieres escribir, mkvsmith también funciona
+sin su interfaz. Cualquier opción de acción va directa al trabajo:
 
 ```sh
-# identifica un disco y aplica una correspondencia única de títulos
-uv run ./main.py pelicula.iso --discdb --info
-
-# prepara archivos para el flujo de contribución revisado de TheDiscDB
-uv run ./main.py pelicula.iso --discdb-contribute=browser
-uv run ./main.py pelicula.iso --discdb-contribute=manual --discdb-bundle-dir ~/discdb
+uv run ./main.py pelicula.iso -m           # extrae la película principal (o todos los episodios)
+uv run ./main.py pelicula.iso -t 1,3       # extrae los títulos 1 y 3
+uv run ./main.py pelicula.iso -a ~/rips    # extrae todos los títulos en ~/rips
+uv run ./main.py pelicula.iso -i           # solo lista los títulos
 ```
 
-La correspondencia usa el Disc Hash heredado de TheDiscDB, la huella
-Matrix256, el Disc ID AACS de Blu-ray o el Disc ID libdvdread de DVD. El
-UPC/EAN es solo una pista débil y debe corroborarse con la playlist o con el
-título y la duración. Un `MainMovie` remoto único tiene
-prioridad sobre las heurísticas locales, lo que resuelve la ofuscación
-«screen pass» sin adivinar. Las coincidencias ambiguas nunca renombran títulos
-ni cambian la detección de la película principal.
-Los Disc ID específicos del formato requieren estructuras `AACS`/`VIDEO_TS`
-legibles (carpeta, ISO o imagen montada); el respaldo directo de `/dev` no los
-expone.
+`--help` muestra las opciones de uso diario y `--help-all`, todas. Las
+opciones de la línea de comandos sustituyen a tus ajustes guardados solo en
+esa ejecución. La [referencia](docs/REFERENCE.md) (en inglés) tiene los
+detalles.
 
-`--discdb-contribute` escribe `manifest.json` y un registro de escaneo
-compatible (`scan_log.txt`) generado desde el propio análisis de MPLS/CLPI/IFO de
-mkvsmith. En el modo browser, abre o crea un borrador de contribución y sube
-`scan_log.txt` donde el sitio pida un registro de escaneo.
-El modo directo adjunta esos datos a un borrador existente con
-`--discdb-contribution-id` y una cookie autenticada de navegador proporcionada
-con `--discdb-cookie` o `THEDISCDB_COOKIE`; se detiene antes del etiquetado y
-la revisión, que siguen siendo pasos aprobados por personas. Trata la cookie
-como una contraseña. Usa `--discdb-disc-name` al añadir discos adicionales al
-mismo borrador.
-Los mapas de segmentos de Blu-ray provienen directamente de los IDs de clip de
-la playlist; los mapas de rangos de celdas DVD se dejan en blanco para
-identificación humana porque mkvsmith no expone IDs de celdas DVD.
+## Conviene saber
 
-## Notas
+La [referencia](docs/REFERENCE.md) (en inglés) trata todo esto con más
+detalle.
 
-- **Soporte de plataformas:** Linux es la plataforma principal. Las fuentes
-  de carpetas, ISO y archivos de vídeo están escritas para ser
-  multiplataforma, y las letras de unidad de Windows (`E:`) se reconocen como
-  fuentes de dispositivo, pero la entrada de dispositivos ópticos `/dev/...`
-  es exclusiva de Linux. El soporte de Windows y macOS no está probado.
-- Las imágenes ISO se leen con un lector UDF/ISO9660 integrado. Las imágenes
-  de discos grabables o regrabables (particiones UDF «sparable» o virtuales)
-  aún no son compatibles; copia esos discos a una carpeta primero.
-- Los discos comerciales cifrados necesitan `libdvdcss` (DVD) / `libaacs`
-  (Blu-ray) a nivel de sistema. Una imagen o carpeta de DVD que sigue cifrada
-  con CSS se señala al escanearla (mkvsmith no descifra), en vez de fallar al
-  multiplexar.
-- **Los DVD con protección anticopia** que esconden la película entre
-  decenas de cadenas señuelo (los de Disney, por ejemplo) listan solo las
-  versiones reales: los señuelos desordenados y las cadenas duplicadas se
-  ocultan (`--show-all` las muestra etiquetadas), las celdas rellenadas se
-  extraen sin su basura y los cortes alternativos se leen como `Edition 1`,
-  `Edition 2`, ...
-- Los archivos temporales usan `/var/tmp` (en disco) por defecto cuando está
-  disponible, y si no el directorio temporal del sistema. Si el directorio
-  temporal efectivo está respaldado en RAM (tmpfs — p. ej. un `--temp-dir /tmp`
-  explícito), `mkvsmith` lo detecta y vuelca de forma transparente las
-  extracciones demasiado grandes a disco. El presupuesto es `--ram-limit` del
-  menor entre la RAM total y el tamaño del tmpfs (un tmpfs suele estar limitado
-  a una fracción de la RAM), con comprobaciones adicionales para la RAM
-  disponible y el espacio libre del tmpfs, ya que `/tmp` es compartido.
-- **La salida MKV multi-edición** (`--multi-edition`, o "Combinar" en la lista
-  de títulos interactiva) combina versiones con ramificación continua de una película
-  (playlists de Blu-ray, o cadenas de DVD que comparten celdas) en un solo
-  archivo con
-  uniones sin pausas y capítulos exactos. Requiere un reproductor con
-  soporte de capítulos ordenados (p. ej. mpv, VLC) para cambiar de edición.
-- **Nombres de episodios.** Un disco no puede saber cuántos episodios
-  tenían los discos anteriores del set, así que los episodios se numeran por
-  disco y se nombran con la temporada y el número de disco cuando el nombre
-  del disco, de la carpeta o de la release los incluye
-  (`Serie - S01D02 - Episode 3`); si no, `<nombre del disco> - Episode N`.
-  Los números se rellenan con ceros hasta el más alto del disco
-  (`Episode 001` … `Episode 101`) para que se alineen y ordenen bien. Una
-  coincidencia de TheDiscDB (`--discdb`) aporta sus propios nombres.
-- **Episodios empaquetados.** Algunos Blu-ray de series (p. ej. Sgt. Frog)
-  reproducen todos los episodios del disco desde una sola playlist de 15-20
-  horas. `mkvsmith` los detecta a partir de las marcas de capítulo y lista la
-  playlist como de costumbre, con un aviso; por defecto no se divide nada.
-  Usa `--split-episodes`, o "Dividir" en la lista de títulos interactiva, para obtener un
-  título por episodio (más cualquier extra final), cada uno recortado a su
-  propio rango y con sus propios capítulos.
-  El vídeo de Blu-ray suele tener un fotograma IDR solo al inicio de cada clip,
-  así que los episodios cortados a mitad de clip empiezan en un fotograma de
-  punto de recuperación. Los decodificadores por software lo manejan, pero
-  algunos por hardware (p. ej. los de Android, que usa mpv-android) muestran la
-  pantalla en negro con audio. `mkvsmith` avisa cuando una extracción empieza
-  así; reproduce esos archivos con decodificación por software (corregirlo
-  requeriría recodificar).
-- **Vídeo entrelazado.** Las extracciones H.264 entrelazadas de principio a
-  fin (p. ej. extras 1080i, anime SD) se marcan como entrelazadas con su orden
-  de campos, decidido a partir de los propios fotogramas. El cine con telecine
-  suave, que la información de clip del Blu-ray también llama «entrelazado»,
-  se deja como progresivo para que los reproductores no desentrelacen
-  fotogramas de película reales. Requiere `mkvpropedit` (parte de MKVToolNix).
-- **Dolby Vision no ha sido probado a fondo.** HDR10 y HDR10+ no requieren
-  tratamiento especial (sus metadatos viajan dentro del bitstream de vídeo y
-  sobreviven intactos a un remux), y la señalización de color BT.2020/PQ para
-  Blu-rays HDR y DV se analiza desde la playlist y está cubierta por pruebas
-  unitarias. Sin embargo, no se ha dispuesto de ningún disco Dolby Vision
-  Profile 7 (UHD Blu-ray de doble capa) para hacer pruebas: un remux conserva
-  únicamente la capa base compatible con HDR10 (el DV completo requeriría
-  procesamiento a nivel de bitstream, algo que un remuxer deliberadamente no
-  hace), y no está verificado si la entrada de la capa de mejora del disco
-  puede aparecer como una pista de vídeo extra espuria.
+- **Dónde están los ajustes:** `~/.config/mkvsmith/config.json`. Define
+  `MKVSMITH_CONFIG` para usar otro archivo.
+- **Plataformas:** hecho y probado en Linux. Los discos desde ISOs y carpetas
+  deberían funcionar en cualquier sistema. Leer directamente de una unidad
+  funciona en Linux, y en Windows se reconocen las letras de unidad, pero
+  Windows y macOS están en gran parte sin probar.
+- **Imágenes de discos grabados** (regrabables o grabables) aún no se pueden
+  abrir. Copia antes el disco a una carpeta.
+- **Cambiar de edición** en un MKV multiedición necesita un reproductor
+  compatible con capítulos ordenados, como mpv o VLC.
+- **Los nombres de episodio** son como `Serie - S01D02 - Episode 3` cuando el
+  nombre del disco o de la carpeta lleva la temporada y el número de disco;
+  si no, `<nombre del disco> - Episode 3`. Un disco no puede saber cuántos
+  episodios había en los anteriores, así que la numeración empieza de nuevo
+  en cada disco.
+- **Blu-ray de series largas** que reproducen todo el disco como un único
+  vídeo de 15–20 horas (p. ej. Sgt. Frog) se pueden dividir en un archivo
+  por episodio. mkvsmith lo ofrece cuando detecta uno. Algunos reproductores
+  por hardware muestran la pantalla en negro en un episodio dividido que
+  empieza a mitad de un clip; mkvsmith avisa cuando pasa, y la reproducción
+  por software funciona bien.
+- **HDR:** HDR10 y HDR10+ pasan sin cambios. Dolby Vision no se ha probado;
+  solo se conserva la capa base HDR10.
+- **Los archivos temporales** van a `/var/tmp`. Las extracciones grandes
+  evitan llenar un disco en RAM. Cambia la carpeta con `temp.dir` si andas
+  justo de espacio.
 
-## Fixtures de disco
+## Contribuir
 
-Las pruebas de regresión de los analizadores (`tests/test_parser_fixtures.py`)
-procesan archivos `.mpls` / `.clpi` / `.ifo` reales capturados de discos
-concretos. Esos blobs **no se suben** al repositorio (para evitar redistribuir
-metadatos de disco), por lo que las pruebas se omiten en un clon nuevo.
-
-Para ejecutarlas localmente, captura los fixtures en `tests/fixtures/` tú mismo:
-
-```sh
-# Blu-ray, desde un .iso (los números de playlist/clip dependen del disco):
-uv run python scripts/iso_extract.py disc.iso tests/fixtures "BDMV/PLAYLIST/00800.mpls" "BDMV/CLIPINF/00875.clpi" "BDMV/META/DL/bdmt_eng.xml"
-
-# DVD, desde una carpeta VIDEO_TS extraída:
-cp VIDEO_TS/VIDEO_TS.IFO tests/fixtures/dvd_video_ts.ifo
-cp VIDEO_TS/VTS_01_0.IFO tests/fixtures/dvd_vts_01_0.ifo
-```
-
-`scripts/inspect_fixtures.py` vuelve a procesar lo que haya en
-`tests/fixtures/` e imprime los valores que esperan las pruebas, lo que resulta
-útil al cambiar a un disco nuevo.
+Los informes de errores y los pull requests son bienvenidos. Consulta
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (en inglés) para ejecutar las
+comprobaciones y las pruebas, incluidos los fixtures opcionales sacados de
+discos.
 
 ## Vibe check
 
-Este proyecto fue *vibe coded* — descrito en su mayor parte a un LLM e iterado,
-en lugar de tecleado línea a línea. El análisis de formatos de disco y las
-decisiones de comportamiento son deliberadas y están cubiertas por
-pruebas contra imágenes de disco reales; el resto puede haberse escrito con una
-confianza inmerecida.
+Este proyecto se hizo con *vibe coding*: casi todo se describió a un LLM y se
+fue iterando, en lugar de escribirlo línea a línea. El análisis de los
+formatos de disco y las decisiones de comportamiento son deliberados y están
+cubiertos por pruebas con imágenes de discos reales; el resto puede haberse
+escrito con una confianza injustificada.
 
 ## Licencia
 

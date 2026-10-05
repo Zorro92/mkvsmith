@@ -54,7 +54,7 @@ from vobsub import _extract_spu_palette, _scan_vob_pts, _scan_vob_subpictures
 
 # Disc-derived fixtures are not committed (to avoid redistributing disc
 # metadata). These tests skip on a fresh clone; capture the fixtures locally
-# to run them (see scripts/inspect_fixtures.py and the README "Disc fixtures"
+# to run them (see scripts/inspect_fixtures.py and docs/DEVELOPMENT.md "Disc fixtures"
 # section).
 _FIXTURES = (
     "00800.mpls",
@@ -66,7 +66,7 @@ _FIXTURES = (
 
 pytestmark = pytest.mark.skipif(
     not all((Path(__file__).parent / "fixtures" / f).exists() for f in _FIXTURES),
-    reason="disc fixtures not present; capture them locally (see README)",
+    reason="disc fixtures not present; capture them locally (see docs/DEVELOPMENT.md)",
 )
 
 

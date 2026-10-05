@@ -39,7 +39,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 def _needs(*names: str) -> pytest.MarkDecorator:
     return pytest.mark.skipif(
         not all((_FIXTURES / name).exists() for name in names),
-        reason="disc fixtures not present; capture them locally (see README)",
+        reason="disc fixtures not present; capture them locally (see docs/DEVELOPMENT.md)",
     )
 
 

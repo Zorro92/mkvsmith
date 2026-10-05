@@ -30,11 +30,13 @@ TREASURE_PLANET = "treasure_planet_dvd.isofix.gz"
 def _build_image(name: str, dest: Path) -> dict[str, Any]:
     """Rebuild a sparse image from fixture *name*; return its JSON header.
 
-    Disc-derived fixtures are not committed (see the README "Disc fixtures"
+    Disc-derived fixtures are not committed (see docs/DEVELOPMENT.md "Disc fixtures"
     section), so tests that need one skip on a fresh clone.
     """
     if not (FIXTURES_DIR / name).exists():
-        pytest.skip(f"disc fixture {name} not present; capture it locally (see README)")
+        pytest.skip(
+            f"disc fixture {name} not present; capture it locally (see docs/DEVELOPMENT.md)"
+        )
     with gzip.open(FIXTURES_DIR / name, "rb") as fixture:
         header: dict[str, Any] = json.loads(fixture.readline())
         with dest.open("wb") as out:

@@ -33,14 +33,14 @@ from models import Stream, StreamType, Title
 AUDIO_PIDS = {0x1100, 0x1101, 0x1103}
 
 # Disc-derived fixtures are not committed (see test_parser_fixtures.py and
-# the README "Disc fixtures" section); these tests skip on a fresh clone.
+# docs/DEVELOPMENT.md "Disc fixtures" section); these tests skip on a fresh clone.
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 needs_fixtures = pytest.mark.skipif(
     not all(
         (_FIXTURES_DIR / name).exists()
         for name in ("00800.mpls", "00875_tail_headers.m2ts", "00876_tail_headers.m2ts")
     ),
-    reason="disc fixtures not present; capture them locally (see README)",
+    reason="disc fixtures not present; capture them locally (see docs/DEVELOPMENT.md)",
 )
 
 

@@ -106,7 +106,9 @@ async def wait_until(
     waited = 0.0
     while not ready():
         if waited > timeout:
-            raise AssertionError("timed out waiting")
+            app = pilot.app
+            stack = " > ".join(type(screen).__name__ for screen in app.screen_stack)
+            raise AssertionError(f"timed out waiting (screens: {stack})")
         await pilot.pause(0.02)
         waited += 0.02
 
@@ -782,12 +784,18 @@ def titles_app(
 
 
 async def dialog(pilot: Pilot[None], app: tui.MkvsmithApp, kind: type) -> None:
-    """Wait until a *kind* dialog is open and built."""
+    """Wait until a *kind* dialog is open, built, and mounted.
+
+    Its lines exist before its on_mount runs, and on_mount sets the starting
+    highlight: a line chosen in between (on a slow machine) gets reset.
+    Every dialog focuses something on mount, so wait for that.
+    """
     await wait_until(
         pilot,
         lambda: (
             isinstance(app.screen, kind)
             and bool(app.screen.query("#choices, #actions"))
+            and app.screen.focused is not None
         ),
     )
 

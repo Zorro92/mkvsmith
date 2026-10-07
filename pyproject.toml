@@ -1,6 +1,6 @@
 [project]
 name = "mkvsmith"
-version = "0.22.6"
+version = "0.23.0"
 description = "Rip DVDs, Blu-rays and HD DVDs to MKV with mkvmerge (MKVToolNix)"
 readme = "README.md"
 requires-python = ">=3.12"

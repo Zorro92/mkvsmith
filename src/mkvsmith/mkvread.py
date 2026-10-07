@@ -24,7 +24,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 
-from h264 import ScanType, stream_scan_type
+from mkvsmith.h264 import ScanType, stream_scan_type
 
 _SEGMENT = 0x18538067
 _TRACKS = 0x1654AE6B

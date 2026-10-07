@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import vobsub
-from vobsub import (
+from mkvsmith import vobsub
+from mkvsmith.vobsub import (
     _filter_vobsub_streams,
     _vobsub_pts_offset,
     _write_vobsub_files,

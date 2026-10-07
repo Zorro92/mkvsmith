@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dvdifo import (
+from mkvsmith.dvdifo import (
     _EnumeratedPgc,
     _find_play_all_pgc,
     _has_distinct_pgc_cell_signatures,
@@ -83,7 +83,7 @@ def test_cell_signature_check_rejects_duplicate_verified_tables(
         return next(signatures)
 
     monkeypatch.setattr(
-        "dvdifo._pgc_cell_position_signature", pgc_cell_position_signature
+        "mkvsmith.dvdifo._pgc_cell_position_signature", pgc_cell_position_signature
     )
 
     assert _has_distinct_pgc_cell_signatures(b"ifo", pgcs) is False
@@ -95,7 +95,7 @@ def test_cluster_is_dwarfed_by_long_feature() -> None:
     a movie beside short extras dwarfs their cluster, while a play-all
     compilation — which also runs several times any single episode — is
     exempt because it plays the episodes' own cells."""
-    from dvdifo import _cluster_is_dwarfed
+    from mkvsmith.dvdifo import _cluster_is_dwarfed
 
     # Synthetic shape only: the cell-level compilation exemption needs real
     # IFO cell tables, covered by the Treasure Planet (dwarfed by an 869s

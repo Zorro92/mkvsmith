@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from models import Config, Stream, StreamType, Title
-from scan import _label_bluray_episodes, pick_main_feature
+from mkvsmith.models import Config, Stream, StreamType, Title
+from mkvsmith.scan import _label_bluray_episodes, pick_main_feature
 
 _CONFIG = Config(min_duration=60)
 
@@ -172,7 +172,7 @@ def _write_bdmt(meta: Path, name: str, filename: str = "bdmt_eng.xml") -> None:
 
 
 def test_placeholder_disc_names_are_ignored(tmp_path: Path) -> None:
-    from bluray import _parse_bdmv_disc_name
+    from mkvsmith.bluray import _parse_bdmv_disc_name
 
     bdmv = tmp_path / "BDMV"
     _write_bdmt(bdmv / "META" / "DL", "Blu-ray")

@@ -119,7 +119,7 @@ def disc_label(path: Path) -> str | None:
     Reads the disc's file system, so it can take a few seconds on a drive
     that is spinning up; call it off the UI thread.
     """
-    from isofs import IsoImage, IsoImageError
+    from mkvsmith.isofs import IsoImage, IsoImageError
 
     try:
         with IsoImage(path) as image:

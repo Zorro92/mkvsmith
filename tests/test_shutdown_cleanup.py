@@ -21,10 +21,10 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-import models
+from mkvsmith import models
 import pytest
 
-from models import (
+from mkvsmith.models import (
     RuntimeState,
     _SIGKILL,
     _kill_active_muxers,
@@ -162,7 +162,7 @@ _SIGINT_CHILD_SCRIPT = r"""
 import os, signal, subprocess, sys, time
 from pathlib import Path
 
-import models
+from mkvsmith import models
 
 g = subprocess.Popen(
     [sys.executable, "-c", "import time; time.sleep(30)"],
@@ -266,7 +266,7 @@ def test_sighup_left_ignored_under_nohup() -> None:
     # or a detached rip would die when its terminal closes.
     script = (
         "import signal; signal.signal(signal.SIGHUP, signal.SIG_IGN); "
-        "import models; "
+        "from mkvsmith import models; "
         "print(signal.getsignal(signal.SIGHUP) == signal.SIG_IGN)"
     )
     proc = subprocess.run(

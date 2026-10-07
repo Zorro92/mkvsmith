@@ -20,13 +20,10 @@ import argparse
 import gzip
 import hashlib
 import json
-import sys
 from pathlib import Path
 from typing import BinaryIO
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import isofs  # noqa: E402
+from mkvsmith import isofs
 
 _PREFIX_ONLY_ABOVE = 64 * 1024
 _PREFIX = 4096

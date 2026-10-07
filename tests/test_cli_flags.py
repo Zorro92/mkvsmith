@@ -15,11 +15,9 @@ from pathlib import Path
 
 import pytest
 
-import cli
-import mkv
-import settings
-from models import Config, RuntimeState, Stream, StreamType, Title, UserPrompts
-from settings import Settings
+from mkvsmith import cli, mkv, settings
+from mkvsmith.models import Config, RuntimeState, Stream, StreamType, Title, UserPrompts
+from mkvsmith.settings import Settings
 
 
 def _parse(*argv: str) -> argparse.Namespace:

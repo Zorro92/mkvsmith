@@ -41,27 +41,27 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, TypedDict, cast, final
 from collections.abc import Callable, Sequence
 
-from dvdifo import (
+from mkvsmith.dvdifo import (
     _AUDIO_CHANNEL_TITLES,
     _lookup_main_feature_range,
     _parse_vts_vobu_admap,
     _build_main_edition_vobu_ranges,
     _extract_dvd_ifo_palette,
 )
-from vobsub import (
+from mkvsmith.vobsub import (
     _dvd_main_content_range,
     _extract_concat_range,
     _extract_dvd_vobsubs,
     _scan_evo_video_stream_id,
     _vobsub_pts_offset,
 )
-from cc608 import (
+from mkvsmith.cc608 import (
     CC608_CODECS,
     extract_cc608_captions,
     write_cc608_ass,
     write_cc608_srt,
 )
-from models import (
+from mkvsmith.models import (
     Config,
     DiscMetadata,
     EditionAtom,
@@ -82,17 +82,17 @@ from models import (
     RUNTIME_STATE,
     UserPrompts,
 )
-from m2ts import (
+from mkvsmith.m2ts import (
     is_bluray_audio_pid,
     null_packets_from,
     plan_seamless_trim,
     scan_clip_tail,
 )
-from probe import _MKVMERGE_CODEC_MAP
-from i18n import tr
+from mkvsmith.probe import _MKVMERGE_CODEC_MAP
+from mkvsmith.i18n import tr
 
 if TYPE_CHECKING:
-    from tagger import ArtAttachment, MovieMetadata
+    from mkvsmith.tagger import ArtAttachment, MovieMetadata
 
 
 # =============================================================================
@@ -471,7 +471,7 @@ def _write_tags_xml_mkvmerge(
     ``<Targets>`` elements including ``EditionUID`` (verified against
     mkvmerge v96), so the edition linkage survives the mux.
     """
-    from tagger import _TAG_FIELDS
+    from mkvsmith.tagger import _TAG_FIELDS
 
     root = ET.Element("Tags")
 
@@ -696,7 +696,7 @@ def _prepare_mux_tags(
         )
         return None, []
 
-    from tagger import _prepare_tagging
+    from mkvsmith.tagger import _prepare_tagging
 
     try:
         metadata, art = _prepare_tagging(title.name, tag_opts, temp_files, prompts)
@@ -1330,7 +1330,7 @@ def _prepare_dvd_edition_inputs(
     real durations from their NAV packs: the timeline the muxed video
     actually has.
     """
-    from dvdifo import edition_union_vobu_layout
+    from mkvsmith.dvdifo import edition_union_vobu_layout
 
     layout = (
         edition_union_vobu_layout(title.dvd_edition_cells, title.dvd_ifo_data, inputs)
@@ -1495,7 +1495,7 @@ def _prepare_seamless_append(
         )
         return None
 
-    from disc_reader import temp_base_for_title
+    from mkvsmith.disc_reader import temp_base_for_title
 
     copy_bytes = sum(
         path.stat().st_size
@@ -1596,7 +1596,7 @@ def _warn_if_starts_without_idr(out_file: Path) -> None:
     won't start from a recovery-point I-frame. Fixing it needs re-encoding,
     so this only tells the user what to expect.
     """
-    from mkvread import first_video_frame_is_idr
+    from mkvsmith.mkvread import first_video_frame_is_idr
 
     if first_video_frame_is_idr(out_file) is False:
         log_warn(
@@ -1623,8 +1623,8 @@ def _apply_interlace_flags(out_file: Path) -> bool:
     progressive, pulldown and mixed video is left alone. Returns True when
     the file was updated. Never raises: metadata must not fail a rip.
     """
-    from h264 import ScanType
-    from mkvread import video_scan_type
+    from mkvsmith.h264 import ScanType
+    from mkvsmith.mkvread import video_scan_type
 
     scan = video_scan_type(out_file)
     if scan is None or scan == ScanType.PROGRESSIVE:
@@ -2433,7 +2433,7 @@ class MKVCreator:
         return select_streams(title, force, self.config)
 
     def _prepare_inputs(self, title: Title, streams: list[Stream]) -> _MuxInputPlan:
-        from disc_reader import _extract_full_for_muxing, temp_base_for_title
+        from mkvsmith.disc_reader import _extract_full_for_muxing, temp_base_for_title
 
         is_iso = bool(
             title.iso_internal_paths and title.source_file.suffix.lower() == ".iso"
@@ -2643,7 +2643,7 @@ class MKVCreator:
         metadata: MovieMetadata | None,
         art_attachments: list[ArtAttachment],
     ) -> None:
-        from tagger import _write_tag_xml
+        from mkvsmith.tagger import _write_tag_xml
 
         self._log_created(out_file)
         _warn_if_starts_without_idr(out_file)

@@ -1,7 +1,7 @@
 """Unit tests for mux-time colour resolution (mkv._resolve_video_color)."""
 
-from models import Stream
-from mkv import (
+from mkvsmith.models import Stream
+from mkvsmith.mkv import (
     _COLOR_CICP,
     _COLOR_RANGE,
     _chroma_siting_for_codec,

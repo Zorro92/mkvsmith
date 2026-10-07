@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from models import SeriesInfo
+from mkvsmith.models import SeriesInfo
 
 # "S01", "S1", "Season 1" (optionally glued to a disc token: "S01D02").
 _SEASON = re.compile(r"(?<![a-z0-9])s(?:eason)?\s*0*(\d{1,2})(?=d\d|[^a-z0-9]|$)")

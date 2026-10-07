@@ -8,12 +8,12 @@ from collections.abc import Callable
 
 import pytest
 
-import cli
-import disc_reader
-import dvdifo
-import models
-import scan
-from models import Config, DiscMetadata, RuntimeState
+from mkvsmith import cli
+from mkvsmith import disc_reader
+from mkvsmith import dvdifo
+from mkvsmith import models
+from mkvsmith import scan
+from mkvsmith.models import Config, DiscMetadata, RuntimeState
 
 
 def test_config_instances_do_not_share_defaults() -> None:
@@ -163,12 +163,12 @@ def test_configure_runtime_uses_injected_state(
     def fake_init_ram_budget(config: models.Config) -> None:
         budgets.append(config)
 
-    monkeypatch.setattr("disc_reader.init_ram_budget", fake_init_ram_budget)
+    monkeypatch.setattr("mkvsmith.disc_reader.init_ram_budget", fake_init_ram_budget)
 
     def only_tmp_path(_config: models.Config | None = None) -> list[Path]:
         return [tmp_path]
 
-    monkeypatch.setattr("disc_reader.temp_base_candidates", only_tmp_path)
+    monkeypatch.setattr("mkvsmith.disc_reader.temp_base_candidates", only_tmp_path)
     old_tempdir = __import__("tempfile").tempdir
 
     try:

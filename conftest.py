@@ -1,9 +1,9 @@
 """Shared pytest fixtures and helpers for mkvsmith parser tests.
 
-Run pytest from the ``mkvsmith/`` directory (``uv run pytest``). The
-``pythonpath = ["."]`` setting in ``pyproject.toml`` puts the project root on
-``sys.path`` so sibling imports (``main``, ``dvdifo``, ``models``, ``i18n``)
-resolve the same way they do when ``main.py`` runs as a script.
+Run pytest from the repository root (``uv run pytest``). The
+``pythonpath = [".", "src"]`` setting in ``pyproject.toml`` makes this module
+(``from conftest import load_fixture``) and the ``mkvsmith`` package in
+``src/`` importable even when the project isn't installed.
 """
 
 from __future__ import annotations

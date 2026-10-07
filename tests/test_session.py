@@ -9,11 +9,9 @@ from typing import NoReturn
 
 import pytest
 
-import models
-import session
-import tagger
-from mkv import MKVCreator
-from models import (
+from mkvsmith import models, session, tagger
+from mkvsmith.mkv import MKVCreator
+from mkvsmith.models import (
     Config,
     DiscMetadata,
     RipError,
@@ -23,7 +21,7 @@ from models import (
     Title,
     UserPrompts,
 )
-from session import (
+from mkvsmith.session import (
     RipCallbacks,
     RipJob,
     RipOutcome,
@@ -342,7 +340,7 @@ def scripted(*answers: str) -> models.UserPrompts:
 
 
 def captioned_title() -> Title:
-    from cc608 import CC608_CODEC_SRT
+    from mkvsmith.cc608 import CC608_CODEC_SRT
 
     title = Title(
         index=0, source_file=Path("VTS_01_1.VOB"), name="x", duration_seconds=1400.0
@@ -376,7 +374,7 @@ def test_closed_captions_not_asked_without_captions_or_ask() -> None:
 
 
 def packed_title(index: int = 0) -> Title:
-    from packed_episodes import PackedSegment
+    from mkvsmith.packed_episodes import PackedSegment
 
     title = make_title(index, 2800.0)
     title.clip_durations = [2800.0]
@@ -507,7 +505,7 @@ def test_track_plan_tells_apart_streams_sharing_an_index() -> None:
 def test_explicit_track_selection_keeps_streams_sharing_an_index() -> None:
     # Regression: "-s a:0,a:1,s:0" on a DVD kept only a:0, because the
     # selection was deduplicated on Stream.index (0 for every DVD stream).
-    from mkv import select_streams
+    from mkvsmith.mkv import select_streams
 
     title = make_title(0)
     for stream in title.streams:

@@ -6,9 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import cli
-import dvdifo
-from models import Stream, StreamType, Title
+from mkvsmith import cli, dvdifo
+from mkvsmith.models import Stream, StreamType, Title
 
 
 def make_detail_title(tmp_path: Path) -> Title:

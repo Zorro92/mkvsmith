@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import mkv
-from h264 import FrameScan, ScanType, classify_scan, stream_scan_type
+from mkvsmith import mkv
+from mkvsmith.h264 import FrameScan, ScanType, classify_scan, stream_scan_type
 
 
 class _BitWriter:
@@ -206,7 +206,7 @@ def test_interlace_flags_written_only_for_interlaced_video(
     def found(_name: str) -> str:
         return "/usr/bin/mkvpropedit"
 
-    monkeypatch.setattr("mkvread.video_scan_type", fake_scan)
+    monkeypatch.setattr("mkvsmith.mkvread.video_scan_type", fake_scan)
     monkeypatch.setattr(mkv.shutil, "which", found)
     monkeypatch.setattr(mkv, "_run_mkvtoolnix", fake_run)
 
@@ -239,7 +239,7 @@ def test_interlace_flags_skipped_without_mkvpropedit(
     def missing(_name: str) -> None:
         return None
 
-    monkeypatch.setattr("mkvread.video_scan_type", fake_scan)
+    monkeypatch.setattr("mkvsmith.mkvread.video_scan_type", fake_scan)
     monkeypatch.setattr(mkv.shutil, "which", missing)
 
     assert mkv._apply_interlace_flags(Path("out.mkv")) is False

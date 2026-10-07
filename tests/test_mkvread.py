@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-import mkv
-from mkvread import first_video_frame_is_idr
+from mkvsmith import mkv
+from mkvsmith.mkvread import first_video_frame_is_idr
 
 _UNKNOWN = b"\x01\xff\xff\xff\xff\xff\xff\xff"
 
@@ -120,7 +120,7 @@ def test_warning_only_for_a_non_idr_start(
     def fake_check(_path: Path) -> bool | None:
         return is_idr
 
-    monkeypatch.setattr("mkvread.first_video_frame_is_idr", fake_check)
+    monkeypatch.setattr("mkvsmith.mkvread.first_video_frame_is_idr", fake_check)
 
     mkv._warn_if_starts_without_idr(Path("Episode 6.mkv"))
 

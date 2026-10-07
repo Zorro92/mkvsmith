@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import disc_reader
-import dvdbuild
+from mkvsmith import disc_reader
+from mkvsmith import dvdbuild
 import pytest
-from bluray import MplsStreamInfo, _parse_mpls
-import scan
-from dvdifo import VmgInfo
-from models import Config, RuntimeState, Stream, StreamType, Title
-from scan import Scanner, _build_bluray_title_from_mpls
+from mkvsmith.bluray import MplsStreamInfo, _parse_mpls
+from mkvsmith import scan
+from mkvsmith.dvdifo import VmgInfo
+from mkvsmith.models import Config, RuntimeState, Stream, StreamType, Title
+from mkvsmith.scan import Scanner, _build_bluray_title_from_mpls
 
 
 def test_dvd_iso_vob_maps_first_file_and_sorts_parts() -> None:

@@ -20,9 +20,8 @@ from pathlib import Path
 
 import pytest
 
-import bluray
-import mkv
-from bluray import (
+from mkvsmith import bluray, mkv
+from mkvsmith.bluray import (
     MplsStreamInfo,
     _merge_clpi_into_mpls,
     _parse_mpls,
@@ -30,8 +29,8 @@ from bluray import (
     _parse_stn_table_streams,
     _parse_subpath_entries,
 )
-from cli import _non_video_stream_line
-from models import Config, Stream, StreamType, Title
+from mkvsmith.cli import _non_video_stream_line
+from mkvsmith.models import Config, Stream, StreamType, Title
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 

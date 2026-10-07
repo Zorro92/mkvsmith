@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import drives
-import isofs
+from mkvsmith import drives, isofs
 
 
 def _fake_drive(sysfs: Path, name: str, vendor: str, model: str) -> None:

@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, TypedDict, cast, final
 
-from models import (
+from mkvsmith.models import (
     RipError,
     TagOptions,
     RUNTIME_STATE,
@@ -33,7 +33,7 @@ from models import (
     log_info,
     log_warn,
 )
-from i18n import tr
+from mkvsmith.i18n import tr
 
 # =============================================================================
 # Constants

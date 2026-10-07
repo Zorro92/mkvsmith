@@ -1,14 +1,51 @@
 [project]
 name = "mkvsmith"
 version = "0.22.6"
-description = "DVD/Blu-ray ripper using mkvmerge (MKVToolNix)"
+description = "Rip DVDs, Blu-rays and HD DVDs to MKV with mkvmerge (MKVToolNix)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+keywords = ["dvd", "blu-ray", "hd-dvd", "mkv", "mkvmerge", "ripper"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video :: Conversion",
+]
 dependencies = [
     "rich>=15.0.0",
     "textual>=8.2.8",
     "xdg-base-dirs>=6.0.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/Zorro92/mkvsmith"
+Issues = "https://github.com/Zorro92/mkvsmith/issues"
+
+[project.scripts]
+mkvsmith = "mkvsmith.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+# An explicit list, so local files that are never committed (editor and
+# agent settings) can't slip into a source release.
+include = [
+    "/src",
+    "/tests",
+    "/docs",
+    "/conftest.py",
+    "/main.py",
+    "/README.md",
+    "/README.es.md",
+    "/LICENSE",
 ]
 
 [dependency-groups]
@@ -26,5 +63,5 @@ dev = [
 target-version = "py312"
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "src"]
 testpaths = ["tests"]

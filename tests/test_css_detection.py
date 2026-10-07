@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-import mkv
-from disc_reader import css_scrambled_packets, dvd_title_is_css_encrypted
-from models import DiscMetadata, RipError, RuntimeState, Title
+from mkvsmith import mkv
+from mkvsmith.disc_reader import css_scrambled_packets, dvd_title_is_css_encrypted
+from mkvsmith.models import DiscMetadata, RipError, RuntimeState, Title
 
 
 def _pack(stream_id: int, scrambled: bool, *, system_header: bool = False) -> bytes:

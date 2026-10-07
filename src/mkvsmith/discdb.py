@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, TypedDict, cast
 from collections.abc import Iterable
 
-from i18n import tr
-from models import (
+from mkvsmith.i18n import tr
+from mkvsmith.models import (
     DiscDbOptions,
     DiscMetadata,
     MKVSMITH_VERSION,
@@ -584,7 +584,7 @@ def _folder_hash_files(source: Path) -> list[FileHashInfo]:
 
 
 def _iso_hash_files(source: Path) -> list[FileHashInfo]:
-    from disc_reader import _list_iso_file_metadata
+    from mkvsmith.disc_reader import _list_iso_file_metadata
 
     entries = _list_iso_file_metadata(source)
     selected: list[tuple[str, int, datetime | None]] = []
@@ -629,7 +629,7 @@ def _folder_fingerprint_files(source: Path) -> list[DiscFingerprintFileInfo]:
 
 
 def _iso_fingerprint_files(source: Path) -> list[DiscFingerprintFileInfo]:
-    from disc_reader import _list_iso_files
+    from mkvsmith.disc_reader import _list_iso_files
 
     paths, sizes = _list_iso_files(source)
     return [

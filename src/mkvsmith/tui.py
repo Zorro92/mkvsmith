@@ -34,18 +34,30 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Header, Input, Label, OptionList, RichLog, Static
 from textual.widgets.option_list import Option, OptionDoesNotExist
 
-from cli import (
+from mkvsmith.cli import (
     _list_name_base,
     _non_video_stream_line,
     _title_list_name,
     _title_source_id,
     _video_stream_line,
 )
-from disc_reader import SourceType, detect_source_type
-from drives import OpticalDrive, can_eject, disc_label, eject, list_optical_drives
-from i18n import available_languages, get_language, language_name, set_language, tr
-from mkv import MKVCreator
-from models import (
+from mkvsmith.disc_reader import SourceType, detect_source_type
+from mkvsmith.drives import (
+    OpticalDrive,
+    can_eject,
+    disc_label,
+    eject,
+    list_optical_drives,
+)
+from mkvsmith.i18n import (
+    available_languages,
+    get_language,
+    language_name,
+    set_language,
+    tr,
+)
+from mkvsmith.mkv import MKVCreator
+from mkvsmith.models import (
     MKVSMITH_VERSION,
     DiscMetadata,
     RipError,
@@ -56,16 +68,16 @@ from models import (
     UserPrompts,
     log_error,
 )
-from scan import _detect_edition_groups, _get_notable_titles, pick_main_feature
-from session import (
+from mkvsmith.scan import _detect_edition_groups, _get_notable_titles, pick_main_feature
+from mkvsmith.session import (
     RipBatchResult,
     RipCallbacks,
     RipJob,
     RipOutcome,
     TaggingChoice,
-    ask_list_encrypted,
     ask_closed_captions,
     ask_edition_names,
+    ask_list_encrypted,
     ask_output_dir,
     main_feature_titles,
     packed_split_offers,
@@ -75,12 +87,12 @@ from session import (
     split_packed_episodes,
     track_plan,
 )
-from settings import (
+from mkvsmith.settings import (
     CHOICE_LABELS,
     SETTING_SPECS,
     Settings,
-    SettingSpec,
     SettingsFileUnreadable,
+    SettingSpec,
     complete_settings,
     format_value,
     load_settings,
@@ -1156,7 +1168,7 @@ class TitlesScreen(_Page):
                     id=f"editions-{n}",
                 )
             )
-        from packed_episodes import packed_episode_count
+        from mkvsmith.packed_episodes import packed_episode_count
 
         for title in self.titles:
             if title.packed_segments:

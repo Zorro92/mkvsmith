@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from episode_naming import episode_title, parse_series_info, play_all_title
-from models import (
+from mkvsmith.episode_naming import episode_title, parse_series_info, play_all_title
+from mkvsmith.models import (
     Config,
     PackedSegment,
     RuntimeState,
@@ -16,7 +16,7 @@ from models import (
     StreamType,
     Title,
 )
-from packed_episodes import split_packed_title
+from mkvsmith.packed_episodes import split_packed_title
 
 
 @pytest.mark.parametrize(
@@ -100,7 +100,7 @@ def _title(index: int, *, episode: int | None = None, play_all: bool = False) ->
 
 
 def test_scanner_names_episodes_from_disc_and_folder(tmp_path: Path) -> None:
-    from scan import Scanner
+    from mkvsmith.scan import Scanner
 
     source = tmp_path / "Earth.from.Space.S01.1080i" / "EARTH_FROM_SPACE_D1"
     source.mkdir(parents=True)
@@ -126,7 +126,7 @@ def test_scanner_names_episodes_from_disc_and_folder(tmp_path: Path) -> None:
 def test_scanner_keeps_plain_episode_names_without_season_or_disc(
     tmp_path: Path,
 ) -> None:
-    from scan import Scanner
+    from mkvsmith.scan import Scanner
 
     source = tmp_path / "Peanuts Collection"
     source.mkdir()
@@ -165,7 +165,7 @@ def test_split_packed_episodes_use_series_info() -> None:
 
 
 def test_episode_numbers_are_padded_to_the_highest() -> None:
-    from episode_naming import episode_number_width
+    from mkvsmith.episode_naming import episode_number_width
 
     assert [episode_number_width(n) for n in (0, 9, 10, 99, 101)] == [1, 1, 2, 2, 3]
     info = SeriesInfo("Show", 1, 1)
@@ -188,7 +188,7 @@ def test_packed_split_pads_episode_numbers() -> None:
 
 
 def test_scanner_pads_to_the_disc_highest_episode(tmp_path: Path) -> None:
-    from scan import Scanner
+    from mkvsmith.scan import Scanner
 
     source = tmp_path / "Show.S01"
     source.mkdir()
@@ -206,7 +206,7 @@ def test_scanner_pads_to_the_disc_highest_episode(tmp_path: Path) -> None:
 
 
 def test_series_disc_titles_share_the_episode_base_name(tmp_path: Path) -> None:
-    from scan import Scanner
+    from mkvsmith.scan import Scanner
 
     source = tmp_path / "SGT_FROG_S1_D1"
     source.mkdir()
@@ -226,7 +226,7 @@ def test_series_disc_titles_share_the_episode_base_name(tmp_path: Path) -> None:
 
 
 def test_movie_disc_titles_keep_the_disc_name(tmp_path: Path) -> None:
-    from scan import Scanner
+    from mkvsmith.scan import Scanner
 
     source = tmp_path / "LOTR_D1"
     source.mkdir()
@@ -240,8 +240,8 @@ def test_movie_disc_titles_keep_the_disc_name(tmp_path: Path) -> None:
 
 
 def test_title_list_hides_the_series_base(capsys: pytest.CaptureFixture[str]) -> None:
-    import cli
-    from models import DiscMetadata
+    from mkvsmith import cli
+    from mkvsmith.models import DiscMetadata
 
     metadata = DiscMetadata(
         name="Sgt. Frog Season 1 Disc 1", series_info=SeriesInfo("Sgt. Frog", 1, 1)
@@ -265,8 +265,8 @@ def test_title_list_hides_the_series_base(capsys: pytest.CaptureFixture[str]) ->
 
 
 def test_title_list_tells_editions_apart(capsys: pytest.CaptureFixture[str]) -> None:
-    import cli
-    from models import DiscMetadata
+    from mkvsmith import cli
+    from mkvsmith.models import DiscMetadata
 
     metadata = DiscMetadata(name="Beauty and the Beast Se 1991")
     titles = [_title(i) for i in range(3)]
@@ -284,7 +284,7 @@ def test_title_list_tells_editions_apart(capsys: pytest.CaptureFixture[str]) -> 
 
 
 def test_main_feature_keeps_its_edition_label(tmp_path: Path) -> None:
-    from scan import Scanner
+    from mkvsmith.scan import Scanner
 
     source = tmp_path / "BEAUTY"
     source.mkdir()
@@ -305,7 +305,7 @@ def test_main_feature_keeps_its_edition_label(tmp_path: Path) -> None:
 
 
 def test_source_column_shows_playlist_or_dvd_chain() -> None:
-    import cli
+    from mkvsmith import cli
 
     bluray, dvd, unknown = _title(0), _title(1), _title(2)
     bluray.playlist_name = "00800"

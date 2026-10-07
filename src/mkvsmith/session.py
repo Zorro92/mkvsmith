@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from i18n import tr
-from mkv import select_streams
-from models import (
+from mkvsmith.i18n import tr
+from mkvsmith.mkv import select_streams
+from mkvsmith.models import (
     Config,
     DiscMetadata,
     RipError,
@@ -45,8 +45,8 @@ def scan_source(
     Raises ``FileNotFoundError`` for a missing source; an empty title list
     means the source holds nothing to rip.
     """
-    from disc_reader import _is_device_path
-    from scan import Scanner
+    from mkvsmith.disc_reader import _is_device_path
+    from mkvsmith.scan import Scanner
 
     if not source.exists() and not _is_device_path(source):
         raise FileNotFoundError(tr("Not found: {path}", path=source))
@@ -61,7 +61,7 @@ def apply_discdb_lookup(
     titles: list[Title], disc_metadata: DiscMetadata | None, state: RuntimeState
 ) -> None:
     """Name *titles* from a TheDiscDB match; failures only log a warning."""
-    from discdb import DiscDbClient, DiscDbError, apply_discdb_match
+    from mkvsmith.discdb import DiscDbClient, DiscDbError, apply_discdb_match
 
     if disc_metadata is None:
         return
@@ -136,7 +136,7 @@ def ask_closed_captions(
     titles: list[Title], config: Config, prompts: UserPrompts
 ) -> None:
     """Closed captions saved as "ask": keep this disc's captions, or not?"""
-    from dvdbuild import drop_closed_caption_streams, has_closed_captions
+    from mkvsmith.dvdbuild import drop_closed_caption_streams, has_closed_captions
 
     if not config.ask_closed_captions or not has_closed_captions(titles):
         return
@@ -148,7 +148,7 @@ def ask_closed_captions(
 
 def packed_split_offers(titles: Sequence[Title], prompts: UserPrompts) -> list[int]:
     """Ask, per packed playlist, whether to split it; the indices to split."""
-    from packed_episodes import packed_episode_count
+    from mkvsmith.packed_episodes import packed_episode_count
 
     return [
         title.index
@@ -176,7 +176,7 @@ def split_packed_episodes(
     *titles* is changed in place. Raises ``ValueError`` (translated) when
     the disc has no packed playlist or an index isn't one.
     """
-    from packed_episodes import expand_packed_titles
+    from mkvsmith.packed_episodes import expand_packed_titles
 
     packed = [t.index for t in titles if t.packed_segments]
     if not packed:
@@ -221,7 +221,7 @@ class TaggingChoice:
 
     @classmethod
     def from_options(cls, options: TagOptions) -> TaggingChoice:
-        from tagger import _resolve_tmdb_key
+        from mkvsmith.tagger import _resolve_tmdb_key
 
         return cls(
             options=options,
@@ -232,7 +232,7 @@ class TaggingChoice:
 
     def prepare(self, prompts: UserPrompts) -> None:
         """Decide whether to tag the next rip and which artwork to attach."""
-        from tagger import _prompt_art_choice, _tag_confirm
+        from mkvsmith.tagger import _prompt_art_choice, _tag_confirm
 
         if self.always:
             want = True
@@ -265,7 +265,7 @@ def main_feature_titles(titles: Sequence[Title], config: Config) -> list[Title]:
     A series disc has no single main feature, so it means every episode.
     Empty when there is nothing to rip.
     """
-    from scan import pick_main_feature
+    from mkvsmith.scan import pick_main_feature
 
     episodes = episode_titles(titles)
     if episodes:
@@ -311,7 +311,7 @@ def prepare_multi_edition(
 
     Raises ValueError (with a translated message) for an unusable selection.
     """
-    from scan import build_multi_edition_title
+    from mkvsmith.scan import build_multi_edition_title
 
     if len(indices) < 2:
         raise ValueError(tr("Multi-edition needs at least two titles"))

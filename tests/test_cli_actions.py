@@ -7,10 +7,10 @@ from typing import NoReturn
 
 import pytest
 
-import cli
-import models
-from models import Stream, StreamType, Title
-from models import DiscMetadata
+from mkvsmith import cli
+from mkvsmith import models
+from mkvsmith.models import Stream, StreamType, Title
+from mkvsmith.models import DiscMetadata
 
 
 def make_title(index: int) -> Title:
@@ -212,7 +212,7 @@ def test_interactive_mode_needs_a_terminal(monkeypatch: pytest.MonkeyPatch) -> N
 def test_interactive_mode_runs_the_tui_with_the_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import tui
+    from mkvsmith import tui
 
     state = models.RuntimeState()
     runs: list[tuple[object, ...]] = []

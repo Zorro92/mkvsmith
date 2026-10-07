@@ -20,9 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dvdifo import _concat_file_layout, _LANG_MAP_3_TO_2
-
-from models import (
+from mkvsmith.dvdifo import _LANG_MAP_3_TO_2, _concat_file_layout
+from mkvsmith.models import (
     _HAS_MKVMERGE,
     get_language_name,
     log_debug,

@@ -15,11 +15,11 @@ from __future__ import annotations
 from pathlib import Path
 import struct
 
-import dvdifo
+from mkvsmith import dvdifo
 import pytest
 
-from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
-from dvdifo import (
+from mkvsmith.bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
+from mkvsmith.dvdifo import (
     _parse_vts_ifo_languages,
     _parse_pgc_stream_languages,
     _parse_vts_pgc_info,

@@ -12,10 +12,8 @@ from pathlib import Path
 
 import pytest
 
-import cli
-import mkv
-import models
-from models import (
+from mkvsmith import cli, mkv, models
+from mkvsmith.models import (
     Config,
     RipError,
     RuntimeState,

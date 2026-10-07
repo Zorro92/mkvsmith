@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hddvd import (
+from mkvsmith.hddvd import (
     describe_language,
     find_playlist,
     parse_discid,

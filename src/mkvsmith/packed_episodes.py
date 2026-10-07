@@ -34,8 +34,8 @@ import statistics
 from collections.abc import Collection, Sequence
 from dataclasses import replace
 
-from episode_naming import episode_number_width, episode_title, series_name
-from models import PackedSegment, SeriesInfo, Title
+from mkvsmith.episode_naming import episode_number_width, episode_title, series_name
+from mkvsmith.models import PackedSegment, SeriesInfo, Title
 
 _SHORT = 180.0  # seconds; a segment shorter than this can be an anchor
 _BUCKET = 5.0  # short segments within this many seconds are the same kind

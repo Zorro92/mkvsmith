@@ -36,9 +36,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, final
 
 if TYPE_CHECKING:
-    from disc_reader import SourceType
+    from mkvsmith.disc_reader import SourceType
 
-from bluray import (
+from mkvsmith.bluray import (
     MplsStreamInfo,
     _apply_stn_languages,
     _parse_bdmv_catalog_number,
@@ -48,7 +48,7 @@ from bluray import (
     has_seamless_connections,
 )
 
-from dvdifo import (
+from mkvsmith.dvdifo import (
     _EPISODE_DURATION_TOL,
     _EPISODE_DWARF_RATIO,
     DvdIfoError,
@@ -59,7 +59,7 @@ from dvdifo import (
     _compute_libdvdread_disc_id,
     _compute_libdvdread_disc_id_from_paths,
 )
-from dvdbuild import (
+from mkvsmith.dvdbuild import (
     _append_dvd_alternate_editions,
     _append_dvd_episode_titles,
     _apply_dvd_ifo_languages,
@@ -70,16 +70,16 @@ from dvdbuild import (
     _plan_dvd_pgc_titles,
     _scan_dvd_source,
 )
-from hddvd import (
+from mkvsmith.hddvd import (
     HddvdTitle,
     find_playlist,
     parse_discid,
     parse_xpl,
 )
-from i18n import tr
-from matrix256 import fingerprint as matrix256_fingerprint
-from matrix256 import fingerprint_entries as matrix256_fingerprint_entries
-from models import (
+from mkvsmith.i18n import tr
+from mkvsmith.matrix256 import fingerprint as matrix256_fingerprint
+from mkvsmith.matrix256 import fingerprint_entries as matrix256_fingerprint_entries
+from mkvsmith.models import (
     Config,
     RuntimeState,
     RUNTIME_STATE,
@@ -751,7 +751,7 @@ def _build_combined_dvd_edition_title(
     cells' own VOBUs (``dvd_edition_cells``) and retimes the edition atoms
     onto the cells' real durations from their NAV packs.
     """
-    from dvdifo import _EditionCell, pgc_edition_cells
+    from mkvsmith.dvdifo import _EditionCell, pgc_edition_cells
 
     first = edition_titles[0]
     cells_by_key: dict[str, _EditionCell] = {}
@@ -1494,7 +1494,7 @@ class Scanner:
         self.disc_name: str | None = None
 
     def _scan_source_type(self, source_type: SourceType) -> None:
-        from disc_reader import SourceType
+        from mkvsmith.disc_reader import SourceType
 
         if source_type in (SourceType.DVD, SourceType.DVD_RAW):
             self.titles, self.disc_metadata = _scan_dvd_source(self.source, self.config)
@@ -1531,7 +1531,7 @@ class Scanner:
         self, source_type: SourceType, root: Path | None = None
     ) -> None:
         """Add format-specific identifiers used by TheDiscDB matching."""
-        from disc_reader import SourceType
+        from mkvsmith.disc_reader import SourceType
 
         source = root or self.source
         if source_type == SourceType.DVD:
@@ -1553,7 +1553,7 @@ class Scanner:
 
     def _add_discdb_disc_hash(self, root: Path) -> None:
         """Add TheDiscDB's legacy size-based Disc Hash for a filesystem source."""
-        from discdb import DiscDbError, calculate_disc_hash, collect_hash_files
+        from mkvsmith.discdb import DiscDbError, calculate_disc_hash, collect_hash_files
 
         try:
             files = collect_hash_files(root)
@@ -1578,7 +1578,7 @@ class Scanner:
         log_debug(f"Matrix256 fingerprint: {fingerprint}")
 
     def scan(self) -> list[Title]:
-        from disc_reader import SourceType, detect_source_type
+        from mkvsmith.disc_reader import SourceType, detect_source_type
 
         source_type = detect_source_type(self.source)
         log_info(tr("Source type: {type}", type=source_type.value))
@@ -1604,7 +1604,7 @@ class Scanner:
         _label_bluray_episodes(self.titles, self.config)
         _sort_and_reindex_titles(self.titles)
         self._settle_dvd_editions()
-        from packed_episodes import annotate_packed_titles
+        from mkvsmith.packed_episodes import annotate_packed_titles
 
         # Packed playlists make a series disc, which naming needs to know.
         annotate_packed_titles(self.titles)
@@ -1619,7 +1619,7 @@ class Scanner:
 
     def _check_css_encryption(self) -> None:
         """Flag (and warn about) a DVD whose video is still CSS-encrypted."""
-        from disc_reader import dvd_title_is_css_encrypted
+        from mkvsmith.disc_reader import dvd_title_is_css_encrypted
 
         dvd_titles = [t for t in self.titles if t.dvd_ifo_data is not None]
         if not dvd_titles:
@@ -1703,7 +1703,7 @@ class Scanner:
 
         Runs after naming so the episode titles inherit the disc name.
         """
-        from packed_episodes import expand_packed_titles, packed_episode_count
+        from mkvsmith.packed_episodes import expand_packed_titles, packed_episode_count
 
         packed = [t for t in self.titles if t.packed_segments]
         if not packed:
@@ -1746,7 +1746,7 @@ class Scanner:
                 return
             self.disc_name = disc
             self.disc_metadata = replace(self.disc_metadata, name=disc)
-        from episode_naming import (
+        from mkvsmith.episode_naming import (
             episode_number_width,
             episode_title,
             parse_series_info,
@@ -1799,7 +1799,7 @@ class Scanner:
                 t.name = base
 
     def _scan_iso(self) -> None:
-        from disc_reader import _probe_has_disc_image_fs
+        from mkvsmith.disc_reader import _probe_has_disc_image_fs
 
         if not _probe_has_disc_image_fs(self.source):
             log_error(
@@ -1812,7 +1812,7 @@ class Scanner:
         self._scan_iso_image()
 
     def _scan_iso_image(self) -> None:
-        from disc_reader import _is_iso_media_path, _list_iso_files
+        from mkvsmith.disc_reader import _is_iso_media_path, _list_iso_files
 
         log_info(tr("Scanning ISO..."))
         paths, sizes = _list_iso_files(self.source)
@@ -1872,8 +1872,8 @@ class Scanner:
         self, media_paths: list[str], sizes: dict[str, int], xpl_files: list[str]
     ) -> None:
         """Scan an HD DVD ISO via its XPL playlist."""
-        from disc_reader import _extract_iso_prefix, _extract_iso_files
-        from hddvd import parse_xpl
+        from mkvsmith.disc_reader import _extract_iso_prefix, _extract_iso_files
+        from mkvsmith.hddvd import parse_xpl
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
         self.cleanup.register_temp_dir(tmp_dir)
@@ -1942,7 +1942,7 @@ class Scanner:
             self.titles.append(title)
 
     def _scan_iso_raw_m2ts(self, m2ts_files: list[str], sizes: dict[str, int]) -> None:
-        from disc_reader import _extract_iso_prefix
+        from mkvsmith.disc_reader import _extract_iso_prefix
 
         for internal_path in m2ts_files:
             if tmp := _extract_iso_prefix(
@@ -1964,7 +1964,7 @@ class Scanner:
         mpls_files: list[str],
         m2ts_files: list[str],
     ) -> None:
-        from disc_reader import _extract_iso_files
+        from mkvsmith.disc_reader import _extract_iso_files
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
         self.cleanup.register_temp_dir(tmp_dir)
@@ -2050,7 +2050,7 @@ class Scanner:
 
     def _add_iso_aacs_disc_id(self, paths: list[str]) -> None:
         """Extract and hash Unit_Key_RO.inf without unpacking the whole ISO."""
-        from disc_reader import _extract_iso_prefix
+        from mkvsmith.disc_reader import _extract_iso_prefix
 
         wanted = ("AACS/UNIT_KEY_RO.INF", "AACS/DUPLICATE/UNIT_KEY_RO.INF")
         internal_path = next(
@@ -2086,7 +2086,7 @@ class Scanner:
         self, paths: list[str], sizes: dict[str, int]
     ) -> None:
         """Add the legacy Disc Hash using the already-listed ISO members."""
-        from discdb import calculate_disc_hash_from_paths
+        from mkvsmith.discdb import calculate_disc_hash_from_paths
 
         disc_hash = calculate_disc_hash_from_paths(
             (path, sizes.get(path, 0)) for path in paths
@@ -2097,7 +2097,7 @@ class Scanner:
         log_debug(f"TheDiscDB Disc Hash: {disc_hash}")
 
     def _scan_iso_dvd(self, paths: list[str], sizes: dict[str, int]) -> None:
-        from disc_reader import _extract_iso_files
+        from mkvsmith.disc_reader import _extract_iso_files
 
         vob_files = sorted(
             path
@@ -2229,7 +2229,7 @@ class Scanner:
         vts_to_title_num: dict[int, int],
         sizes: dict[str, int],
     ) -> None:
-        from disc_reader import _extract_iso_prefix
+        from mkvsmith.disc_reader import _extract_iso_prefix
 
         for ifo_path in sorted(extracted):
             match = re.search(r"VTS_(\d+)_0\.IFO$", ifo_path.name, re.IGNORECASE)

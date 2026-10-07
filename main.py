@@ -7,50 +7,23 @@
 #   "xdg-base-dirs>=6.0.3",
 # ]
 # ///
-"""
-DVD/Blu-ray ripper using mkvmerge (MKVToolNix)
+"""Run mkvsmith from a source checkout: ``uv run ./main.py`` or ``./main.py``.
 
-Copyright (C) 2025
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
----
-
-Contains portions inspired by:
-- dvdutils (MIT) https://pypi.org/project/dvdutils/
-- pyparsedvd (MIT) https://github.com/Ichunjo/pyparsedvd
-- pyparsebluray (MIT) https://github.com/Ichunjo/pyparsebluray (STN table parsing,
-  CHARACTER_CODE, HEVC HDR metadata)
-- bluinfo (GPL-3.0) https://github.com/SavSanta/bluinfo (CLPI format layout,
-  stream attribute constants)
-- libbluray (GPL-2.0) https://code.videolan.org/videolan/libbluray (BD-ROM
-  structure reference, CLPI/MPLS parsing implementation)
-- libbluray documentation https://videolan.videolan.me/libbluray/index.html
-  (BD-J, UDF structure, disc metadata)
-- ace20022/libbluray (GPL-2.0) https://github.com/ace20022/libbluray
-  (clean Pythonic CLPI/MPLS parsing reference)
-- Blu-ray Disc Read-Only Format specifications (BD-ROM)
+Installed copies use the ``mkvsmith`` command instead; the code lives in
+``src/mkvsmith``.
 """
 
 # Licensed under GPL-3.0-or-later
 
 from __future__ import annotations
 
-# Everything except this entry point has been extracted into per-concern
-# modules: models, i18n, settings, dvdifo, vobsub, disc_reader, probe,
-# bluray, dvdbuild, scan, mkv, discdb, and cli (which owns the real main()).
-from cli import main
+import sys
+from pathlib import Path
+
+# As a standalone script (``./main.py``), the project isn't installed.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+
+from mkvsmith.cli import main  # noqa: E402
 
 if __name__ == "__main__":
     main()

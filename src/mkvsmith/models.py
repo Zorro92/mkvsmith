@@ -32,9 +32,14 @@ try:
 except ImportError:
     _rich_console_class = None
 
-from dvdifo import _EditionCell, _IFOAudioAttrs, _IFOSubpictureAttrs, _IFOVideoAttrs
-from i18n import tr
-from settings import DEFAULT_TAG_METADATA, Settings
+from mkvsmith.dvdifo import (
+    _EditionCell,
+    _IFOAudioAttrs,
+    _IFOSubpictureAttrs,
+    _IFOVideoAttrs,
+)
+from mkvsmith.i18n import tr
+from mkvsmith.settings import DEFAULT_TAG_METADATA, Settings
 
 HAS_RICH = _rich_console_class is not None
 

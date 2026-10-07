@@ -29,24 +29,27 @@ mkvmerge is the only other program you need.
 
 You need:
 
-1. **Python 3.12 or newer**.
-2. **MKVToolNix**, for `mkvmerge`: `sudo apt install mkvtoolnix` on
+1. **MKVToolNix**, for `mkvmerge`: `sudo apt install mkvtoolnix` on
    Debian/Ubuntu, `brew install mkvtoolnix` on macOS, or the installer from
    [mkvtoolnix.download](https://mkvtoolnix.download/).
-3. **[uv](https://docs.astral.sh/uv/)**, which installs everything else for
-   you.
+2. **[uv](https://docs.astral.sh/uv/)**, which installs mkvsmith (and
+   Python 3.12 or newer, if you don't have it).
 
-Then:
+Then install mkvsmith and run it:
 
 ```sh
-git clone https://github.com/Zorro92/mkvsmith
-cd mkvsmith
-uv run ./main.py
+uv tool install git+https://github.com/Zorro92/mkvsmith
+mkvsmith
 ```
 
-That opens mkvsmith. The first time, it asks a few questions (your
-languages, whether to keep subtitles, and so on). Press Enter to keep each
-suggestion. After that, pick a disc and rip.
+The first time, it asks a few questions (your languages, whether to keep
+subtitles, and so on). Press Enter to keep each suggestion. After that,
+pick a disc and rip.
+
+To update to the latest version, run `uv tool upgrade mkvsmith`. Prefer
+[pipx](https://pipx.pypa.io/)? Use
+`pipx install git+https://github.com/Zorro92/mkvsmith` (with Python 3.12 or
+newer) and `pipx upgrade mkvsmith`.
 
 > **Encrypted discs:** like any ripper, reading a store-bought disc needs
 > `libdvdcss` (DVD) or `libaacs` (Blu-ray) installed on your system.
@@ -60,7 +63,7 @@ line with Enter or a click. **Esc** goes back and **q** quits. The bar at the
 bottom shows the keys for each screen, and you can click them too.
 
 1. **Choose a disc.** Pick a drive, or browse to an ISO or disc folder. You
-   can also open one straight away: `uv run ./main.py movie.iso`.
+   can also open one straight away: `mkvsmith movie.iso`.
 2. **Pick what to rip.** The top of the list offers the likely choice: the
    main feature on a movie, or every episode on a series disc. Below it are
    all the titles. **Space** marks several for one batch, and Enter on a
@@ -99,10 +102,10 @@ For scripts, or if you just prefer typing, mkvsmith also works without its
 interface. Any action flag skips straight to the work:
 
 ```sh
-uv run ./main.py movie.iso -m           # rip the main feature (or all episodes)
-uv run ./main.py movie.iso -t 1,3       # rip titles 1 and 3
-uv run ./main.py movie.iso -a ~/rips    # rip every title into ~/rips
-uv run ./main.py movie.iso -i           # just list the titles
+mkvsmith movie.iso -m           # rip the main feature (or all episodes)
+mkvsmith movie.iso -t 1,3       # rip titles 1 and 3
+mkvsmith movie.iso -a ~/rips    # rip every title into ~/rips
+mkvsmith movie.iso -i           # just list the titles
 ```
 
 `--help` shows the everyday options and `--help-all` shows every one. Flags
@@ -140,8 +143,9 @@ The [reference](docs/REFERENCE.md) covers all of this in more depth.
 ## Contributing
 
 Bug reports and pull requests are welcome. See
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for running the checks and tests,
-including the optional disc-based test fixtures.
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for running mkvsmith from a clone,
+and for the checks and tests, including the optional disc-based test
+fixtures.
 
 ## Vibe check
 

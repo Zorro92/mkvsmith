@@ -11,14 +11,18 @@ from typing import IO, Any, cast
 
 import pytest
 
-import disc_reader
-import mkv
-from cc608 import CC608_CODEC_SRT
-from mkv import MappedStream, _map_streams_to_ident_tracks, _track_filter_options
-import models
-from models import StreamType
-from models import Stream, Title
-from tagger import ArtAttachment, MovieMetadata
+from mkvsmith import disc_reader
+from mkvsmith import mkv
+from mkvsmith.cc608 import CC608_CODEC_SRT
+from mkvsmith.mkv import (
+    MappedStream,
+    _map_streams_to_ident_tracks,
+    _track_filter_options,
+)
+from mkvsmith import models
+from mkvsmith.models import StreamType
+from mkvsmith.models import Stream, Title
+from mkvsmith.tagger import ArtAttachment, MovieMetadata
 
 
 def test_streams_match_by_source_id_and_refine_codec() -> None:
@@ -1654,7 +1658,7 @@ def test_validate_mux_result_caps_warnings_outside_debug(
 def test_validate_mux_result_shows_all_warnings_in_debug(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from models import Config
+    from mkvsmith.models import Config
 
     state = models.RuntimeState(config=Config(debug=True))
     creator = mkv.MKVCreator(tmp_path, runtime_state=state)

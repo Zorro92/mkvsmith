@@ -13,11 +13,17 @@ from pathlib import Path
 
 import pytest
 
-import cli
-import mkv
-from bluray import _parse_mpls
-from models import Config, PackedSegment, RuntimeState, Stream, StreamType, Title
-from packed_episodes import (
+from mkvsmith import cli, mkv
+from mkvsmith.bluray import _parse_mpls
+from mkvsmith.models import (
+    Config,
+    PackedSegment,
+    RuntimeState,
+    Stream,
+    StreamType,
+    Title,
+)
+from mkvsmith.packed_episodes import (
     annotate_packed_titles,
     detect_packed_episodes,
     expand_packed_titles,
@@ -306,7 +312,7 @@ def _detectable_title(tmp_path: Path) -> Title:
 
 @pytest.mark.parametrize("split", [False, True])
 def test_scan_offers_but_only_splits_on_request(tmp_path: Path, split: bool) -> None:
-    from scan import Scanner
+    from mkvsmith.scan import Scanner
 
     scanner = Scanner(
         tmp_path, runtime_state=RuntimeState(config=Config(split_episodes=split))

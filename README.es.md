@@ -30,23 +30,27 @@ y mkvmerge es el único otro programa que necesitas.
 
 Necesitas:
 
-1. **Python 3.12 o posterior**.
-2. **MKVToolNix**, por `mkvmerge`: `sudo apt install mkvtoolnix` en
+1. **MKVToolNix**, por `mkvmerge`: `sudo apt install mkvtoolnix` en
    Debian/Ubuntu, `brew install mkvtoolnix` en macOS, o el instalador de
    [mkvtoolnix.download](https://mkvtoolnix.download/).
-3. **[uv](https://docs.astral.sh/uv/)**, que instala todo lo demás por ti.
+2. **[uv](https://docs.astral.sh/uv/)**, que instala mkvsmith (y Python 3.12
+   o posterior, si no lo tienes).
 
-Después:
+Después instala mkvsmith y ábrelo:
 
 ```sh
-git clone https://github.com/Zorro92/mkvsmith
-cd mkvsmith
-uv run ./main.py
+uv tool install git+https://github.com/Zorro92/mkvsmith
+mkvsmith
 ```
 
-Eso abre mkvsmith. La primera vez hace unas preguntas (tus idiomas, si
-quieres conservar los subtítulos, etc.). Pulsa Intro para quedarte con cada
-sugerencia. Después, elige un disco y extráelo.
+La primera vez hace unas preguntas (tus idiomas, si quieres conservar los
+subtítulos, etc.). Pulsa Intro para quedarte con cada sugerencia. Después,
+elige un disco y extráelo.
+
+Para actualizar a la última versión, ejecuta `uv tool upgrade mkvsmith`.
+¿Prefieres [pipx](https://pipx.pypa.io/)? Usa
+`pipx install git+https://github.com/Zorro92/mkvsmith` (con Python 3.12 o
+posterior) y `pipx upgrade mkvsmith`.
 
 > **Discos cifrados:** como con cualquier extractor, leer un disco comprado
 > necesita `libdvdcss` (DVD) o `libaacs` (Blu-ray) instalados en tu sistema.
@@ -62,7 +66,7 @@ clic en ellas.
 
 1. **Elige un disco.** Escoge una unidad, o busca una ISO o una carpeta de
    disco. También puedes abrir uno directamente:
-   `uv run ./main.py pelicula.iso`.
+   `mkvsmith pelicula.iso`.
 2. **Elige qué extraer.** Arriba de la lista está la opción más probable: la
    película principal, o todos los episodios en un disco de serie. Debajo
    están todos los títulos. **Espacio** marca varios para extraerlos de una
@@ -101,10 +105,10 @@ Para scripts, o si simplemente prefieres escribir, mkvsmith también funciona
 sin su interfaz. Cualquier opción de acción va directa al trabajo:
 
 ```sh
-uv run ./main.py pelicula.iso -m           # extrae la película principal (o todos los episodios)
-uv run ./main.py pelicula.iso -t 1,3       # extrae los títulos 1 y 3
-uv run ./main.py pelicula.iso -a ~/rips    # extrae todos los títulos en ~/rips
-uv run ./main.py pelicula.iso -i           # solo lista los títulos
+mkvsmith pelicula.iso -m           # extrae la película principal (o todos los episodios)
+mkvsmith pelicula.iso -t 1,3       # extrae los títulos 1 y 3
+mkvsmith pelicula.iso -a ~/rips    # extrae todos los títulos en ~/rips
+mkvsmith pelicula.iso -i           # solo lista los títulos
 ```
 
 `--help` muestra las opciones de uso diario y `--help-all`, todas. Las
@@ -147,9 +151,9 @@ detalle.
 ## Contribuir
 
 Los informes de errores y los pull requests son bienvenidos. Consulta
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (en inglés) para ejecutar las
-comprobaciones y las pruebas, incluidos los fixtures opcionales sacados de
-discos.
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (en inglés) para ejecutar mkvsmith
+desde una copia del repositorio, y para las comprobaciones y las pruebas,
+incluidos los fixtures opcionales sacados de discos.
 
 ## Vibe check
 

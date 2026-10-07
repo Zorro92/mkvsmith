@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import disc_reader
+from mkvsmith import disc_reader
 
 
 def test_is_iso_media_path_matches_compatible_scanning_subset() -> None:

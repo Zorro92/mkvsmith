@@ -21,8 +21,8 @@ from typing import Any
 
 import pytest
 
-import mkv
-from mkv import (
+from mkvsmith import mkv
+from mkvsmith.mkv import (
     _append_clip_bounds,
     _apply_retimed_edition_chapters,
     _pull_back_jump_atom_ends,
@@ -32,8 +32,15 @@ from mkv import (
     _write_tags_xml_mkvmerge,
     MappedStream,
 )
-from models import EditionAtom, EditionSpec, RipError, Stream, StreamType, Title
-from scan import (
+from mkvsmith.models import (
+    EditionAtom,
+    EditionSpec,
+    RipError,
+    Stream,
+    StreamType,
+    Title,
+)
+from mkvsmith.scan import (
     _build_edition_specs,
     _detect_edition_groups,
     _edition_atoms,
@@ -782,7 +789,7 @@ def test_unequal_angle_blocks_mark_a_chain_misauthored() -> None:
     """Beauty and the Beast SE (a DVD-R copy, VTS 9): chain 1 plays the film
     straight; chains 2 and 3 flag consecutive film segments as alternate
     angles of different lengths, so they play out of order."""
-    from dvdifo import _pgc_angle_lengths_differ
+    from mkvsmith.dvdifo import _pgc_angle_lengths_differ
 
     ifo = _BATB_DVDR_IFO.read_bytes()
     assert [_pgc_angle_lengths_differ(ifo, pgc) for pgc in (1, 2, 3)] == [
@@ -803,7 +810,7 @@ def test_real_angle_blocks_are_not_misauthored() -> None:
     """The pressed Platinum Edition (VTS 9): Special Edition, Theatrical and
     Work-in-Progress share 36 two-angle blocks of equal-length angles (the
     finished film and its pencil tests), so no chain is flagged."""
-    from dvdifo import _pgc_angle_lengths_differ
+    from mkvsmith.dvdifo import _pgc_angle_lengths_differ
 
     ifo = _BATB_PLATINUM_IFO.read_bytes()
     assert not any(_pgc_angle_lengths_differ(ifo, pgc) for pgc in (1, 2, 3))
@@ -826,7 +833,7 @@ def test_protected_disc_chain_layouts() -> None:
     chains with exact cell ranges; VTS 5 repeats them with ranges padded by
     junk (identical cells, so the same fingerprint); VTS 8 holds scrambled
     decoys that jump back and forth across the disc."""
-    from dvdifo import pgc_layout
+    from mkvsmith.dvdifo import pgc_layout
 
     vts05, vts08, vts10 = (_DIAMOND[v].read_bytes() for v in (5, 8, 10))
     real = pgc_layout(vts10, 6)
@@ -845,7 +852,7 @@ def test_protected_disc_chain_layouts() -> None:
 def test_invalid_setstn_angle_plays_angle_one() -> None:
     """Chains 10/1 and 10/6 differ only in a SetSTN to angle 11, which
     players ignore, so both play angle 1: the same cells."""
-    from dvdifo import _find_main_pgc, _pgc_angle_from_commands, pgc_layout
+    from mkvsmith.dvdifo import _find_main_pgc, _pgc_angle_from_commands, pgc_layout
 
     ifo = _DIAMOND[10].read_bytes()
     main = _find_main_pgc(ifo, 1)

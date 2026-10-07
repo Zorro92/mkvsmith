@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from vobsub import _extract_spu_palette
+from mkvsmith.vobsub import _extract_spu_palette
 
 
 _FIRST_CONTROL_SEQUENCE = bytes.fromhex(

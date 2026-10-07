@@ -9,13 +9,13 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from bluray import _parse_clpi, _parse_mpls
-from dvdifo import (
+from mkvsmith.bluray import _parse_clpi, _parse_mpls
+from mkvsmith.dvdifo import (
     _parse_vmg_ifo,
+    _parse_vts_audio_attrs,
     _parse_vts_ifo_languages,
     _parse_vts_pgc_info,
     _parse_vts_video_attrs,
-    _parse_vts_audio_attrs,
 )
 
 FIX = Path("tests/fixtures")

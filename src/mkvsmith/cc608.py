@@ -25,8 +25,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from models import log_debug
-from vobsub import _PtsTimelineRebaser, _video_pes_pts
+from mkvsmith.models import log_debug
+from mkvsmith.vobsub import _PtsTimelineRebaser, _video_pes_pts
 
 # Codecs reported for the extracted text caption tracks (sidecar files
 # muxed as extra mkvmerge inputs, replacing the reference S_CC608 track).

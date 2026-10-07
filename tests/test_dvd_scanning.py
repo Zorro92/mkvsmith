@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NoReturn
 
-import dvdifo
+from mkvsmith import dvdifo
 import pytest
-import dvdbuild
-import scan
-from cc608 import CC608_CODEC_SRT
-from dvdifo import VmgInfo
-from models import Config, Stream, StreamType, Title
+from mkvsmith import dvdbuild
+from mkvsmith import scan
+from mkvsmith.cc608 import CC608_CODEC_SRT
+from mkvsmith.dvdifo import VmgInfo
+from mkvsmith.models import Config, Stream, StreamType, Title
 
 
 def _make_dvd_source(tmp_path: Path) -> Path:

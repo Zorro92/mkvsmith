@@ -31,7 +31,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from models import StreamType, Stream, Title, _HAS_MKVMERGE
+from mkvsmith.models import StreamType, Stream, Title, _HAS_MKVMERGE
 
 
 # =============================================================================

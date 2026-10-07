@@ -9,8 +9,9 @@ settings file, TheDiscDB, and how mkvsmith treats unusual discs.
 grouped by section (tracks, titles, TMDB tagging, TheDiscDB, temporary
 files, ...).
 
-- **Running it directly:** `main.py` carries a `uv run --script` shebang,
-  so after `chmod +x main.py` it runs as `./main.py`.
+- **Running it:** the `mkvsmith` command once installed (see the
+  README), or `python -m mkvsmith`. From a clone, `uv run mkvsmith` or
+  `./main.py`.
 - **Sources:** an optical drive, an ISO image, a disc folder (`VIDEO_TS`,
   `BDMV`, or `HVDVD_TS` with its XPL playlists), raw `.m2ts`/`.vob`/`.evo`
   files, or a plain video file.
@@ -20,7 +21,7 @@ files, ...).
 - **`-m` is smart:** the main feature on a movie disc, every episode on a
   series disc. On DVD, that covers episodes grouped within one title set and
   one episode per title set. On Blu-ray, it means one playlist per episode.
-- **Output folder:** the second positional argument (`main.py disc.iso -m
+- **Output folder:** the second positional argument (`mkvsmith disc.iso -m
   ~/rips`), else the current directory.
 - **List values** are one argument, separated by commas (`jpn,eng`) or by
   spaces inside quotes (`"jpn eng"`). Quote anything else that contains a
@@ -80,11 +81,11 @@ data or media file contents.
 
 ```sh
 # identify a disc and apply a unique community title mapping
-uv run ./main.py movie.iso --discdb --info
+mkvsmith movie.iso --discdb --info
 
 # prepare files for TheDiscDB's reviewed contribution flow
-uv run ./main.py movie.iso --discdb-contribute=browser
-uv run ./main.py movie.iso --discdb-contribute=manual --discdb-bundle-dir ~/discdb
+mkvsmith movie.iso --discdb-contribute=browser
+mkvsmith movie.iso --discdb-contribute=manual --discdb-bundle-dir ~/discdb
 ```
 
 **Matching** uses TheDiscDB's legacy Disc Hash, the

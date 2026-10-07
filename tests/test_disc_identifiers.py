@@ -9,19 +9,19 @@ import hashlib
 import struct
 from pathlib import Path
 
-import cli
-import mkv
-import scan
-import tagger
+from mkvsmith import cli
+from mkvsmith import mkv
+from mkvsmith import scan
+from mkvsmith import tagger
 import pytest
-from dvdifo import (
+from mkvsmith.dvdifo import (
     _compute_dvd_disc_id,
     _compute_libdvdread_disc_id,
     _compute_libdvdread_disc_id_from_paths,
 )
-from matrix256 import fingerprint, fingerprint_entries
-from models import DiscMetadata, Stream, StreamType, TagOptions, Title
-from models import Config, RuntimeState
+from mkvsmith.matrix256 import fingerprint, fingerprint_entries
+from mkvsmith.models import DiscMetadata, Stream, StreamType, TagOptions, Title
+from mkvsmith.models import Config, RuntimeState
 
 
 @pytest.mark.skipif(
@@ -48,7 +48,9 @@ def test_dvd_identifiers_use_real_ifo_fixtures(
     def fake_creation_filetime(path: Path) -> int:
         return fingerprints[path]
 
-    monkeypatch.setattr("dvdifo._dvd_creation_filetime", fake_creation_filetime)
+    monkeypatch.setattr(
+        "mkvsmith.dvdifo._dvd_creation_filetime", fake_creation_filetime
+    )
 
     assert _compute_dvd_disc_id(video_ts) == "b090283799370e5f"
     assert _compute_libdvdread_disc_id(video_ts) == ("2DC691009D9A0011AC3C6A9A14C98889")

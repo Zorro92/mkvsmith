@@ -6,10 +6,10 @@ import builtins
 from pathlib import Path
 from typing import Any
 
-import models
+from mkvsmith import models
 import pytest
-import tagger
-from tagger import (
+from mkvsmith import tagger
+from mkvsmith.tagger import (
     MovieMetadata,
     TagOptions,
     TmdbClient,

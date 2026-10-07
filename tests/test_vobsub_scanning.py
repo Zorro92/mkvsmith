@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import vobsub
-from vobsub import (
+from mkvsmith import vobsub
+from mkvsmith.vobsub import (
     _build_pes_entry,
     _dvd_main_content_range,
     _encode_pts,
@@ -69,7 +69,7 @@ def test_pts_timeline_rebaser_splices_seamless_branching_jumps() -> None:
 
 
 def test_nav_pack_ptm_reads_the_pci_times() -> None:
-    from vobsub import _nav_pack_ptm
+    from mkvsmith.vobsub import _nav_pack_ptm
 
     pci = bytes([0x00]) + bytes(12) + (90000).to_bytes(4, "big")
     pci += (135000).to_bytes(4, "big") + bytes(20)

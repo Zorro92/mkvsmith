@@ -18,6 +18,7 @@ wheels/
 
 # Agent tooling (not part of the shipped tool)
 .agents/
+.claude/settings.local.json
 
-# Disc-derived binary fixtures (not committed; see README "Disc fixtures")
+# Disc-derived binary fixtures (not committed; see docs/DEVELOPMENT.md)
 tests/fixtures/

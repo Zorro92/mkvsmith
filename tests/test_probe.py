@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from models import Stream, StreamType, Title
-from probe import (
+from mkvsmith.models import Stream, StreamType, Title
+from mkvsmith.probe import (
     _mkvmerge_stream_type,
     _parse_mkvmerge_streams,
     _stream_from_mkvmerge_track,
@@ -129,6 +129,6 @@ def test_malformed_dimensions_do_not_raise() -> None:
 
 
 def _probe_apply_dimensions(stream: Stream, dimensions: str) -> None:
-    from probe import _apply_mkvmerge_video_properties
+    from mkvsmith.probe import _apply_mkvmerge_video_properties
 
     _apply_mkvmerge_video_properties(stream, {"pixel_dimensions": dimensions})

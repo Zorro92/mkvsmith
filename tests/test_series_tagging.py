@@ -10,10 +10,8 @@ from pathlib import Path
 
 import pytest
 
-import cli
-import mkv
-import tagger
-from models import RuntimeState, TagOptions, Title
+from mkvsmith import cli, mkv, tagger
+from mkvsmith.models import RuntimeState, TagOptions, Title
 
 
 def _title(index: int = 0, **episode: int) -> Title:

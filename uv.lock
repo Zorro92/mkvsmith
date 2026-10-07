@@ -69,7 +69,7 @@ wheels = [
 [[package]]
 name = "mkvsmith"
 version = "0.22.6"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "rich" },
     { name = "textual" },

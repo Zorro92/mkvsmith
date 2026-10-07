@@ -21,7 +21,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-from models import (
+from mkvsmith.models import (
     Config,
     RUNTIME_STATE,
     Title,
@@ -30,8 +30,8 @@ from models import (
     log_info,
     log_warn,
 )
-from i18n import tr
-from isofs import IsoImage, IsoImageError
+from mkvsmith.i18n import tr
+from mkvsmith.isofs import IsoImage, IsoImageError
 
 
 # =============================================================================

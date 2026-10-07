@@ -18,17 +18,17 @@ from pathlib import Path
 
 import pytest
 
-import mkv
-from bluray import MplsPlayItem, _parse_mpls, has_seamless_connections
-from m2ts import (
+from mkvsmith import mkv
+from mkvsmith.bluray import MplsPlayItem, _parse_mpls, has_seamless_connections
+from mkvsmith.m2ts import (
     AudioTail,
     ClipTail,
     null_packets_from,
     plan_seamless_trim,
     scan_clip_tail,
 )
-from mkv import MappedStream
-from models import Stream, StreamType, Title
+from mkvsmith.mkv import MappedStream
+from mkvsmith.models import Stream, StreamType, Title
 
 AUDIO_PIDS = {0x1100, 0x1101, 0x1103}
 
@@ -219,7 +219,7 @@ def test_prepare_seamless_append_copies_unowned_clips(
     def temp_base(*_args: object, **_kwargs: object) -> Path:
         return tmp_path
 
-    monkeypatch.setattr("disc_reader.temp_base_for_title", temp_base)
+    monkeypatch.setattr("mkvsmith.disc_reader.temp_base_for_title", temp_base)
     clips = _staged_clips(fixtures_dir, tmp_path)
     digests = [_digest(p) for p in clips]
     title = Title(0, clips[0], "T", 10.0)

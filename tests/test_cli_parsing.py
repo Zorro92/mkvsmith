@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import cli
-import models
+from mkvsmith import cli, models
 
 
 @pytest.fixture

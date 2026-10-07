@@ -6,9 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import disc_reader
-import scan
-from models import DiscMetadata, RuntimeState, Stream, StreamType, Title
+from mkvsmith import disc_reader, scan
+from mkvsmith.models import DiscMetadata, RuntimeState, Stream, StreamType, Title
 
 
 def make_title(index: int, duration: float, **attributes: object) -> Title:
@@ -329,7 +328,7 @@ def test_dedup_duplicate_playlists_preserves_first_seen_group_order() -> None:
 
 
 def test_apply_disc_name_keeps_hddvd_xpl_names(tmp_path: Path) -> None:
-    from models import RuntimeState
+    from mkvsmith.models import RuntimeState
 
     movie = make_title(0, 8600.0, hddvd_title_number=3)
     movie.name = "Main Movie"

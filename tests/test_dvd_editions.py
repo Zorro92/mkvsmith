@@ -11,15 +11,14 @@ from pathlib import Path
 
 import pytest
 
-import mkv
-import scan
-from dvdifo import (
+from mkvsmith import mkv, scan
+from mkvsmith.dvdifo import (
     _EditionCell,
     _parse_vts_pgc_info,
     _read_nav_ptm_from_sector,
     pgc_layout,
 )
-from models import EditionAtom, EditionSpec, Stream, StreamType, Title
+from mkvsmith.models import EditionAtom, EditionSpec, Stream, StreamType, Title
 
 _PLATINUM = Path(__file__).parent / "fixtures" / "batb_platinum_mex_vts09.ifo"
 
@@ -116,7 +115,7 @@ def test_dvd_edition_inputs_retime_atoms_onto_nav_durations(
     def write(*_args: object) -> tuple[list[Path], list[int]]:
         return [tmp_path / "part.vob"], [2048]
 
-    import dvdifo
+    from mkvsmith import dvdifo
 
     monkeypatch.setattr(dvdifo, "edition_union_vobu_layout", layout)
     monkeypatch.setattr(mkv, "_write_vobu_trim", write)

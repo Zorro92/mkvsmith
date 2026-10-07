@@ -33,8 +33,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 # IFO parsing helpers live in dvdifo.py (imported explicitly below).
-import dvdifo
-from dvdifo import (
+from mkvsmith import dvdifo
+from mkvsmith.dvdifo import (
     DvdIfoError,
     VmgInfo,
     _IFOAudioAttrs,
@@ -66,7 +66,7 @@ from dvdifo import (
     _EPISODE_DURATION_TOL,
     _EPISODE_DWARF_RATIO,
 )
-from models import (
+from mkvsmith.models import (
     Config,
     DiscMetadata,
     RUNTIME_STATE,
@@ -76,15 +76,15 @@ from models import (
     log_debug,
     log_info,
 )
-from cc608 import (
+from mkvsmith.cc608 import (
     CC608_CODEC_ASS,
     CC608_CODEC_SRT,
     CC608_CODECS,
     _has_cc608_data,
 )
-from probe import _probe_with_mkvmerge, _parse_mkvmerge_streams
-from vobsub import SubpictureScanCache, _scan_vob_subpictures
-from i18n import tr
+from mkvsmith.probe import _probe_with_mkvmerge, _parse_mkvmerge_streams
+from mkvsmith.vobsub import SubpictureScanCache, _scan_vob_subpictures
+from mkvsmith.i18n import tr
 
 
 @dataclass(frozen=True)

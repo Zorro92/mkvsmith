@@ -12,17 +12,17 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import pytest
-import cli
-import session
-import scan
-import disc_reader
+from mkvsmith import cli
+from mkvsmith import session
+from mkvsmith import scan
+from mkvsmith import disc_reader
 
-import discdb
-from discdb import DiscDbClient, DiscDbOptions
-from models import DiscMetadata, Stream, StreamType, Title
-from models import RuntimeState
-from settings import Settings
-from scan import pick_main_feature
+from mkvsmith import discdb
+from mkvsmith.discdb import DiscDbClient, DiscDbOptions
+from mkvsmith.models import DiscMetadata, Stream, StreamType, Title
+from mkvsmith.models import RuntimeState
+from mkvsmith.settings import Settings
+from mkvsmith.scan import pick_main_feature
 
 
 def make_title(
@@ -518,7 +518,9 @@ def test_iso_hash_files_use_internal_timestamps(
             disc_reader._IsoFileMetadata("VIDEO_TS/VIDEO_TS.IFO", 456, None),
         ]
 
-    monkeypatch.setattr("disc_reader._list_iso_file_metadata", fake_list_metadata)
+    monkeypatch.setattr(
+        "mkvsmith.disc_reader._list_iso_file_metadata", fake_list_metadata
+    )
 
     files = discdb.collect_hash_files(source)
 
@@ -550,7 +552,7 @@ def test_iso_fingerprint_files_include_every_iso_member(
             {"BDMV/META/dl/bdmt_eng.xml": 10, "BDMV/STREAM/01000.m2ts": 20},
         )
 
-    monkeypatch.setattr("disc_reader._list_iso_files", fake_list_files)
+    monkeypatch.setattr("mkvsmith.disc_reader._list_iso_files", fake_list_files)
 
     assert discdb.collect_fingerprint_files(source) == [
         {"path": "BDMV/META/dl/bdmt_eng.xml", "size": 10},
@@ -707,7 +709,7 @@ def test_aacs_hash_reference_vector(tmp_path: Path):
     unit_key = root / "AACS" / "Unit_Key_RO.inf"
     unit_key.write_bytes(b"unit key")
 
-    from scan import _compute_aacs_disc_id
+    from mkvsmith.scan import _compute_aacs_disc_id
 
     assert _compute_aacs_disc_id(root) == hashlib.sha1(b"unit key").hexdigest().upper()
 
@@ -922,7 +924,7 @@ def test_iso_aacs_identifier_uses_bounded_extraction(
         extracted.append((iso_path, internal_path, kwargs))
         return unit_key
 
-    monkeypatch.setattr("disc_reader._extract_iso_prefix", extract)
+    monkeypatch.setattr("mkvsmith.disc_reader._extract_iso_prefix", extract)
 
     scanner._add_iso_aacs_disc_id(["AACS/Unit_Key_RO.inf"])
 

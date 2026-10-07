@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
-from dvdifo import (
+from mkvsmith.bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
+from mkvsmith.dvdifo import (
     pgc_stream_ids,
     _EditionCell,
     _detect_episode_pgcs,
@@ -48,9 +48,9 @@ from dvdifo import (
     _vts_ttn1_pgc_abs,
     _build_main_edition_vobu_ranges,
 )
-from dvdbuild import _build_dvd_streams_from_ifo
-from models import StreamType
-from vobsub import _extract_spu_palette, _scan_vob_pts, _scan_vob_subpictures
+from mkvsmith.dvdbuild import _build_dvd_streams_from_ifo
+from mkvsmith.models import StreamType
+from mkvsmith.vobsub import _extract_spu_palette, _scan_vob_pts, _scan_vob_subpictures
 
 # Disc-derived fixtures are not committed (to avoid redistributing disc
 # metadata). These tests skip on a fresh clone; capture the fixtures locally

@@ -3,9 +3,7 @@
 ## No ffmpeg/ffprobe in the main code
 
 Do NOT shell out to `ffmpeg` or `ffprobe` from the production code
-(`main.py`, `cli.py`, `probe.py`, `bluray.py`, `dvdbuild.py`, `scan.py`,
-`mkv.py`, `m2ts.py`, `dvdifo.py`, `vobsub.py`, `disc_reader.py`, `tagger.py`,
-`models.py`, `settings.py`, `i18n.py`, `session.py`, `drives.py`, `tui.py`).
+(the `mkvsmith` package in `src/mkvsmith/`, and the `main.py` launcher).
 This is a hard project constraint, not
 a preference. The project depends on **mkvtoolnix** (`mkvmerge`) as its only
 external media tool.
@@ -20,7 +18,7 @@ disc image. They must not become a runtime dependency of the shipped tool.
 This tool deliberately parses disc structures directly (`.mpls` / `.clpi` /
 `.ifo` / BDMV metadata) instead of probing media streams. Probing every M2TS/VOB
 via ffprobe was the old approach and made scanning orders of magnitude slower
-(see the comments around the CLPI-merge code in `main.py`). That dependency was
+(see the comments around the CLPI-merge code in `bluray.py`). That dependency was
 removed on purpose; do not reintroduce it.
 
 ### What to use instead
@@ -78,7 +76,7 @@ When extending a parser (a new CLPI/IFO/MPLS field, a codec's channel layout,
 container details, etc.), consult these before reverse-engineering a binary
 format from scratch. They are **reference sources to READ / cross-check**, not
 runtime dependencies to add. The canonical attributions live in the header of
-`main.py`.
+`src/mkvsmith/__init__.py`.
 
 ### Blu-ray (CLPI / MPLS / BDMV)
 
@@ -124,7 +122,7 @@ runtime dependencies to add. The canonical attributions live in the header of
 
 ## Validation (lint & typecheck)
 
-Run from the `mkvsmith/` directory before declaring a change done:
+Run from the repository root before declaring a change done:
 
 ```sh
 uv run ruff check                 # lint
@@ -177,7 +175,7 @@ output dicts should be typed with `TypedDict`s, not bare `dict`/`list` — see
 Parser changes should be guarded by a fixture-based regression test capturing a
 real binary blob (`.mpls` / `.clpi` / `.ifo` / `.vob`). The pytest harness is
 configured in `pyproject.toml` (`[tool.pytest.ini_options]`,
-`pythonpath = ["."]`, `testpaths = ["tests"]`); fixtures live in
+`pythonpath = [".", "src"]`, `testpaths = ["tests"]`); fixtures live in
 `tests/fixtures/` and `conftest.py` at the project root provides a
-`load_fixture` helper. Run tests from the `mkvsmith/` directory with
+`load_fixture` helper. Run tests from the repository root with
 `uv run pytest`. See the `parser-regression-test` skill for the full procedure.

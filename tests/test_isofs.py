@@ -19,9 +19,8 @@ from typing import Any
 
 import pytest
 
-import disc_reader
-import isofs
 from conftest import FIXTURES_DIR
+from mkvsmith import disc_reader, isofs
 
 MONSTER_HIGH = "monster_high_udf250.isofix.gz"
 TREASURE_PLANET = "treasure_planet_dvd.isofix.gz"

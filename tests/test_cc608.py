@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cc608
+from mkvsmith import cc608
 import pytest
 
-from cc608 import (
+from mkvsmith.cc608 import (
     CC608_CODEC_ASS,
     CC608_CODEC_SRT,
     CC608_CODECS,

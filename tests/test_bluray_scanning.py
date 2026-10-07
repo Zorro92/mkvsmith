@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-import scan
-from models import Config, Stream, StreamType, Title
+from mkvsmith import scan
+from mkvsmith.models import Config, Stream, StreamType, Title
 
 
 def make_title(index: int, source: Path, name: str, duration: float) -> Title:

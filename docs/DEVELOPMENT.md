@@ -1,5 +1,24 @@
 # Developing mkvsmith
 
+## Running from a clone
+
+```sh
+git clone https://github.com/Zorro92/mkvsmith
+cd mkvsmith
+uv run mkvsmith            # or: uv run ./main.py
+```
+
+`uv run` installs the project into `.venv` in editable mode, so your edits
+take effect straight away. The code is the `mkvsmith` package in
+`src/mkvsmith/`. `main.py` is a small launcher with a `uv run --script`
+shebang, so `./main.py` also works without setting anything up.
+
+To try your working copy as an installed tool, the way users get it:
+
+```sh
+uv tool install --force .
+```
+
 ## Checks
 
 Run these from the repository root before sending a change:

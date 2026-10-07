@@ -16,13 +16,17 @@ from textual.pilot import Pilot
 from textual.widgets import Input, Label, OptionList, Static
 from textual.widgets._footer import FooterKey
 
-import cli
-import models
-import settings
-import tui
-from drives import OpticalDrive
-from i18n import set_language
-from models import RipCancelled, RipError, RuntimeState, Stream, StreamType, Title
+from mkvsmith import cli, models, settings, tui
+from mkvsmith.drives import OpticalDrive
+from mkvsmith.i18n import set_language
+from mkvsmith.models import (
+    RipCancelled,
+    RipError,
+    RuntimeState,
+    Stream,
+    StreamType,
+    Title,
+)
 
 AppTest = Callable[[Pilot[None], tui.MkvsmithApp], Awaitable[None]]
 
@@ -975,7 +979,7 @@ def test_scan_failure_is_shown_and_esc_goes_back(
 def test_scan_asks_the_per_disc_questions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from packed_episodes import PackedSegment
+    from mkvsmith.packed_episodes import PackedSegment
 
     packed = make_title(0, 2800.0, playlist_name="00000", clip_durations=[2800.0])
     packed.packed_segments = [
@@ -1142,7 +1146,7 @@ def test_combining_editions_asks_their_names(
 
 
 def test_splitting_from_the_title_list(tmp_path: Path) -> None:
-    from packed_episodes import PackedSegment
+    from mkvsmith.packed_episodes import PackedSegment
 
     packed = make_title(0, 2800.0, playlist_name="00000", clip_durations=[2800.0])
     packed.packed_segments = [

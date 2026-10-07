@@ -1,7 +1,7 @@
 """Unit tests for scan-time Blu-ray colour inference (bluray._set_video_color_from_info)."""
 
-from bluray import MplsStreamInfo, _set_video_color_from_info
-from models import Stream
+from mkvsmith.bluray import MplsStreamInfo, _set_video_color_from_info
+from mkvsmith.models import Stream
 
 
 def _video(**kwargs: object) -> Stream:

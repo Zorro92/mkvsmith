@@ -44,8 +44,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
-from dvdifo import _read_u16, _read_u32
-from models import StreamType, Stream, Title, log_debug
+from mkvsmith.dvdifo import _read_u16, _read_u32
+from mkvsmith.models import StreamType, Stream, Title, log_debug
 
 
 # =============================================================================

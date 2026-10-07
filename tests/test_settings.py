@@ -20,13 +20,13 @@ from typing import NoReturn
 
 import pytest
 
-import cli
-import settings
-from models import (
+from mkvsmith import cli
+from mkvsmith import settings
+from mkvsmith.models import (
     RuntimeState,
     UserPrompts,
 )
-from settings import SettingSpec, Settings
+from mkvsmith.settings import SettingSpec, Settings
 
 
 def _point_settings(

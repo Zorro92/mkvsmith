@@ -36,8 +36,8 @@ import webbrowser
 from collections.abc import Callable
 from pathlib import Path
 
-import dvdifo
-from models import (
+from mkvsmith import dvdifo
+from mkvsmith.models import (
     Config,
     DiscMetadata,
     DiscDbOptions,
@@ -56,14 +56,14 @@ from models import (
     MKVSMITH_VERSION,
     sweep_stale_session_dirs,
 )
-from i18n import (
+from mkvsmith.i18n import (
     tr,
     set_language,
     get_language,
     language_name,
     detect_locale_language,
 )
-from settings import (
+from mkvsmith.settings import (
     ASK_MODES,
     DISCDB_CONTRIBUTE_MODES,
     TAG_ART_CHOICES,
@@ -77,9 +77,9 @@ from settings import (
     set_setting,
     setting_spec,
 )
-from scan import _get_notable_titles, pick_main_feature
-from mkv import MKVCreator
-from session import (
+from mkvsmith.scan import _get_notable_titles, pick_main_feature
+from mkvsmith.mkv import MKVCreator
+from mkvsmith.session import (
     RipCallbacks,
     RipJob,
     RipOutcome,
@@ -89,7 +89,7 @@ from session import (
     prepare_multi_edition,
     run_rip_jobs,
 )
-from discdb import DiscDbError
+from mkvsmith.discdb import DiscDbError
 
 __version__ = MKVSMITH_VERSION
 
@@ -132,7 +132,7 @@ def _list_name_base(
     list shows it once in its header and drops it from each row, so narrow
     screens see "Episode 3" or "Edition 2" rather than a truncated prefix.
     """
-    from episode_naming import series_name
+    from mkvsmith.episode_naming import series_name
 
     if disc_metadata is None or not disc_metadata.name:
         return None
@@ -343,7 +343,7 @@ def display_title_details(title: Title) -> None:
 # =============================================================================
 def _print_packed_episode_hints(titles: list[Title]) -> None:
     """Point out playlists holding back-to-back episodes (split on request)."""
-    from packed_episodes import packed_episode_count
+    from mkvsmith.packed_episodes import packed_episode_count
 
     for title in titles:
         if not title.packed_segments:
@@ -446,6 +446,9 @@ def _build_arg_parser(full: bool = False) -> argparse.ArgumentParser:
         return text if full else argparse.SUPPRESS
 
     p = argparse.ArgumentParser(
+        # Not argv[0], which is main.py or __main__.py outside the installed
+        # command.
+        prog="mkvsmith",
         usage=tr("%(prog)s [options] SOURCE [OUTPUT]"),
         epilog=None
         if full
@@ -1300,7 +1303,11 @@ def _configure_runtime(runtime_state: RuntimeState | None = None) -> None:
     config = state.config
     state.logger.configure(config)
     dvdifo.set_debug(state.logger.debug)
-    from disc_reader import default_temp_dir, init_ram_budget, temp_base_candidates
+    from mkvsmith.disc_reader import (
+        default_temp_dir,
+        init_ram_budget,
+        temp_base_candidates,
+    )
 
     if config.temp_dir:
         config.temp_dir.mkdir(parents=True, exist_ok=True)
@@ -1347,7 +1354,7 @@ def _prepare_discdb_contribution(
     disc_metadata: DiscMetadata | None,
     state: RuntimeState,
 ) -> None:
-    from discdb import (
+    from mkvsmith.discdb import (
         build_contribution_bundle,
         contribution_url,
         open_contribution_url,
@@ -1599,7 +1606,7 @@ def _reapply_options(state: RuntimeState) -> None:
     changes apply to the disc being ripped; flags still win. The temp folder
     stays: this run's is already set up.
     """
-    from disc_reader import init_ram_budget
+    from mkvsmith.disc_reader import init_ram_budget
 
     temp_dir = state.config.temp_dir
     output_dir = state.config.output_dir
@@ -1629,7 +1636,7 @@ def _run_interactive(
             )
         )
         sys.exit(1)
-    from tui import run_tui
+    from mkvsmith.tui import run_tui
 
     run_tui(
         state,

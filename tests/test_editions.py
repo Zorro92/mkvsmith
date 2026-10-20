@@ -861,3 +861,40 @@ def test_invalid_setstn_angle_plays_angle_one() -> None:
     first, sixth = pgc_layout(ifo, 1), pgc_layout(ifo, 6)
     assert first is not None and sixth is not None
     assert first.fingerprint == sixth.fingerprint
+
+
+def test_prepare_multi_edition_allows_folder_bluray_different_opening_clips() -> None:
+    from mkvsmith.session import prepare_multi_edition
+
+    t1 = _mk_title(
+        0, ["A", "B", "S1", "S2"], [10.0, 10.0, 6.0, 6.0], [0.0], playlist="00800"
+    )
+    t2 = _mk_title(
+        1, ["C", "B", "S1", "S2"], [4.0, 10.0, 6.0, 6.0], [0.0], playlist="00801"
+    )
+    combined = prepare_multi_edition([t1, t2], [0, 1], ["Theatrical", "Extended"])
+    assert [e.name for e in combined.editions] == ["Theatrical", "Extended"]
+
+
+def test_union_edition_streams_preserves_distinct_dvd_sub_ids_and_renumbers() -> None:
+    from mkvsmith.scan import _union_edition_streams
+
+    t1 = _mk_title(0, ["A", "B", "C"], [10.0] * 3, [0.0], playlist="00800")
+    t1.streams = [
+        Stream(0, StreamType.VIDEO, "mpeg2video", "und", type_index=0),
+        Stream(1, StreamType.AUDIO, "ac3", "en", channels=2, type_index=0, sub_id=0x80),
+        Stream(2, StreamType.AUDIO, "ac3", "en", channels=2, type_index=1, sub_id=0x81),
+    ]
+    t2 = _mk_title(1, ["A", "B", "C"], [10.0] * 3, [0.0], playlist="00801")
+    t2.streams = [
+        Stream(0, StreamType.VIDEO, "mpeg2video", "und", type_index=0),
+        Stream(1, StreamType.AUDIO, "ac3", "en", channels=2, type_index=0, sub_id=0x80),
+        Stream(2, StreamType.AUDIO, "ac3", "fr", channels=2, type_index=1, sub_id=0x82),
+    ]
+    union = _union_edition_streams([t1, t2])
+    assert [(s.index, s.type_index, s.sub_id, s.language) for s in union] == [
+        (0, 0, None, "und"),
+        (1, 0, 0x80, "en"),
+        (2, 1, 0x81, "en"),
+        (3, 2, 0x82, "fr"),
+    ]

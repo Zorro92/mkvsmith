@@ -771,14 +771,26 @@ def _track_filter_options(
     audio_ids = _mapped_input_ids(mapped, "audio")
     subtitle_ids = _mapped_input_ids(mapped, "subtitle", "subtitles")
     use_audio_filter = _should_use_audio_filter(ident_tracks, title)
+    has_video = any(track.get("type") == "video" for track in ident_tracks)
+    has_audio = any(track.get("type") == "audio" for track in ident_tracks)
+    has_subtitles = any(
+        track.get("type") in ("subtitle", "subtitles") for track in ident_tracks
+    )
 
     options: list[str] = []
     if video_ids:
         options += ["--video-tracks", ",".join(video_ids)]
-    if use_audio_filter and audio_ids:
-        options += ["--audio-tracks", ",".join(audio_ids)]
+    elif has_video:
+        options.append("--no-video")
+    if use_audio_filter:
+        if audio_ids:
+            options += ["--audio-tracks", ",".join(audio_ids)]
+        elif has_audio:
+            options.append("--no-audio")
     if subtitle_ids:
         options += ["--subtitle-tracks", ",".join(subtitle_ids)]
+    elif has_subtitles:
+        options.append("--no-subtitles")
     return options
 
 
@@ -1312,7 +1324,8 @@ def _write_vobu_trim(
         parts.append(part)
     with output.open("wb") as output_file:
         for part in parts:
-            output_file.write(part.read_bytes())
+            with part.open("rb") as part_file:
+                shutil.copyfileobj(part_file, output_file, length=1024 * 1024)
     return parts, [end - start for start, end in ranges]
 
 
@@ -1952,11 +1965,12 @@ def _extract_dvd_cc608_sidecar(
     effective_config = config or RUNTIME_STATE.config
     pts_offset = _vobsub_pts_offset(inputs)
     use_ass = effective_config.cc608_format == "ass"
+    temp_dir = effective_config.temp_dir
     srt_path = Path(
         tempfile.NamedTemporaryFile(
             suffix=".ass" if use_ass else ".srt",
             delete=False,
-            dir=str(tempfile.gettempdir()),
+            dir=str(temp_dir) if temp_dir else str(tempfile.gettempdir()),
         ).name
     )
     if use_ass:
@@ -2544,7 +2558,9 @@ class MKVCreator:
             unmatched_ifo_subs = []
 
         cc608_srt = None
-        if input_plan.is_dvd_vob:
+        if input_plan.is_dvd_vob and any(
+            stream.codec in CC608_CODECS for stream in streams
+        ):
             cc608_srt = _extract_dvd_cc608_sidecar(
                 title, input_plan.inputs, self.cleanup.temp_files, self.config
             )
@@ -2791,7 +2807,8 @@ class MKVCreator:
                     if _uses_retimed_edition_chapters(title, kept_inputs)
                     else None
                 ),
-                fix_source_id_statistics=any(
+                fix_source_id_statistics="--tags" in command
+                or any(
                     _source_id_for_stream(stream, title) is not None
                     for stream in streams
                 ),

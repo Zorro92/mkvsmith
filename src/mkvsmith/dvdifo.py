@@ -797,7 +797,7 @@ def _dvd_fingerprint_bytes(fingerprint: _DvdFileFingerprint) -> bytes:
     return b"".join(
         (
             struct.pack("<Q", fingerprint.creation_filetime),
-            struct.pack("<I", fingerprint.size),
+            struct.pack("<I", fingerprint.size & 0xFFFFFFFF),
             fingerprint.name.encode("utf-8"),
             b"\0",
         )

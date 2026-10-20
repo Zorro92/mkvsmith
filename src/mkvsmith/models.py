@@ -615,6 +615,7 @@ class Stream:
     def codec_display(self) -> str:
         return {
             "h264": "H.264",
+            "h265": "H.265",
             "hevc": "H.265",
             "mpeg2video": "MPEG-2",
             "vc1": "VC-1",

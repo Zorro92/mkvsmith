@@ -115,10 +115,15 @@ def _streams_from_mpls(mpls_streams: list[MplsStreamInfo]) -> list[Stream]:
                 "",
                 False,
                 False,
-                type_index=0,
+                type_index=type_counts[StreamType.VIDEO],
                 pid=stream_info.get("pid"),
                 subpath_id=stream_info.get("subpath_id"),
             )
+            height = stream_info.get("height")
+            if height is not None:
+                stream.height = height
+                if height in (720, 1080, 2160) and stream_info.get("aspect") != "4:3":
+                    stream.width = height * 16 // 9
             _set_video_color_from_info(stream, stream_info)
             title_streams.append(stream)
             type_counts[StreamType.VIDEO] += 1
@@ -721,6 +726,7 @@ def _union_edition_streams(edition_titles: list[Title]) -> list[Stream]:
                 stream.codec,
                 stream.language,
                 stream.pid,
+                stream.sub_id,
                 stream.channels,
             )
             if signature in signatures:
@@ -736,6 +742,15 @@ def _union_edition_streams(edition_titles: list[Title]) -> list[Stream]:
                 continue
             signatures.append(signature)
             union.append(Stream(**vars(stream)))
+    type_counts = {
+        StreamType.VIDEO: 0,
+        StreamType.AUDIO: 0,
+        StreamType.SUBTITLE: 0,
+    }
+    for index, stream in enumerate(union):
+        stream.index = index
+        stream.type_index = type_counts[stream.stream_type]
+        type_counts[stream.stream_type] += 1
     return union
 
 

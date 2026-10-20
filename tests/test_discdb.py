@@ -965,3 +965,37 @@ def test_iso_disc_hash_uses_existing_iso_listing_sizes(tmp_path: Path):
         .upper()
     )
     assert scanner.disc_metadata.disc_hash == expected
+
+
+def test_synthetic_scan_log_uses_stream_index_and_folder_hash_matches_uppercase_m2ts(
+    tmp_path: Path,
+) -> None:
+    stream_dir = tmp_path / "BDMV" / "STREAM"
+    stream_dir.mkdir(parents=True)
+    (stream_dir / "00001.M2TS").write_bytes(b"abcd")
+    files = discdb.collect_hash_files(tmp_path)
+    assert [f["name"] for f in files] == ["00001.M2TS"]
+
+    title = make_title(0, stream_dir / "00001.M2TS", 3600, playlist="00800")
+    title.streams.extend(
+        [
+            Stream(
+                index=1,
+                stream_type=StreamType.AUDIO,
+                codec="ac3",
+                language="eng",
+                type_index=0,
+            ),
+            Stream(
+                index=2,
+                stream_type=StreamType.SUBTITLE,
+                codec="hdmv_pgs_subtitle",
+                language="eng",
+                type_index=0,
+            ),
+        ]
+    )
+    log = discdb.synthetic_scan_log([title], is_bluray=True)
+    assert 'SINFO:0,0,1,0,"Video"' in log
+    assert 'SINFO:0,1,1,0,"Audio"' in log
+    assert 'SINFO:0,2,1,0,"Subtitle"' in log

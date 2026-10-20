@@ -85,8 +85,12 @@ def _probe_with_mkvmerge(path: Path) -> dict[str, Any] | None:
             return None
         data = json.loads(proc.stdout)
         duration = 0.0
-        if data.get("container", {}).get("duration"):
-            duration = data["container"]["duration"] / 1_000_000_000.0
+        container = data.get("container") or {}
+        raw_duration = (container.get("properties") or {}).get(
+            "duration", container.get("duration")
+        )
+        if raw_duration:
+            duration = raw_duration / 1_000_000_000.0
         return {"tracks": data.get("tracks", []), "duration": duration}
     except (
         OSError,

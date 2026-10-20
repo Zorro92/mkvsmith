@@ -1405,11 +1405,10 @@ def _select_vobsub_palette(
 
 
 def _format_vobsub_timestamp(pts: int, pts_offset: int) -> str:
-    seconds = max(0, pts - pts_offset) / 90000.0
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    whole_seconds = int(seconds - hours * 3600 - minutes * 60)
-    milliseconds = int(round((seconds - int(seconds)) * 1000))
+    total_ms = int(round(max(0, pts - pts_offset) * 1000 / 90000.0))
+    total_seconds, milliseconds = divmod(total_ms, 1000)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, whole_seconds = divmod(remainder, 60)
     return "%02d:%02d:%02d:%03d" % (hours, minutes, whole_seconds, milliseconds)
 
 

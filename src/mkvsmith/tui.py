@@ -41,7 +41,11 @@ from mkvsmith.cli import (
     _title_source_id,
     _video_stream_line,
 )
-from mkvsmith.disc_reader import SourceType, detect_source_type
+from mkvsmith.disc_reader import (
+    _VIDEO_FILE_EXTENSIONS,
+    SourceType,
+    detect_source_type,
+)
 from mkvsmith.drives import (
     OpticalDrive,
     can_eject,
@@ -51,6 +55,7 @@ from mkvsmith.drives import (
 )
 from mkvsmith.i18n import (
     available_languages,
+    detect_locale_language,
     get_language,
     language_name,
     set_language,
@@ -111,7 +116,7 @@ T = TypeVar("T")
 # =============================================================================
 
 # Files the browser lists besides folders.
-_SOURCE_FILE_SUFFIXES = frozenset({".iso", ".img", ".m2ts", ".vob", ".evo", ".mkv"})
+_SOURCE_FILE_SUFFIXES = frozenset({".iso", ".img", *_VIDEO_FILE_EXTENSIONS})
 
 # Loose disc streams: a folder holding these directly (e.g. BDMV/STREAM or a
 # copied VIDEO_TS) can be ripped as it is.
@@ -1244,12 +1249,19 @@ class TitlesScreen(_Page):
         self.run_worker(build, thread=True, group="combine")
 
     def _split(self, index: int) -> None:
+        old_count = len(self.titles)
         try:
             split_packed_episodes(self.titles, [index], self.metadata, self.state)
         except ValueError as exc:
             self.notify(str(exc), severity="error")
             return
-        self.marked.discard(index)
+        delta = len(self.titles) - old_count
+        self.marked = {i + delta if i > index else i for i in self.marked if i != index}
+        self.streams = {
+            (i + delta if i > index else i): s
+            for i, s in self.streams.items()
+            if i != index
+        }
         self.refill()
 
     @on(OptionList.OptionSelected, "#titles")
@@ -1867,7 +1879,7 @@ class MkvsmithApp(App[None]):
         def answered(spec: SettingSpec, saved: Settings) -> None:
             nonlocal heading
             if spec.key == "ui.language":
-                set_language(saved.ui_language)
+                set_language(saved.ui_language or detect_locale_language() or "en")
                 relabel_keys()
                 if not loaded.exists:
                     heading = tr("First-time setup")
@@ -1945,7 +1957,9 @@ class MkvsmithApp(App[None]):
 
     def language_changed(self, reopen_settings: bool = False) -> None:
         """Switch the interface language now, rebuilding the open screens."""
-        set_language(self.state.settings.ui_language)
+        set_language(
+            self.state.settings.ui_language or detect_locale_language() or "en"
+        )
         relabel_keys()
         while len(self.screen_stack) > 1:
             self.pop_screen()

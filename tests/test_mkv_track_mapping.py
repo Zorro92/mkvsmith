@@ -2067,3 +2067,61 @@ def test_build_mkvmerge_command_flags_only_the_default_audio(
 
     flags = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--default-track"]
     assert flags == ["0:no", "1:yes", "2:no", "3:no"]
+
+
+def test_track_filter_options_disables_unselected_track_families() -> None:
+    title = Title(
+        index=0,
+        source_file=Path("movie.m2ts"),
+        name="Movie",
+        duration_seconds=100.0,
+    )
+    title.streams = [
+        Stream(index=0, stream_type=StreamType.VIDEO),
+        Stream(index=1, stream_type=StreamType.AUDIO),
+        Stream(index=2, stream_type=StreamType.SUBTITLE),
+    ]
+    mapped = [
+        make_mapped_entry(0, "video", title.streams[0]),
+        make_mapped_entry(1, "audio", title.streams[1]),
+    ]
+    ident_tracks = [
+        {"id": 0, "type": "video"},
+        {"id": 1, "type": "audio"},
+        {"id": 2, "type": "subtitles"},
+    ]
+
+    assert _track_filter_options(ident_tracks, mapped, title) == [
+        "--video-tracks",
+        "0",
+        "--audio-tracks",
+        "1",
+        "--no-subtitles",
+    ]
+
+
+def test_probe_with_mkvmerge_reads_container_properties_duration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import json
+    from types import SimpleNamespace
+
+    from mkvsmith import probe
+
+    payload = {
+        "container": {"properties": {"duration": 125_000_000_000}},
+        "tracks": [{"id": 0, "type": "video", "codec": "HEVC/H.265", "properties": {}}],
+    }
+    monkeypatch.setattr(probe, "_HAS_MKVMERGE", True)
+    monkeypatch.setattr(
+        probe.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(returncode=0, stdout=json.dumps(payload)),
+    )
+
+    result = probe._probe_with_mkvmerge(tmp_path / "video.mkv")
+    assert result is not None
+    assert result["duration"] == 125.0
+    title = Title(0, tmp_path / "video.mkv", "Video", result["duration"])
+    probe._parse_mkvmerge_streams(result, title)
+    assert title.streams[0].codec_display == "H.265"

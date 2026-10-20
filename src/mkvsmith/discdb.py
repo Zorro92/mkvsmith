@@ -571,7 +571,13 @@ def _folder_hash_files(source: Path) -> list[FileHashInfo]:
     if video_ts.is_dir():
         paths.extend(sorted(path for path in video_ts.iterdir() if path.is_file()))
     if stream_dir.is_dir():
-        paths.extend(sorted(stream_dir.glob("*.m2ts")))
+        paths.extend(
+            sorted(
+                path
+                for path in stream_dir.iterdir()
+                if path.is_file() and path.suffix.lower() == ".m2ts"
+            )
+        )
     return [
         FileHashInfo(
             index=index,
@@ -699,41 +705,37 @@ def _quoted(value: object) -> str:
 
 
 def _stream_lines(title_index: int, stream: Stream) -> list[str]:
+    stream_index = stream.index
     lines = [
-        f"SINFO:{title_index},{stream.type_index},1,0,"
+        f"SINFO:{title_index},{stream_index},1,0,"
         f"{_quoted(_stream_type_name(stream.stream_type))}"
     ]
     if stream.codec:
         lines.append(
-            f"SINFO:{title_index},{stream.type_index},7,0,"
-            f"{_quoted(stream.codec_display)}"
+            f"SINFO:{title_index},{stream_index},7,0,{_quoted(stream.codec_display)}"
         )
     if stream.stream_type == StreamType.AUDIO:
         if stream.codec:
             lines.append(
-                f"SINFO:{title_index},{stream.type_index},2,0,"
+                f"SINFO:{title_index},{stream_index},2,0,"
                 f"{_quoted(stream.codec_display)}"
             )
         lines.extend(
             (
-                f"SINFO:{title_index},{stream.type_index},3,0,"
-                f"{_quoted(stream.language)}",
-                f"SINFO:{title_index},{stream.type_index},4,0,"
-                f"{_quoted(stream.language)}",
+                f"SINFO:{title_index},{stream_index},3,0,{_quoted(stream.language)}",
+                f"SINFO:{title_index},{stream_index},4,0,{_quoted(stream.language)}",
             )
         )
     elif stream.stream_type == StreamType.SUBTITLE:
         lines.extend(
             (
-                f"SINFO:{title_index},{stream.type_index},3,0,"
-                f"{_quoted(stream.language)}",
-                f"SINFO:{title_index},{stream.type_index},4,0,"
-                f"{_quoted(stream.language)}",
+                f"SINFO:{title_index},{stream_index},3,0,{_quoted(stream.language)}",
+                f"SINFO:{title_index},{stream_index},4,0,{_quoted(stream.language)}",
             )
         )
     elif stream.width and stream.height:
         lines.append(
-            f"SINFO:{title_index},{stream.type_index},19,0,"
+            f"SINFO:{title_index},{stream_index},19,0,"
             f"{_quoted(f'{stream.width}x{stream.height}')}"
         )
     return lines

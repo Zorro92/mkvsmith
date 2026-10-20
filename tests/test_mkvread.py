@@ -125,3 +125,27 @@ def test_warning_only_for_a_non_idr_start(
     mkv._warn_if_starts_without_idr(Path("Episode 6.mkv"))
 
     assert ("non-IDR" in capsys.readouterr().out) is warned
+
+
+def test_unknown_size_track_entry_or_block_does_not_hang(tmp_path: Path) -> None:
+    bad_subelement = _el("AE", b"\xd7\xff\xff")
+    path_sub = _mkv(
+        tmp_path,
+        [_el("A3", _block(1, _frame(IDR)))],
+        tracks=bad_subelement,
+    )
+    assert first_video_frame_is_idr(path_sub) is None
+
+    unknown_track_entry = bytes.fromhex("AE") + _UNKNOWN + b"\xd7\x81\x01"
+    path_entry = _mkv(
+        tmp_path,
+        [_el("A3", _block(1, _frame(IDR)))],
+        tracks=unknown_track_entry,
+    )
+    assert first_video_frame_is_idr(path_entry) is None
+
+    path_block = _mkv(
+        tmp_path,
+        [bytes.fromhex("A3") + _UNKNOWN + _block(1, _frame(IDR))],
+    )
+    assert first_video_frame_is_idr(path_block) is None

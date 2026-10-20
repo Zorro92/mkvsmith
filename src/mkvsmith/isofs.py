@@ -337,11 +337,19 @@ class _UdfReader:
         nmaps = _u32(lvd, 268)
         offset = 440
         for _ in range(nmaps):
+            if offset + 2 > len(lvd):
+                raise IsoImageError("truncated partition map")
             map_type, map_len = lvd[offset], lvd[offset + 1]
+            if map_len == 0 or offset + map_len > len(lvd):
+                raise IsoImageError("invalid partition map length")
             if map_type == 1:
+                if map_len < 6:
+                    raise IsoImageError("truncated type-1 partition map")
                 pnum = _u16(lvd, offset + 4)
                 self._maps.append((False, pnum))
             elif map_type == 2:
+                if map_len < 44:
+                    raise IsoImageError("truncated type-2 partition map")
                 ident = lvd[offset + 5 : offset + 28].rstrip(b"\0")
                 if ident != _UDF_METADATA_PARTITION:
                     raise IsoImageError(f"unsupported partition map {ident!r}")
@@ -350,13 +358,14 @@ class _UdfReader:
                 self._maps.append((True, pnum))
             else:
                 raise IsoImageError(f"unknown partition map type {map_type}")
-            if map_len == 0:
-                raise IsoImageError("zero-length partition map")
             offset += map_len
 
         if meta_file_lb is not None:
             pnum = next(p for is_meta, p in self._maps if is_meta)
-            fe_sector = self._part_start[pnum] + meta_file_lb
+            part_start = self._part_start.get(pnum)
+            if part_start is None:
+                raise IsoImageError("UDF partition start not found")
+            fe_sector = part_start + meta_file_lb
             fe = _read_sectors(self._f, fe_sector)
             phys_ref = next(
                 (i for i, (m, p) in enumerate(self._maps) if not m and p == pnum), None
@@ -369,7 +378,7 @@ class _UdfReader:
             for run in meta.runs:
                 if run.offset is None:
                     raise IsoImageError("sparse metadata file")
-                sector = run.offset // SECTOR - self._part_start[pnum]
+                sector = run.offset // SECTOR - part_start
                 self._meta_runs.append((sector, run.length))
 
         fsd_lb, fsd_part = _u32(lvd, 252), _u16(lvd, 256)
@@ -611,6 +620,8 @@ class _Iso9660Reader:
             _check_entry_count(len(visited) + len(entries))
             pending: IsoEntry | None = None
             for record in self._records(extent, size):
+                if len(record) < 33:
+                    raise IsoImageError("truncated ISO9660 directory record")
                 name_len = record[32]
                 name_raw = record[33 : 33 + name_len]
                 if name_raw in (b"\0", b"\1"):

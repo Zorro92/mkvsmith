@@ -215,7 +215,7 @@ def split_packed_title(
                 source_file=source_file,
                 name=name,
                 duration_seconds=segment.end - segment.start,
-                streams=list(parent.streams),
+                streams=[replace(s) for s in parent.streams],
                 iso_internal_paths=iso_paths,
                 append_clips=append_clips,
                 estimated_size_bytes=sum(sizes) or parent.estimated_size_bytes,

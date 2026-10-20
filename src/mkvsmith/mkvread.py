@@ -205,6 +205,8 @@ def _scan(r: _Reader) -> Iterator[tuple[_AvcConfig, list[bytes]]]:
         size = r.element_size()
         if element in (_TRACKS, _CLUSTER, _BLOCK_GROUP):
             stack.append(None if size == _UNKNOWN_SIZE else r.tell() + size)
+        elif size == _UNKNOWN_SIZE:
+            return
         elif element == _TRACK_ENTRY:
             avc.update(_track_entry(r.read(size)))
         elif element in (_SIMPLE_BLOCK, _BLOCK):
@@ -217,8 +219,6 @@ def _scan(r: _Reader) -> Iterator[tuple[_AvcConfig, list[bytes]]]:
                 if laced:
                     return
                 yield config, _split_nals(block[offset:], config.length_size)
-        elif size == _UNKNOWN_SIZE:
-            return
         else:
             r.seek(r.tell() + size)
 
@@ -232,6 +232,8 @@ def _track_entry(data: bytes) -> dict[int, _AvcConfig]:
     while r.remaining():
         element = r.element_id()
         size = r.element_size()
+        if size == _UNKNOWN_SIZE:
+            break
         value = r.read(size)
         if element == _TRACK_NUMBER:
             number = int.from_bytes(value, "big")

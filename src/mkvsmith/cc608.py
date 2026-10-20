@@ -359,9 +359,11 @@ class _Cc608Decoder:
                 screen.row_used[row] = screen.row_used[row + 1]
             else:
                 screen.characters[row] = [None] * _SCREEN_COLUMNS
+                screen.italics[row] = [False] * _SCREEN_COLUMNS
                 screen.row_used[row] = False
         screen.row_used[self.cursor_row] = False
         screen.characters[self.cursor_row] = [None] * _SCREEN_COLUMNS
+        screen.italics[self.cursor_row] = [False] * _SCREEN_COLUMNS
 
     def _delete_end_of_row(self) -> None:
         # Erase from the cursor to end of row: just move the sentinel
@@ -611,13 +613,10 @@ def _has_cc608_data(path: Path, max_bytes: int = 32 * 1024 * 1024) -> bool:
 
 
 def _format_srt_timestamp(pts: int) -> str:
-    seconds = pts / 90000.0
-    hours, remainder = divmod(int(seconds), 3600)
+    total_ms = round(max(0, pts) * 1000 / 90000.0)
+    total_secs, millis = divmod(total_ms, 1000)
+    hours, remainder = divmod(total_secs, 3600)
     minutes, secs = divmod(remainder, 60)
-    millis = round((seconds - int(seconds)) * 1000)
-    if millis == 1000:
-        millis = 0
-        secs += 1
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 

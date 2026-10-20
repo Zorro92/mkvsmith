@@ -113,7 +113,7 @@ def _directory_source_type(source: Path) -> SourceType | None:
         return SourceType.DVD_RAW
     if _has_file_with_ext(source, (".evo",)):
         return SourceType.HDDVD_RAW
-    if _has_file_with_ext(source, (".iso",)):
+    if _has_file_with_ext(source, (".iso", ".img")):
         return SourceType.ISO_UNKNOWN
     return None
 
@@ -121,7 +121,7 @@ def _directory_source_type(source: Path) -> SourceType | None:
 def _file_source_type(source: Path) -> SourceType | None:
     if not source.is_file():
         return None
-    if source.suffix.lower() == ".iso":
+    if source.suffix.lower() in (".iso", ".img"):
         return SourceType.ISO_UNKNOWN
     if source.suffix.lower() in _VIDEO_FILE_EXTENSIONS:
         return SourceType.VIDEO_FILE

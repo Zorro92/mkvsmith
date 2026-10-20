@@ -326,3 +326,27 @@ def test_write_cc608_ass_maps_grid_onto_video(tmp_path: Path) -> None:
         "Dialogue: 0,0:00:02.50,0:00:07.50,CC,,0,0,0,,{\\pos(0,58)}{\\i1}MUSIC{\\i0}"
         in text
     )
+
+
+def test_timestamp_millisecond_rollover_across_minute_and_hour_boundaries() -> None:
+    from mkvsmith.cc608 import _format_srt_timestamp
+    from mkvsmith.vobsub import _format_vobsub_timestamp
+
+    assert _format_srt_timestamp(int(59.9999 * 90000)) == "00:01:00,000"
+    assert _format_srt_timestamp(int(3599.9999 * 90000)) == "01:00:00,000"
+    assert _format_vobsub_timestamp(int(1.9996 * 90000), 0) == "00:00:02:000"
+    assert _format_vobsub_timestamp(int(59.9999 * 90000), 0) == "00:01:00:000"
+
+
+def test_rollup_clears_italics_on_vacated_row() -> None:
+    from mkvsmith.cc608 import _Cc608Decoder
+
+    dec = _Cc608Decoder()
+    dec.feed(0x14, 0x25, 0)  # Roll-up 2
+    dec.feed(0x13, 0x6E, 0)  # PAC row 13, italic
+    dec.feed(0x41, 0x42, 0)  # "AB"
+    event1 = dec.feed(
+        0x14, 0x2D, 90000
+    )  # CR -> rolls row 13 into row 12, clears row 13
+    assert event1 is not None
+    assert dec.screens[dec.active].italics[12] == [False] * 32

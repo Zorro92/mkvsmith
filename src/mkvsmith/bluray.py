@@ -349,7 +349,10 @@ def _parse_clpi(data: bytes) -> dict[int, dict[str, Any]]:
                         enc = "utf-8"
                     if remaining >= 4:
                         raw_lang = data[attr_pos + 1 : attr_pos + 4]
-                        info["language"] = raw_lang.decode(enc, "ignore")
+                        if all(32 <= c < 127 for c in raw_lang):
+                            info["language"] = raw_lang.decode("ascii", "ignore")
+                        else:
+                            info["language"] = raw_lang.decode(enc, "ignore")
                 elif coding_type in (0x90, 0x91):  # PG/IG
                     if remaining >= 3:
                         raw_lang = data[attr_pos : attr_pos + 3]
@@ -507,7 +510,7 @@ class MplsStreamInfo(TypedDict):
     colorspace: NotRequired[str]
     sample_rate: NotRequired[int | None]
     height: NotRequired[int | None]
-    framerate: NotRequired[str | None]
+    framerate: NotRequired[float | str | None]
     interlaced: NotRequired[bool | None]
     aspect: NotRequired[str | None]
 
@@ -693,14 +696,10 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
                     char_code = attr[1]
                     enc = _BD_CHARACTER_CODE.get(char_code, "utf-8")
                     raw_lang = attr[2:5]
-                    decoded = raw_lang.decode(enc, "ignore")
-                    # Fall back to ASCII if the encoded decode produces nonsense.
-                    # Check for any non-ASCII character via ord() since decoded is a str.
-                    if decoded.strip() and any(ord(c) > 127 for c in decoded):
-                        lang = decoded
-                    elif all(32 <= c < 127 for c in raw_lang):
+                    if all(32 <= c < 127 for c in raw_lang):
                         lang = raw_lang.decode("ascii", "ignore")
                     else:
+                        decoded = raw_lang.decode(enc, "ignore")
                         lang = decoded if decoded.strip() else "und"
             else:  # PG (0x90) / IG (0x91)
                 if len(attr) >= 4:

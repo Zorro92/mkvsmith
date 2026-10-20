@@ -195,7 +195,8 @@ def _parse_vui(r: _BitReader) -> tuple[bool, _Hrd | None]:
         hrd = _parse_hrd(r)
     vcl_hrd = r.bit()
     if vcl_hrd:
-        hrd = hrd or _parse_hrd(r)
+        vcl = _parse_hrd(r)
+        hrd = hrd or vcl
     if nal_hrd or vcl_hrd:
         r.bit()  # low_delay_hrd_flag
     return bool(r.bit()), hrd
@@ -300,15 +301,19 @@ def _sei_payloads(nal: bytes) -> Iterable[tuple[int, bytes]]:
     pos = 0
     while pos < len(data) and data[pos] != 0x80:  # rbsp trailing bits
         payload_type = 0
-        while data[pos] == 0xFF:
+        while pos < len(data) and data[pos] == 0xFF:
             payload_type += 255
             pos += 1
+        if pos >= len(data):
+            break
         payload_type += data[pos]
         pos += 1
         size = 0
-        while data[pos] == 0xFF:
+        while pos < len(data) and data[pos] == 0xFF:
             size += 255
             pos += 1
+        if pos >= len(data):
+            break
         size += data[pos]
         pos += 1
         yield payload_type, data[pos : pos + size]
@@ -390,6 +395,8 @@ class FrameAnalyzer:
         """Scan type of one frame, or ``None`` if it has no slice."""
         sei: list[bytes] = []
         for nal in nals:
+            if not nal:
+                continue
             nal_type = nal[0] & 0x1F
             if nal_type == _NAL_SPS:
                 self._sps.update([_parse_sps(nal)])

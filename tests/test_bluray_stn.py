@@ -412,3 +412,19 @@ def test_sgt_frog_subpath_entry_is_the_ig_menu() -> None:
     assert [(e["type"], e["clips"]) for e in info["subpath_entries"]] == [
         (3, ["00013"])
     ]
+
+
+def test_text_subtitle_utf16_char_code_preserves_ascii_language_code() -> None:
+    from mkvsmith.scan import _streams_from_mpls
+
+    # coding_type 0x92 (TextST) with char_code 0x02 (UTF-16BE) and ASCII "eng".
+    text_sub = _entry(1, 0x1800) + bytes([5, 0x92, 0x02]) + b"eng"
+    stn = _stn(video=[VIDEO, _entry(1, 0x1012) + _attr(0x24)], pg=[text_sub])
+    streams = _parse_stn_table_streams(stn)
+
+    assert [s["lang"] for s in streams if s["type"] == StreamType.SUBTITLE] == ["eng"]
+    streams[1]["height"] = 2160
+    built = _streams_from_mpls(streams)
+    videos = [s for s in built if s.stream_type == StreamType.VIDEO]
+    assert [v.type_index for v in videos] == [0, 1]
+    assert (videos[1].width, videos[1].height) == (3840, 2160)

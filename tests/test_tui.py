@@ -1584,3 +1584,29 @@ def test_editing_a_setting_keeps_its_place(settings_file: Path) -> None:
         assert settings_list.highlighted_option.id == "scan.min_duration"
 
     run_app(body, size=(50, 20))
+
+
+def test_splitting_from_the_title_list_remaps_marked_and_custom_streams(
+    tmp_path: Path,
+) -> None:
+    from mkvsmith.packed_episodes import PackedSegment
+
+    packed = make_title(0, 2800.0, playlist_name="00000", clip_durations=[2800.0])
+    packed.packed_segments = [
+        PackedSegment(0.0, 1400.0, 1),
+        PackedSegment(1400.0, 2800.0, 2),
+    ]
+    extra = make_title(1, 600.0)
+    custom = [extra.streams[0]]
+
+    async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        screen = await at_titles(pilot, app)
+        screen.marked = {0, 1}
+        screen.streams = {0: [packed.streams[0]], 1: custom}
+        await choose(pilot, app, "#titles", "split-0")
+        assert len(screen.titles) == 3
+        assert screen.marked == {2}
+        assert screen.streams == {2: custom}
+        assert screen.titles[0].streams[0] is not screen.titles[1].streams[0]
+
+    titles_app(body, [packed, extra], tmp_path)

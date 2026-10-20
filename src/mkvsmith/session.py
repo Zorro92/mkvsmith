@@ -319,7 +319,11 @@ def prepare_multi_edition(
         if not 0 <= idx < len(titles):
             raise ValueError(tr("Invalid: {idx}", idx=idx))
     edition_titles = [titles[i] for i in indices]
-    if len({t.source_file for t in edition_titles}) > 1:
+    disc_roots = {
+        t.source_file if t.iso_internal_paths else t.source_file.parent
+        for t in edition_titles
+    }
+    if len(disc_roots) > 1:
         raise ValueError(tr("Multi-edition titles must come from the same source disc"))
     combined = build_multi_edition_title(edition_titles, names)
     for n, ed in enumerate(combined.editions, start=1):

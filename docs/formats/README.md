@@ -9,9 +9,26 @@ builder or test, and add to it whenever research settles something.
 - **Write-ups** (`*.md` in this folder): each structure mkvsmith reads,
   field by field, in our own words, with the source of every table.
   - [dvd-video.md](dvd-video.md): IFO files (VMG, VTS, PGC, cells, address
-    tables, stream attributes) and DVD VM commands.
+    tables, time maps, menus, stream attributes), NAV packs, VOB stream IDs
+    and DVD VM commands.
   - [bluray.md](bluray.md): playlists (MPLS: play items, STN stream table,
-    chapters) and clip info (CLPI: program info), with the code tables.
+    SubPaths, chapters, extensions), clip info (CLPI: program info, EP
+    map), the transport stream's PIDs, and `index.bdmv`, `MovieObject.bdmv`
+    and the disc metadata files, with the code tables.
+  - [hd-dvd.md](hd-dvd.md): XPL playlists, EVO stream IDs, Standard
+    Content IFOs.
+  - [subpictures.md](subpictures.md): the DVD subpicture unit, its palette,
+    VobSub `.idx` and Matroska `S_VOBSUB`; Blu-ray PGS in brief.
+  - [closed-captions.md](closed-captions.md): line-21 captions in DVD GOP
+    user data, and CEA-608 decoding.
+  - [filesystems.md](filesystems.md): UDF (1.02–2.60, the metadata
+    partition) and ISO 9660, and which to trust on a protected DVD.
+  - [codecs.md](codecs.md): video and audio bitstream headers (colour,
+    HDR, Dolby Vision, AC-3, DTS, TrueHD, LPCM) and what mkvmerge takes
+    from them.
+  - [matroska-output.md](matroska-output.md): the track flags, languages,
+    chapters, editions and tags mkvsmith writes, and the mkvmerge versions
+    they need.
 - **Sources** ([sources/](sources/)): copies of reference material whose
   licence allows it, unchanged, each headed with its URL, exact commit,
   fetch date and licence.
@@ -42,6 +59,8 @@ the local copy can follow the original URL listed in that file's header.
   `ifo.md`"), using the letters in the write-up's source table.
 - Mark a layout confirmed on a real disc's bytes with **✔ real disc**, and
   say what was seen. Never name the disc: describe it ("a retail NTSC DVD").
+  A test of mkvmerge on synthetic input is **✔ mkvmerge vNN experiment**,
+  never ✔ real disc.
 - When sources disagree, record both readings under "Sources disagree" and
   what settled it, if anything has.
 - When mkvsmith's parser doesn't match a write-up, list it under "Open

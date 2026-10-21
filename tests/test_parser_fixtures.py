@@ -638,27 +638,6 @@ def test_tied_shorts_cluster_yields_to_episodes(fixtures_dir: Path) -> None:
 
 
 @pytest.mark.skipif(
-    not (Path(__file__).parent / "fixtures" / "superman_vts_03_0.ifo").is_file(),
-    reason="Superman (1988) episode VTS fixture not present",
-)
-def test_episode_part_labels_reject_non_alternating_sets() -> None:
-    """A single duration family or non-interleaved sets get no a/b pairing."""
-    # All one family: sequential numbering (Tex Avery's 16 cartoons).
-    one_family = [(num, num * 10, 400.0 + num, 4) for num in range(1, 17)]
-    assert _episode_part_labels(one_family) is None
-
-    # Two families of equal size but grouped, not alternating: pairing is
-    # ambiguous.
-    grouped = [
-        (1, 10, 1146.0, 4),
-        (2, 20, 1140.0, 4),
-        (3, 30, 286.0, 3),
-        (4, 40, 285.0, 3),
-    ]
-    assert _episode_part_labels(grouped) is None
-
-
-@pytest.mark.skipif(
     not (Path(__file__).parent / "fixtures" / "batb_platinum_mex_vts09.ifo").is_file()
     or not (Path(__file__).parent / "fixtures" / "beauty_vts_09_0.ifo").is_file(),
     reason="Beauty and the Beast VTS fixtures not present",

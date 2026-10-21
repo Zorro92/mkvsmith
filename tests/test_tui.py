@@ -921,8 +921,9 @@ def test_a_click_reported_off_the_screen_keeps_the_focus(dialog_open: bool) -> N
                 tui.ConfirmDialog("Show its titles anyway?"), answers.append
             )
             await dialog(pilot, app, tui.ConfirmDialog)
+        # The menu focuses its list after it fills (slow under emulation).
+        await wait_until(pilot, lambda: app.focused is not None)
         focused = app.focused
-        assert focused is not None
         for event in (events.MouseMove, events.MouseDown, events.MouseUp):
             app.post_message(
                 event(

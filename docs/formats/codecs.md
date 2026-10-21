@@ -90,6 +90,13 @@ M2TS (`0x1011` and `0x1015`; see [bluray.md](bluray.md)). mkvmerge 81.0
 (2023-12-02) and later merge the two into one track and no longer list the
 enhancement layer (NEWS). Earlier versions show two video tracks.
 
+✔ real disc: a UHD Blu-ray's feature is profile 7 with a full enhancement
+layer (FEL), per dovi_tool's reading of the PID `1015` RPUs. mkvmerge v96
+lists one video track for it (number `0x1011`) and writes both a `dvcC`
+and an `hvcE` block addition mapping; the RPUs in the MKV read back as
+profile 7. mkvsmith lists the enhancement layer as a second video stream,
+which then matches no mkvmerge track.
+
 ### MPEG-2 (DVD, some BD)
 
 Sequence header: `aspect_ratio_information` (4 bits: 1 square, 2 4:3, 3

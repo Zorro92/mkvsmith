@@ -206,6 +206,7 @@ _COLOR_CICP: dict[str, int] = {
     "smpte170m": 6,
     "bt2020": 9,
     "bt2020nc": 9,
+    "bt2020-10": 14,
     "smpte2084": 16,
 }
 

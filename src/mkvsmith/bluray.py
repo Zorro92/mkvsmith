@@ -456,6 +456,8 @@ def _set_video_color_from_info(s: Stream, si: MplsStreamInfo) -> None:
     cs = si.get("colorspace")
     if cs is not None and cs in _BD_HEVC_COLOR_MAP:
         primaries, transfer, matrix = _BD_HEVC_COLOR_MAP[cs]
+        if cs == "bt2020" and si.get("dynamic_range_type") == "SDR":
+            transfer = "bt2020-10"  # wide colour without HDR: no PQ
         s.color_primaries = primaries
         s.color_transfer = transfer
         s.color_space = matrix
@@ -675,9 +677,11 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
         if coding_type in _BD_VIDEO_CODING_MAP:
             st = StreamType.VIDEO
             codec = _BD_VIDEO_CODING_MAP[coding_type]
-            # HEVC (0x24): dynamic_range_type and colorspace at attr[5]
-            if coding_type == 0x24 and len(attr) >= 6:
-                dr_byte = attr[5]
+            # HEVC (0x24): attr[1] is video_format/frame_rate, then
+            # dynamic_range_type(4) and color_space(4) (libbluray
+            # mpls_parse.c _parse_stream). The attributes are 5 bytes.
+            if coding_type == 0x24 and len(attr) >= 3:
+                dr_byte = attr[2]
                 dynamic_range_type = _BD_DYNAMIC_RANGE_MAP.get(dr_byte >> 4, "unknown")
                 cspace = dr_byte & 0x0F
                 colorspace = _BD_COLOR_SPACE_MAP.get(cspace, "unknown")

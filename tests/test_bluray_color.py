@@ -118,3 +118,11 @@ def test_already_set_color_is_left_untouched() -> None:
         "smpte2084",
         "bt2020nc",
     )
+
+
+def test_sdr_bt2020_gets_the_sdr_bt2020_transfer_not_pq() -> None:
+    s = _video()
+    _set_video_color_from_info(
+        s, _info(height=2160, dynamic_range_type="SDR", colorspace="bt2020")
+    )
+    assert (s.color_primaries, s.color_transfer) == ("bt2020", "bt2020-10")

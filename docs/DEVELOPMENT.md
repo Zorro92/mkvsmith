@@ -79,6 +79,10 @@ cp SGT_FROG_S7/BDMV/PLAYLIST/00001.mpls tests/fixtures/sgtfrog_s7_00001.mpls
 # Packed-episode detection (tests/test_packed_episodes.py):
 cp SGT_FROG_S2_D1/BDMV/PLAYLIST/00003.mpls tests/fixtures/sgtfrog_s2d1_00003.mpls
 
+# UHD HDR10 + Dolby Vision colour tags (tests/test_bluray_stn.py): the main
+# feature's playlist from any UHD Blu-ray with Dolby Vision:
+cp UHD_DV_DISC/BDMV/PLAYLIST/MAIN.mpls tests/fixtures/uhd_dolby_vision.mpls
+
 # Built-in ISO reader (tests/test_isofs.py). Sparse captures holding only the
 # filesystem sectors plus a few small files; no essence:
 uv run python scripts/capture_iso_fixture.py monster_high_welcome.iso \

@@ -156,13 +156,14 @@ DVD cell IDs.
   also calls interlaced, is left progressive, so players don't deinterlace
   real film frames. This needs `mkvpropedit` (part of MKVToolNix).
 - **HDR:** HDR10 and HDR10+ metadata travel inside the video and survive a
-  remux untouched. The BT.2020/PQ colour signalling is read from the
-  playlist.
-  - No Dolby Vision Profile 7 (dual-layer UHD) disc has been tested.
-  - A remux keeps only the HDR10-compatible base layer; full Dolby Vision
-    would need bitstream-level processing.
-  - It's unverified whether the enhancement layer can show up as a stray
-    extra video track.
+  remux untouched. The track is tagged BT.2020/PQ from the playlist's
+  dynamic-range and colour-space fields.
+  - Dolby Vision profile 7 (UHD Blu-ray) keeps its enhancement layer:
+    mkvmerge carries it inside the main video track, with the Dolby Vision
+    configuration players look for (checked with mkvinfo and MediaInfo:
+    "dvhe.07.06, BL+EL+RPU").
+  - The enhancement layer is still listed as a second video track; the
+    main track already carries it, so there's nothing extra to choose.
 - **Disc images** are read by a built-in UDF/ISO9660 reader, and recognised
   by their contents, so the name doesn't matter: `.iso`, `.img`, `.mdf`
   (Alcohol 120%), `.bin`, or none at all. A folder holding one image (a

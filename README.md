@@ -135,8 +135,8 @@ The [reference](docs/REFERENCE.md) covers all of this in more depth.
   this when it spots one. Some hardware video players show a black screen
   for a split episode that starts mid-clip; mkvsmith warns you when that
   happens, and software playback is fine.
-- **HDR:** HDR10 and HDR10+ come through untouched. Dolby Vision hasn't
-  been tested; only the HDR10 base layer is kept.
+- **HDR:** HDR10, HDR10+ and Dolby Vision (including the dual-layer kind on
+  UHD Blu-rays) come through untouched, and rips are tagged as HDR.
 - **Temporary files** go to `/var/tmp`. Big extractions avoid filling a RAM
   disk. Change the folder with `temp.dir` if space is tight.
 

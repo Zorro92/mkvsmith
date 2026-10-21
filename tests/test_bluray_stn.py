@@ -428,3 +428,42 @@ def test_text_subtitle_utf16_char_code_preserves_ascii_language_code() -> None:
     videos = [s for s in built if s.stream_type == StreamType.VIDEO]
     assert [v.type_index for v in videos] == [0, 1]
     assert (videos[1].width, videos[1].height) == (3840, 2160)
+
+
+# --- HEVC dynamic range and colour space ---------------------------------------
+
+# A UHD Blu-ray's two HEVC entries, byte for byte (a 2160p Dolby Vision
+# disc): the HDR10 base layer and the Dolby Vision enhancement
+# layer. After the coding type comes video_format/frame_rate, then
+# dynamic_range_type/color_space: 0x12 = HDR10, BT.2020; 0x22 = Dolby Vision.
+UHD_BASE_LAYER = _entry(1, 0x1011) + bytes([5, 0x24, 0x82, 0x12, 0x00, 0x00])
+UHD_DV_LAYER = _entry(4, 0x1015, subpath=0) + bytes([5, 0x24, 0x62, 0x22, 0x00, 0x00])
+
+
+def test_hevc_dynamic_range_and_colour_space_are_read() -> None:
+    from mkvsmith.scan import _streams_from_mpls
+
+    streams = _parse_stn_table_streams(_stn(video=[UHD_BASE_LAYER, UHD_DV_LAYER]))
+
+    assert [(s.get("dynamic_range_type"), s.get("colorspace")) for s in streams] == [
+        ("hdr10", "bt2020"),
+        ("dolby_vision", "bt2020"),
+    ]
+    base = _streams_from_mpls(streams)[0]
+    assert (base.color_primaries, base.color_transfer, base.color_space) == (
+        "bt2020",
+        "smpte2084",
+        "bt2020nc",
+    )
+
+
+@_needs("uhd_dolby_vision.mpls")
+def test_uhd_dolby_vision_playlist_is_tagged_hdr() -> None:
+    from mkvsmith.scan import _streams_from_mpls
+
+    info = _parse_mpls(_FIXTURES / "uhd_dolby_vision.mpls")
+    assert info is not None
+    videos = [s for s in info["streams"] if s["type"] == StreamType.VIDEO]
+    assert [s.get("dynamic_range_type") for s in videos] == ["hdr10", "dolby_vision"]
+    base = _streams_from_mpls(videos)[0]
+    assert (base.color_primaries, base.color_transfer) == ("bt2020", "smpte2084")

@@ -142,8 +142,8 @@ detalle.
   por hardware muestran la pantalla en negro en un episodio dividido que
   empieza a mitad de un clip; mkvsmith avisa cuando pasa, y la reproducción
   por software funciona bien.
-- **HDR:** HDR10 y HDR10+ pasan sin cambios. Dolby Vision no se ha probado;
-  solo se conserva la capa base HDR10.
+- **HDR:** HDR10, HDR10+ y Dolby Vision (incluido el de dos capas de los
+  Blu-ray UHD) pasan sin cambios, y las extracciones se marcan como HDR.
 - **Los archivos temporales** van a `/var/tmp`. Las extracciones grandes
   evitan llenar un disco en RAM. Cambia la carpeta con `temp.dir` si andas
   justo de espacio.

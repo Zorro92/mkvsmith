@@ -183,8 +183,12 @@ def build_image(
     label: str = "DISC",
     modified: datetime = EPOCH,
     max_extent: int = (1 << 30) - SECTOR,
+    damaged: tuple[str, ...] = (),
 ) -> bytes:
     """A disc image holding *files* ({"VIDEO_TS/VTS_01_0.IFO": data}).
+
+    *damaged* names files (by file name) whose UDF file entry is left as a
+    blank sector, as on a scratched disc or a corrupt image.
 
     *udf*: "1.02" (DVD: file entries in the partition), "2.50" (Blu-ray:
     extended file entries in a metadata partition), or None. *iso9660*:
@@ -220,6 +224,7 @@ def build_image(
             label,
             vrs_at=18 if iso9660 else 16,
             max_extent=max_extent,
+            damaged=damaged,
         )
     w.put(end, b"")  # the image ends after the last structure
     return w.write(end + 1)
@@ -376,6 +381,7 @@ def _write_udf(
     *,
     vrs_at: int,
     max_extent: int,
+    damaged: tuple[str, ...] = (),
 ) -> int:
     metadata = revision == "2.50"
     nsr = b"NSR03" if metadata else b"NSR02"
@@ -453,6 +459,8 @@ def _write_udf(
                     location,
                 ),
             )
+        elif node.name in damaged:
+            w.put(phys(node.fe_block), bytes(SECTOR))
         else:
             lb = node.data_sector - PARTITION_START
             ads = b""

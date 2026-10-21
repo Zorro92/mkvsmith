@@ -89,7 +89,9 @@ class IsoImage:
         self.path = path
         self._file: BinaryIO = path.open("rb")
         try:
-            self.filesystem, self.label, entries = _read_filesystem(self._file)
+            self.filesystem, self.label, entries, self.skipped = _read_filesystem(
+                self._file
+            )
         except BaseException:
             self._file.close()
             raise
@@ -150,18 +152,31 @@ class IsoImage:
                 out.write(self.read(entry, offset, min(_COPY_CHUNK, total - offset)))
 
 
-def _read_filesystem(f: _Readable) -> tuple[str, str, list[IsoEntry]]:
+def _read_filesystem(f: _Readable) -> tuple[str, str, list[IsoEntry], list[str]]:
+    """The image's filesystem, label, files, and the UDF entries it skipped.
+
+    UDF wins even with entries skipped: on a DVD the ISO9660 side is the one
+    copy protection falsifies, and Blu-ray images often have none
+    (docs/formats/filesystems.md). ISO9660 is read only when UDF can't be,
+    or lists no file at all.
+    """
     errors: list[str] = []
+    udf_result: tuple[str, str, list[IsoEntry], list[str]] | None = None
     try:
         udf = _UdfReader(f)
-        return "udf", udf.label, udf.files()
+        udf_result = "udf", udf.label, udf.files(), udf.skipped
+        if udf_result[2]:
+            return udf_result
+        errors.append("UDF: no files")
     except IsoImageError as exc:
         errors.append(f"UDF: {exc}")
     try:
         iso = _Iso9660Reader(f)
-        return "iso9660", iso.label, iso.files()
+        return "iso9660", iso.label, iso.files(), []
     except IsoImageError as exc:
         errors.append(f"ISO9660: {exc}")
+    if udf_result is not None:
+        return udf_result
     raise IsoImageError("; ".join(errors))
 
 
@@ -282,6 +297,8 @@ class _UdfReader:
         # Physical (sector, length) runs of the metadata file, in order.
         self._meta_runs: list[tuple[int, int]] = []
         self.label = ""
+        # Entries files() couldn't read, each with its reason.
+        self.skipped: list[str] = []
         self._root = self._read_volume()
 
     # -- addressing ---------------------------------------------------------
@@ -491,7 +508,13 @@ class _UdfReader:
             out += chunk
         return bytes(out)
 
-    def _children(self, node: _UdfFile, path: str) -> Iterator[tuple[str, int, int]]:
+    def _children(
+        self, node: _UdfFile, path: str
+    ) -> Iterator[tuple[str | IsoImageError, int, int]]:
+        """A directory's entries: (name, partition, block). A name that won't
+        decode comes as the error instead, so the rest can still be listed;
+        a bad identifier descriptor ends the listing (the next one can't be
+        found)."""
         data = self._file_bytes(node, path)
         i = 0
         while i + 38 <= len(data):
@@ -506,21 +529,34 @@ class _UdfReader:
             # Skip the parent entry (0x08) and deleted entries (0x04).
             if characteristics & 0x0C:
                 continue
-            yield _udf_dchars(name_raw), icb_part, icb_lb
+            try:
+                name: str | IsoImageError = _udf_dchars(name_raw)
+            except IsoImageError as exc:
+                name = exc
+            yield name, icb_part, icb_lb
 
     def files(self) -> list[IsoEntry]:
+        """Every regular file. An entry that can't be read is skipped and
+        noted in ``skipped`` (with the reason), as libudfread does, rather
+        than losing the whole tree; only an unreadable root is fatal."""
         entries: list[IsoEntry] = []
+        self.skipped = []
         seen: set[tuple[int, int]] = set()
         stack: list[tuple[str, _UdfFile]] = [("", self._file_at(*self._root, ""))]
         while stack:
             dir_path, node = stack.pop()
-            for name, part, lb in self._children(node, dir_path):
+            for name, part, lb, child in self._readable_children(node, dir_path):
                 if (part, lb) in seen:
                     continue
                 seen.add((part, lb))
                 _check_entry_count(len(seen))
                 path = f"{dir_path}/{name}" if dir_path else name
-                child = self._file_at(part, lb, path)
+                if child is None:
+                    try:
+                        child = self._file_at(part, lb, path)
+                    except IsoImageError as exc:
+                        self.skipped.append(str(exc))
+                        continue
                 if child.is_dir:
                     stack.append((path, child))
                 else:
@@ -531,6 +567,19 @@ class _UdfReader:
                     entries.append(IsoEntry(path, child.size, child.modified, runs))
         entries.sort(key=lambda entry: entry.path)
         return entries
+
+    def _readable_children(
+        self, node: _UdfFile, dir_path: str
+    ) -> Iterator[tuple[str, int, int, _UdfFile | None]]:
+        """``_children`` with its failures noted in ``skipped``."""
+        try:
+            for name, part, lb in self._children(node, dir_path):
+                if isinstance(name, IsoImageError):
+                    self.skipped.append(f"{dir_path or '/'}: {name}")
+                    continue
+                yield name, part, lb, None
+        except IsoImageError as exc:
+            self.skipped.append(str(exc))
 
 
 # =============================================================================

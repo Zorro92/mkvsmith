@@ -229,6 +229,14 @@ Copy protection falsifies one filesystem or both:
 Players follow the IFO's sector addresses, so the trust order is: the IFO's
 sectors, then UDF, then ISO 9660.
 
+`isofs.py` keeps to that order when an entry is damaged: a file entry or
+directory it can't read is skipped and listed in `IsoImage.skipped`, and the
+rest of the UDF tree is used, as LUR skips bad directory entries. A name
+that won't decode skips just that entry; a bad identifier descriptor ends
+its directory's listing, since the next one can't be found. Only an
+unreadable root, or a UDF tree with no files at all, falls back to
+ISO 9660. Opening an image with skipped entries logs a warning.
+
 ## The CSS check
 
 `disc_reader.css_scrambled_packets` reads the PES scrambling-control bits
@@ -256,11 +264,6 @@ identifier; LUR returns the UDF primary volume descriptor's identifier
 
 ## Open parser mismatches
 
-- **Errors drop the whole UDF tree.** One bad entry (a bad identifier
-  descriptor, an unknown name encoding, an allocation shorter than the file,
-  an unexpected tag) throws the tree away and silently uses ISO 9660. On a
-  DVD that's the side protections falsify; on a UDF-only Blu-ray image the
-  read fails.
 - **Metadata mirror never read.** A "not allocated" extent in the metadata
   file raises an error, though the spec allows one.
 - **No tag validation.** Checksum, version, CRC and tag location aren't

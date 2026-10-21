@@ -203,3 +203,42 @@ def test_extract_iso_prefix_registers_temp_file(dvd_image: Path) -> None:
     finally:
         for temp in temp_files:
             temp.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("udf", ["1.02", "2.50"])
+def test_a_damaged_entry_is_skipped_not_the_whole_tree(
+    tmp_path: Path, udf: str
+) -> None:
+    # One unreadable file entry used to drop the whole UDF tree, leaving a
+    # Blu-ray image unreadable and a DVD on its ISO 9660 side.
+    files = BD_FILES if udf == "2.50" else DVD_FILES
+    damaged = "MovieObject.bdmv" if udf == "2.50" else "VTS_01_0.IFO"
+    path = tmp_path / "damaged.iso"
+    path.write_bytes(
+        build_image(files, udf=udf, iso9660=udf == "1.02", damaged=(damaged,))
+    )
+
+    with isofs.IsoImage(path) as image:
+        assert image.filesystem == "udf"
+        listed = {entry.path for entry in image.files()}
+        assert listed == {p for p in files if not p.endswith(damaged)}
+        assert len(image.skipped) == 1 and damaged in image.skipped[0]
+
+
+def test_opening_a_damaged_image_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "damaged.iso"
+    path.write_bytes(
+        build_image(BD_FILES, udf="2.50", iso9660=False, damaged=("index.bdmv",))
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(disc_reader, "log_warn", warnings.append)
+
+    image = disc_reader._open_iso(path)
+
+    assert image is not None
+    image.close()
+    assert warnings == [
+        "Some entries in damaged.iso are damaged and were skipped (1); the rest of the disc can still be read"
+    ]

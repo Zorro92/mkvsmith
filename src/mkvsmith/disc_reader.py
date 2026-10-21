@@ -652,7 +652,7 @@ def dvd_title_is_css_encrypted(title: Title) -> bool:
 def _open_iso(iso_path: Path) -> IsoImage | None:
     """Open *iso_path*, logging why and returning ``None`` when unreadable."""
     try:
-        return IsoImage(iso_path)
+        image = IsoImage(iso_path)
     except (IsoImageError, OSError) as exc:
         log_error(
             tr(
@@ -662,6 +662,17 @@ def _open_iso(iso_path: Path) -> IsoImage | None:
             )
         )
         return None
+    if image.skipped:
+        for reason in image.skipped:
+            log_debug(f"UDF entry skipped in {iso_path.name}: {reason}")
+        log_warn(
+            tr(
+                "Some entries in {path} are damaged and were skipped ({count}); the rest of the disc can still be read",
+                count=len(image.skipped),
+                path=iso_path.name,
+            )
+        )
+    return image
 
 
 def _list_iso_files(iso_path: Path) -> tuple[list[str], dict[str, int]]:

@@ -387,6 +387,7 @@ _ES: dict[str, str] = {
     "para este título.",
     "Removed {count} leftover temp folder(s) ({gb:.1f} GB) from interrupted runs.": "Se eliminaron {count} carpeta(s) temporal(es) sobrante(s) ({gb:.1f} GB) de ejecuciones interrumpidas.",
     "Could not read ISO image {path}: {err}": "No se pudo leer la imagen ISO {path}: {err}",
+    "Some entries in {path} are damaged and were skipped ({count}); the rest of the disc can still be read": "Algunas entradas de {path} están dañadas y se omitieron ({count}); el resto del disco se puede leer",
     "File not found inside the ISO: {path}": "Archivo no encontrado dentro de la ISO: {path}",
     "Could not extract {path} from the ISO: {err}": "No se pudo extraer {path} de la ISO: {err}",
     "'{name}' already exists. Overwrite? [y/N]:": "'{name}' ya existe. ¿Sobrescribir? [y/N]:",

@@ -261,5 +261,7 @@ when it's fixed.
 2. **Video "letterboxed"** is read from byte 0 bit 1 (automatic pan-scan
    disallowed), which no source calls letterboxed. Harmless today: nothing
    uses the value.
-3. **Audio commentary** is any code extension of 2 or more, so a track for
-   the visually impaired (2) counts as commentary.
+
+Not modelled yet: audio for the visually impaired (code extension 2) could
+be muxed with mkvmerge's `--visual-impaired-flag`; mkvsmith has no such
+stream flag, and none of the 10 retail DVDs checked uses it.

@@ -221,11 +221,11 @@ class _IFOAudioAttrs:
     def is_commentary(self) -> bool:
         """Whether this audio track is a commentary track.
 
-        Checked via the code_extension / application byte (byte 5 in the
-        VTS_A_ATR entry).  Value ranges vary by codec; common indicators
-        are values >= 2 (visually impaired, director's comments, etc.).
+        Code extension (byte 5) 3 = director's comments, 4 = alternate
+        director's comments; 2 is for the visually impaired, not commentary
+        (docs/formats/dvd-video.md, audio attributes).
         """
-        return self.code_extension >= 2
+        return self.code_extension in (3, 4)
 
     CODEC_MAP: ClassVar[dict[int, tuple[str, str]]] = {
         0: ("AC3", "ac3"),

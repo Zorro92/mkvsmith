@@ -47,7 +47,17 @@ def test_only_caption_subtitles_are_hearing_impaired() -> None:
 
 
 def test_audio_attributes() -> None:
-    data = _one_title(audio=[Audio("en", 6), Audio("fr", 2), Audio("en", 2, 0, 3)])
+    # Code extensions per SPRM 17: 1 normal, 2 for the visually impaired,
+    # 3 director's comments, 4 alternate director's comments.
+    data = _one_title(
+        audio=[
+            Audio("en", 6),
+            Audio("fr", 2),
+            Audio("en", 2, code_extension=2),
+            Audio("en", 2, code_extension=3),
+            Audio("en", 2, code_extension=4),
+        ]
+    )
 
     attrs = dvdifo._parse_vts_audio_attrs(data)
 
@@ -55,5 +65,13 @@ def test_audio_attributes() -> None:
         ("en", 6, "AC3"),
         ("fr", 2, "AC3"),
         ("en", 2, "AC3"),
+        ("en", 2, "AC3"),
+        ("en", 2, "AC3"),
     ]
-    assert [a.is_commentary for a in attrs.values()] == [False, False, True]
+    assert [a.is_commentary for a in attrs.values()] == [
+        False,
+        False,
+        False,
+        True,
+        True,
+    ]

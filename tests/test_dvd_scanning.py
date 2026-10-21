@@ -265,7 +265,7 @@ def test_build_dvd_streams_uses_pgc_streams_and_pgc_languages(
                 quantization="24-bit",
                 bits_per_sample=24,
                 dsur=False,
-                code_extension=2,
+                code_extension=3,  # director's comments
                 lang_code="eng",
             )
         }

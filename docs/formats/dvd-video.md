@@ -14,6 +14,15 @@ places where mkvsmith's parser doesn't match yet are listed under
 | **R** | libdvdread `src/dvdread/ifo_types.h` (GPL-2.0-or-later) | [sources/libdvdread-ifo_types.h.md](sources/libdvdread-ifo_types.h.md) |
 | **N** | libdvdnav `src/vm/vmcmd.c` (GPL-2.0-or-later) | [sources/libdvdnav-vmcmd.c.md](sources/libdvdnav-vmcmd.c.md) |
 | **M** | mpucoder.com DVD pages (no licence stated) | local only: `.agents/specs/dvd/mpucoder/` (`ifo.md`, `ifo_vmg.md`, `ifo_vts.md`, `pgc.md`, `sprm.md`, `vmi*.md`, ...) |
+| **P** | libdvdread `src/ifo_read.c` and `src/ifo_print.c` (GPL-2.0-or-later): how R's fields are read, checked and printed | [read](sources/libdvdread-ifo_read.c.md), [print](sources/libdvdread-ifo_print.c.md) |
+| **A** | dvdauthor `src/dvdifo.c`, `src/dvdvob.c` (GPL-2.0-or-later): an authoring tool, so which bits a *writer* sets | [dvdifo](sources/dvdauthor-dvdifo.c.md), [dvdvob](sources/dvdauthor-dvdvob.c.md) |
+| **F** | FFmpeg `libavformat/dvdvideodec.c`, `libavcodec/dvdsubdec.c` (LGPL-2.1-or-later), built on R | [demuxer](sources/ffmpeg-dvdvideodec.c.md), [subtitles](sources/ffmpeg-dvdsubdec.c.md) |
+| **V** | VLC `modules/access/dvdread.c`, `dvdnav.c` (LGPL-2.1-or-later), built on R | [dvdread](sources/vlc-dvdread.c.md), [dvdnav](sources/vlc-dvdnav.c.md) |
+| **H** | HandBrake `libhb/dvd.c`, `dvdnav.c` (GPL-2.0-only, so not in the repo), built on R | local only: `.agents/specs/dvd/handbrake-*.md` |
+
+F, V and H read the IFO through libdvdread, so they show how a field is
+*interpreted*, not an independent reading of its *position*. A and M are
+independent of R.
 
 Conventions: offsets are hex, multi-byte values big-endian, bits numbered 7
 (most significant) to 0. C bitfields in **R** are declared most significant
@@ -71,9 +80,10 @@ Header 8 bytes: number of titles (2), reserved (2), last byte (4). Then one
 ### Video attributes (2 bytes)
 
 Byte 0 (sources agree): bits 7-6 coding (0 MPEG-1, 1 MPEG-2), 5-4 standard
-(0 NTSC, 1 PAL), 3-2 aspect (0 = 4:3, 3 = 16:9), bit 1 automatic letterbox
-disallowed, bit 0 automatic pan/scan disallowed (M; R calls bits 1-0
-`permitted_df`).
+(0 NTSC, 1 PAL), 3-2 aspect (0 = 4:3, 3 = 16:9), bit 1 automatic pan-scan
+disallowed, bit 0 automatic letterbox disallowed (M; A writes 0x200 for "no
+pan-scan" and 0x100 for "no letterbox" in the 16-bit value; R calls bits 1-0
+`permitted_df`, and P prints 1 as "only pan&scan", 2 as "only letterboxed").
 
 Byte 1: bit 7 / bit 6 Line 21 closed captions in field 1 / field 2 (sources
 agree). The rest differs; see [Sources disagree](#sources-disagree).
@@ -92,7 +102,7 @@ agree). The rest differs; see [Sources disagree](#sources-disagree).
 | 1 | 5-4 | sample rate: 0 = 48 kHz |
 | 1 | 2-0 | channels minus one |
 | 2-3 | | ISO 639-1 language code |
-| 5 | | code extension: 1 normal, **2 for visually impaired**, 3 director's comments, 4 alternate director's comments (R `dvd_audio_code_ext_t`, M `sprm.md` SPRM 17) |
+| 5 | | code extension: 1 normal, **2 for visually impaired**, 3 director's comments, 4 alternate director's comments (R `dvd_audio_code_ext_t`, M `sprm.md` SPRM 17; F and H flag 2 as visually impaired and 3-4 as commentary) |
 
 ### Subpicture attributes (6 bytes)
 
@@ -110,7 +120,12 @@ of them have code extension 5 (captions); the rest are 0, 1, 9 (forced) or
 | 4 | | language code extension |
 | 5 | | code extension: 1 normal, 2 large, 3 children, **5 / 6 / 7 captions** (normal / large / children), 9 forced, 13 / 14 / 15 director's comments (R `dvd_subp_code_ext_t`, M `sprm.md` SPRM 19) |
 
-Hearing-impaired (captions) subtitles are the ones with code extension 5-7.
+Hearing-impaired (captions) subtitles are the ones with code extension 5-7:
+H labels 5 / 6 / 7 "Closed Caption" (plain / large type / children), 9
+"Forced" and 13-15 "Director's Commentary"; V marks 9 as forced. None of R,
+F, V or H treats the type bits as a hearing-impaired flag. F alone tests
+byte 4 (the language extension) for 9 to mark a stream forced, where M, R,
+H and V use byte 5.
 
 Audio code extensions seen on the same discs: 0, 1 and 3 (director's
 comments, 15 tracks); none used 2.
@@ -220,11 +235,20 @@ bit 7) down to 0, so bit *b* is in byte (63 - *b*) / 8.
 | 1 | reserved | letterboxed |
 | 0 | film (PAL only) | film mode |
 
-mkvsmith reads the resolution as M does (bits 5-3). Not settled: on 168
-title-set IFOs of 10 retail DVDs, byte 1 was `00000000`, `10000000` or
-`11000000` (only the caption bits set), so every one is a full-width,
-non-letterboxed title under both readings. Settling it needs a disc with a
-704- or 352-wide title, or a letterboxed 4:3 one.
+Independent evidence so far:
+
+- **Resolution:** A (a writer) puts the resolution code in bits 5-3
+  (`(vres - 1) << 3`), as M describes. R reads a 2-bit picture size from
+  bits 3-2 (P `read_video_attr`), and F uses that value for the width, but F
+  reads through R, so it isn't independent. Two independent sources (M, A)
+  against one (R). mkvsmith follows M and A.
+- **Letterboxed:** A sets bit 1 for "crop" (letterboxed), as R does; M says
+  bit 2. Two against one, the other way round. mkvsmith doesn't use the
+  letterboxed value.
+- **Real discs:** on 168 title-set IFOs of 10 retail DVDs, byte 1 was
+  `00000000`, `10000000` or `11000000` (only the caption bits set), so every
+  one is a full-width, non-letterboxed title under all readings. Settling it
+  needs a disc with a 704- or 352-wide title, or a letterboxed 4:3 one.
 
 ## Open parser mismatches
 
@@ -238,7 +262,8 @@ when it's fixed.
 2. **VTS_C_ADT** is read with a 4-byte header instead of 8, so entries are
    misaligned (53 garbage entries instead of 81 on the disc above). Used by
    `_lookup_main_feature_range`.
-3. **Video "letterboxed"** is read from byte 0 bit 1 (automatic letterbox
-   disallowed), which neither source calls letterboxed.
+3. **Video "letterboxed"** is read from byte 0 bit 1 (automatic pan-scan
+   disallowed), which no source calls letterboxed. Harmless today: nothing
+   uses the value.
 4. **Audio commentary** is any code extension of 2 or more, so a track for
    the visually impaired (2) counts as commentary.

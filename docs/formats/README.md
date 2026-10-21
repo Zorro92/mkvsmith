@@ -11,8 +11,17 @@ builder or test, and add to it whenever research settles something.
   - [dvd-video.md](dvd-video.md): IFO files (VMG, VTS, PGC, cells, address
     tables, stream attributes) and DVD VM commands.
 - **Sources** ([sources/](sources/)): copies of reference material whose
-  licence allows it, unchanged, each headed with its URL, version or commit,
+  licence allows it, unchanged, each headed with its URL, exact commit,
   fetch date and licence.
+  - DVD: libdvdread (`ifo_types.h`, `ifo_read.c`, `ifo_print.c`), libdvdnav
+    (`vmcmd.c`), dvdauthor (`dvdifo.c`, `dvdvob.c`), FFmpeg
+    (`dvdvideodec.c`, `dvdsubdec.c`), VLC (`dvdread.c`, `dvdnav.c`).
+  - Blu-ray: libbluray (`mpls_parse.c`, `mpls_data.h`, `clpi_parse.c`,
+    `clpi_data.h`). A write-up like the DVD one is still to come.
+- **Kept on the developer's machine** (`.agents/specs/`, see its README):
+  the mpucoder DVD pages, HandBrake's DVD scan and MKVToolNix's MPLS/CLPI
+  parsers (both GPL-2.0-only), and the UDF 1.02 / 2.50 / 2.60, ECMA-167 and
+  ECMA-119 (ISO 9660) specifications.
 
 ## Two places, by licence
 

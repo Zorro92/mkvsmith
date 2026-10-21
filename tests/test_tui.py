@@ -1660,3 +1660,45 @@ def test_closed_captions_are_listed_without_a_checkbox(
     ((_, streams),) = creator.ripped
     assert streams is not None
     assert [s.display_id for s in streams] == ["v:0", "a:0", "a:1", "s:0"]
+
+
+def footer_keys(app: tui.MkvsmithApp) -> dict[str, str]:
+    return {k.key: k.description for k in app.screen.query(FooterKey)}
+
+
+def test_the_footer_names_enter_wherever_it_does_something(
+    settings_file: Path,
+) -> None:
+    async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        await wait_until(pilot, lambda: screen_name(app) == "MainMenu")
+        await wait_until(pilot, lambda: "enter" in footer_keys(app))
+        assert footer_keys(app)["enter"] == "Choose"
+        await open_setting(pilot, app, "tracks.all_audio")  # a list dialog
+        await wait_until(pilot, lambda: screen_name(app) == "ChoiceDialog")
+        await wait_until(pilot, lambda: "enter" in footer_keys(app))
+        # The dialog's own keys, not the settings page's (q, d) behind it.
+        assert footer_keys(app) == {"enter": "Choose", "escape": "Cancel"}
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: screen_name(app) == "SettingsScreen")
+        assert footer_keys(app)["enter"] == "Choose"
+        options = app.screen.query_one("#settings", OptionList)
+        options.highlighted = setting_index("scan.min_duration")
+        await pilot.press("enter")  # a text field
+        await wait_until(pilot, lambda: screen_name(app) == "TextDialog")
+        await wait_until(pilot, lambda: "enter" in footer_keys(app))
+        assert footer_keys(app) == {"enter": "OK", "escape": "Cancel"}
+
+    run_app(body)
+
+
+def test_the_title_lists_name_enter_in_the_footer(tmp_path: Path) -> None:
+    async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        await at_titles(pilot, app)
+        await wait_until(pilot, lambda: "enter" in footer_keys(app))
+        assert footer_keys(app)["enter"] == "Choose"
+        assert footer_keys(app)["space"] == "Mark"
+        await choose(pilot, app, "#titles", "title-0")
+        await wait_until(pilot, lambda: screen_name(app) == "TitleScreen")
+        await wait_until(pilot, lambda: "enter" in footer_keys(app))
+
+    titles_app(body, [make_title(0)], tmp_path)

@@ -243,6 +243,9 @@ def relabel_keys() -> None:
             each._merged_bindings = each._merge_bindings()
 
 
+# Lists and the text field act on Enter, but Textual keeps those keys out of
+# the footer; every list and field here is one of these, so Enter shows.
+@_keys(lambda: [Binding("enter", "select", tr("Choose"))])
 class Lines(OptionList):
     """The app's list: the mouse wheel moves the highlight, like the arrows.
 
@@ -347,7 +350,11 @@ def _strip_yes_no(message: str) -> str:
 
 
 class _Dialog(ModalScreen[T]):
-    """A box over the screen: an optional heading, the question, then lines."""
+    """A box over the screen: an optional heading, the question, then lines.
+
+    Each dialog has its own footer: the page's, underneath, would list the
+    page's keys, which don't work while the dialog is open.
+    """
 
     def __init__(self, question: str, heading: str | None = None) -> None:
         super().__init__()
@@ -388,6 +395,7 @@ class ChoiceDialog(_Dialog[str | None]):
             if self._cancel:
                 options += [None, Option(tr("Cancel"), id="cancel")]
             yield Lines(*options, id="choices")
+        yield Footer()
 
     def on_mount(self) -> None:
         options = self.query_one("#choices", OptionList)
@@ -418,6 +426,7 @@ class ConfirmDialog(_Dialog[bool]):
             yield Lines(
                 Option(tr("Yes"), id="yes"), Option(tr("No"), id="no"), id="choices"
             )
+        yield Footer()
 
     def on_mount(self) -> None:
         options = self.query_one("#choices", OptionList)
@@ -430,6 +439,11 @@ class ConfirmDialog(_Dialog[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+@_keys(lambda: [Binding("enter", "submit", tr("OK"))])
+class Field(Input):
+    """A text field whose Enter shows in the footer (see Lines)."""
 
 
 @_keys(lambda: [Binding("escape", "cancel", tr("Cancel"))])
@@ -457,13 +471,14 @@ class TextDialog(_Dialog[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
             yield from self.compose_question()
-            yield Input(self._current, password=self._secret, id="value")
+            yield Field(self._current, password=self._secret, id="value")
             yield Label("", id="error")
             yield Lines(
                 Option(tr("OK"), id="save"),
                 Option(tr("Cancel"), id="cancel"),
                 id="actions",
             )
+        yield Footer()
 
     def on_mount(self) -> None:
         field = self.query_one("#value", Input)
@@ -509,6 +524,7 @@ class InfoDialog(_Dialog[None]):
                 markup=False,
             )
             yield Lines(Option(tr("OK"), id="ok"), id="actions")
+        yield Footer()
 
     def on_mount(self) -> None:
         options = self.query_one("#actions", OptionList)

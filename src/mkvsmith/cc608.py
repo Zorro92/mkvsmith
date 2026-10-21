@@ -63,6 +63,8 @@ _CC_ATTR_COUNT = 0x3E  # segment count, bits 1-5
 _CC_ATTR_EXTRA = 0x01  # one extra 3-byte field follows the segments
 
 _CC_SEGMENT_SIZE = 6
+# One NTSC frame in 90 kHz ticks (1001/30000 s).
+_NTSC_FRAME_TICKS = 3003
 
 _SCREEN_ROWS = 15
 _SCREEN_COLUMNS = 32
@@ -312,6 +314,10 @@ class _Cc608Decoder:
         self.cursor_italic = False
         self.charset = _BASIC_AMERICAN
         self.prev_cmd: tuple[int, int] = (0, 0)
+        # Field 1 carries CC1 and CC2; control, preamble and mid-row codes
+        # name theirs (bit 3 of the first byte), and text that follows
+        # belongs to the last one named. Only CC1 is decoded.
+        self.channel = 1
 
     # -- screen handling ------------------------------------------------
 
@@ -364,6 +370,14 @@ class _Cc608Decoder:
         screen.row_used[self.cursor_row] = False
         screen.characters[self.cursor_row] = [None] * _SCREEN_COLUMNS
         screen.italics[self.cursor_row] = [False] * _SCREEN_COLUMNS
+
+    def _backspace(self) -> None:
+        # Move back one column and erase that cell (47 CFR 15.119 BS).
+        if self.cursor_column > 0 and self.cursor_row < _SCREEN_ROWS:
+            self.cursor_column -= 1
+            self._writing_screen().characters[self.cursor_row][self.cursor_column] = (
+                None
+            )
 
     def _delete_end_of_row(self) -> None:
         # Erase from the cursor to end of row: just move the sentinel
@@ -437,6 +451,14 @@ class _Cc608Decoder:
             return None
         self.prev_cmd = (hi, lo)
 
+        if 0x10 <= hi <= 0x1F:
+            self.channel = 2 if hi & 0x08 else 1
+            hi &= ~0x08
+        if self.channel != 1:
+            if hi >= 0x20:
+                self.prev_cmd = (0, 0)
+            return None
+
         if (hi == 0x10 and 0x40 <= lo <= 0x5F) or (
             0x11 <= hi <= 0x17 and 0x40 <= lo <= 0x7F
         ):
@@ -450,7 +472,7 @@ class _Cc608Decoder:
         elif hi == 0x10 and 0x20 <= lo <= 0x2F:
             # Background attribute: styling only.
             pass
-        elif hi in (0x14, 0x15, 0x1C):
+        elif hi in (0x14, 0x15):
             return self._handle_control(lo, pts)
         elif hi in (0x11, 0x12, 0x13):
             self._handle_char(hi, lo)
@@ -465,6 +487,8 @@ class _Cc608Decoder:
     def _handle_control(self, lo: int, pts: int) -> CcCaptionEvent | None:
         if lo == 0x20:  # Resume Caption Loading
             self.mode = "popon"
+        elif lo == 0x21:  # Backspace
+            self._backspace()
         elif lo == 0x24:  # Delete to End of Row
             self._delete_end_of_row()
         elif lo in (0x25, 0x26, 0x27):  # Roll-up 2/3/4
@@ -476,6 +500,8 @@ class _Cc608Decoder:
             self.mode = "text"
         elif lo == 0x2C:  # Erase Displayed Memory
             return self._handle_edm(pts)
+        elif lo == 0x2E:  # Erase Non-displayed Memory
+            self.screens[1 - self.active].clear()
         elif lo == 0x2D:  # Carriage Return
             event = self._capture(pts) if self.mode != "popon" else None
             self._roll_up()
@@ -492,14 +518,20 @@ class _Cc608Decoder:
 
 
 def _cc_pairs_from_block(block: bytes) -> list[tuple[int, int]]:
-    """Extract Field-1 EIA-608 pairs from one DVD-CC user-data block.
+    """Extract Field-1 EIA-608 pairs from one DVD-CC user-data block."""
+    return [pair for _frame, pair in _cc_frame_pairs_from_block(block)]
+
+
+def _cc_frame_pairs_from_block(block: bytes) -> list[tuple[int, tuple[int, int]]]:
+    """Field-1 EIA-608 pairs of one DVD-CC user-data block, each with the
+    frame it belongs to within the GOP (one segment per frame).
 
     The attributes byte selects which triplet of each six-byte caption
     segment is Field 1 (pattern flag) and how many segments follow (count
     bits), plus an optional trailing 3-byte extra field. Pairs with broken
     parity (Field-2 nulls such as 00 00) are dropped.
     """
-    pairs: list[tuple[int, int]] = []
+    pairs: list[tuple[int, tuple[int, int]]] = []
     if len(block) < 5 or block[:4] != _CC_USER_DATA_PREFIX:
         return pairs
     attributes = block[4]
@@ -511,7 +543,7 @@ def _cc_pairs_from_block(block: bytes) -> list[tuple[int, int]]:
     # for pattern 1, second ([other marker][pair]) for pattern 0.
     field1_offset = 0 if pattern_field1_first else 3
 
-    def _take_field1(position: int) -> None:
+    def _take_field1(position: int, frame: int) -> None:
         if position + 3 > len(block):
             return
         # Field 1's marker is 0xff in both patterns, including the
@@ -521,16 +553,16 @@ def _cc_pairs_from_block(block: bytes) -> list[tuple[int, int]]:
             return
         first, second = block[position + 1], block[position + 2]
         if _odd_parity(first) and _odd_parity(second):
-            pairs.append((first & 0x7F, second & 0x7F))
+            pairs.append((frame, (first & 0x7F, second & 0x7F)))
 
     offset = 5
-    for _ in range(segment_count):
+    for frame in range(segment_count):
         if offset + _CC_SEGMENT_SIZE > len(block):
             break
-        _take_field1(offset + field1_offset)
+        _take_field1(offset + field1_offset, frame)
         offset += _CC_SEGMENT_SIZE
     if has_extra_field:
-        _take_field1(offset)
+        _take_field1(offset, segment_count)
     return pairs
 
 
@@ -548,8 +580,11 @@ def _scan_vob_cc608_file(path: Path) -> list[tuple[int, tuple[int, int]]]:
                     block = bytes(data[start:end])
                     pes_start = data.rfind(_VIDEO_PES_START, 0, match.start())
                     pts = _video_pes_pts(data, pes_start) if pes_start != -1 else None
-                    for pair in _cc_pairs_from_block(block):
-                        results.append((pts if pts is not None else 0, pair))
+                    for frame, pair in _cc_frame_pairs_from_block(block):
+                        # A GOP's pairs share its PTS; each belongs to a
+                        # frame of its own (line 21 is NTSC: 3003 ticks).
+                        frame_pts = pts + frame * _NTSC_FRAME_TICKS if pts else 0
+                        results.append((frame_pts, pair))
     except (OSError, ValueError) as exc:
         log_debug(f"cc608: scan skipped for {path.name}: {exc}")
     return results

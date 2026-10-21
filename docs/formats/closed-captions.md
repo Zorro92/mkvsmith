@@ -86,16 +86,28 @@ alike as control prefixes, so CC2's controls act on CC1's screen.
 
 One GOP's user data bundles a pair per frame for the whole GOP (about 15
 frames) under one PTS. Pair *k* belongs to frame *k*: GOP PTS + *k* × 3003
-ticks on NTSC (3600 on PAL). (MP; the per-pair offset is our reading.)
+ticks on NTSC. (MP; the per-pair offset is our reading.) `cc608.py` times
+each pair so. FFmpeg's decoder gives every pair of the GOP its picture's
+time instead.
+
+✔ real disc: on three retail NTSC DVDs the GOPs held 15 segments for 15
+frames (12 for 12), and per-frame timing left every caption's text
+unchanged while moving it 0–14 frames later. Where a disc's clock
+resets, the timeline continues from the last pair's time; continuing from
+the GOP's start (as before) put every later caption about half a second
+earlier per reset, up to 1.2 s by the end of one film.
+
 
 ## Open parser mismatches
 
-`cc608.py` follows FC's dispatch, with these differences from the format:
+`cc608.py` follows FC's dispatch, except that it tracks the channel (the
+last control, preamble or mid-row code names it, and only CC1 is decoded),
+handles BS and ENM, and times pairs by frame. Still different from the
+format:
 
-- No channel tracking: CC2 controls (`0x1C`) act on the CC1 screen, and
-  CC2's text lands in it.
 - Only field 1 is read, so CC3, CC4 and XDS (field 2) are never decoded.
-- Every pair in a GOP gets the GOP's PTS, so caption times snap to about
-  0.5 s steps.
-- BS, FON, TR and ENM aren't handled; TO1–TO3 insert spaces rather than
-  moving the cursor.
+- FON and TR aren't handled; TO1–TO3 insert spaces rather than moving the
+  cursor.
+- At a clock reset the timeline continues from the last pair rather than
+  from the VOBU's end, about a frame early per reset; the VobSub scan
+  splices at the NAV packs instead.

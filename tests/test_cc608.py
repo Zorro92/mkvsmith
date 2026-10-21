@@ -239,14 +239,17 @@ def test_extract_captions_rebases_cell_clock_resets(
     reason="Treasure Planet closed-caption VOB fixture not present",
 )
 def test_extract_captions_from_vob_fixture(fixtures_dir: Path, tmp_path: Path) -> None:
-    """Regression: the film's first caption decodes with correct timing."""
+    """Regression: the film's first caption decodes with correct timing.
+
+    Each pair is timed by its frame within the GOP; FFmpeg's decoder gives
+    the whole GOP its picture's time, 3 frames (0.1 s) earlier here."""
     fixture = fixtures_dir / "treasure_vts_01_cc.vob"
 
     assert _has_cc608_data(fixture) is True
     events = extract_cc608_captions([fixture])
 
     assert len(events) == 7
-    assert events[3].pts == 295003
+    assert events[3].pts == 295003 + 3 * 3003
     assert events[3].rows == ("[MUSIC PLAYING]",)
     # The styled view carries the same caption with its grid placement.
     assert len(events[3].styled) == 1
@@ -254,7 +257,7 @@ def test_extract_captions_from_vob_fixture(fixtures_dir: Path, tmp_path: Path) -
 
     srt = write_cc608_srt(events, tmp_path / "fixture_cc.srt")
     text = srt.read_text()
-    assert "1\n00:00:03,278 --> 00:00:05,146\n[MUSIC PLAYING]\n" in text
+    assert "1\n00:00:03,378 --> 00:00:05,246\n[MUSIC PLAYING]\n" in text
 
 
 def test_cc608_codecs_mark_text_subtitle_tracks() -> None:
@@ -350,8 +353,10 @@ def test_rollup_clears_italics_on_vacated_row() -> None:
 
 def test_extract_captions_from_a_synthetic_vob(tmp_path: Path) -> None:
     """Captions in DVD-CC user data (tests/synth_dvd.py, per FFmpeg's
-    mpeg12dec.c) decode with their video packets' timing: a pop-on caption
-    shown at 1 s and cleared at 3 s, then another at 4 s."""
+    mpeg12dec.c) decode with their video packets' timing, one pair per
+    frame: a GOP at 1 s whose End Of Caption is its 11th pair (frame 10,
+    +10 x 3003 ticks), an erase at 3 s, then a GOP at 4 s whose End Of
+    Caption is its 6th pair."""
     from tests.synth_dvd import text_pairs, video_cc_pack
 
     rcl, eoc, edm = (0x14, 0x20), (0x14, 0x2F), (0x14, 0x2C)
@@ -367,10 +372,64 @@ def test_extract_captions_from_a_synthetic_vob(tmp_path: Path) -> None:
     events = extract_cc608_captions([vob])
 
     assert [(event.pts, event.rows) for event in events] == [
-        (90_000, ("[MUSIC PLAYING]",)),
+        (90_000 + 10 * 3003, ("[MUSIC PLAYING]",)),
         (270_000, ()),
-        (360_000, ("HELLO",)),
+        (360_000 + 5 * 3003, ("HELLO",)),
     ]
     assert events[0].styled[0].plain() == "[MUSIC PLAYING]"
     srt = write_cc608_srt(events, tmp_path / "captions.srt").read_text()
-    assert "1\n00:00:01,000 --> 00:00:03,000\n[MUSIC PLAYING]\n" in srt
+    assert "1\n00:00:01,334 --> 00:00:03,000\n[MUSIC PLAYING]\n" in srt
+
+
+def test_cc2_text_stays_out_of_cc1() -> None:
+    # Field 1 carries CC1 and CC2; a CC2 control code (first byte 0x1C)
+    # switches channel, and the text after it belongs to CC2 until a CC1
+    # code (0x14) switches back.
+    events = _feed(
+        _Cc608Decoder(),
+        [
+            (0x14, 0x20),  # CC1 RCL
+            (0x14, 0x70),  # CC1 PAC, row 15
+            (0x48, 0x49),  # HI
+            (0x1C, 0x20),  # CC2 RCL
+            (0x1C, 0x70),  # CC2 PAC
+            (0x4E, 0x4F),  # NO (CC2)
+            (0x1C, 0x2F),  # CC2 EOC: no CC1 caption
+            (0x14, 0x2F),  # CC1 EOC
+        ],
+    )
+
+    assert [event.rows for event in events] == [("HI",)]
+
+
+def test_backspace_erases_the_last_character() -> None:
+    events = _feed(
+        _Cc608Decoder(),
+        [
+            (0x14, 0x20),  # RCL
+            (0x14, 0x70),  # PAC
+            (0x43, 0x41),  # CA
+            (0x54, 0x00),  # T
+            (0x14, 0x21),  # BS: erases T
+            (0x52, 0x00),  # R
+            (0x14, 0x2F),  # EOC
+        ],
+    )
+
+    assert [event.rows for event in events] == [("CAR",)]
+
+
+def test_pairs_are_timed_by_their_frame_in_the_gop() -> None:
+    # One six-byte segment per frame: [ff][field 1 pair][fe][field 2 pair].
+    def segment(first: int, second: int) -> bytes:
+        return bytes([0xFF, first, second, 0xFE, 0x80, 0x80])
+
+    null = segment(0x80, 0x80)
+    rcl = segment(0x94, 0x20)  # with odd parity
+    block = b"\x43\x43\x01\xf8" + bytes([0x80 | 3 << 1]) + null + rcl + null
+
+    assert cc608._cc_frame_pairs_from_block(block) == [
+        (0, (0x00, 0x00)),
+        (1, (0x14, 0x20)),
+        (2, (0x00, 0x00)),
+    ]

@@ -48,7 +48,10 @@ place; everything else is reached by offsets. (M)
 There is no further header field: bytes 4–5 are the first pixel data, and
 the field addresses come from command `0x06`. (M; F reads only the two
 words.) Reassembling an SPU means taking SPDSZ from its first packet and
-appending same-stream payloads until that many bytes are in.
+appending same-stream payloads until that many bytes are in, as
+`_SpuAccumulator` does (ending at a new PTS as well, and only there for
+the HD DVD layout). ✔ real disc: on three retail NTSC DVDs, splitting by
+SPDSZ gave exactly the SPUs, byte for byte, that splitting by PTS had.
 
 ### Control sequences
 
@@ -189,17 +192,12 @@ PGS stream is forced. mkvmerge passes PGS through as `S_HDMV/PGS`. (FP, MK)
 
 ## Open parser mismatches
 
-- `_SpuAccumulator` splits SPUs on a PTS change rather than by SPDSZ, so two
-  SPUs with the same PTS on one stream would be joined.
 - `_raw_vobsub_spu_scan` and `_try_scan_private2_for_spu` look for `00 04`
   at bytes 2–3 and read bytes 4–5 as an end offset, a header the format
   doesn't have. Private stream 2 carries the navigation packs on DVD-Video.
   The comment in `_build_pes_entry` ("end_off=0") describes the same field.
-- `_execute_spu_control_commands` skips CHG_COLCON by `2 + size` bytes; the
-  size counts itself, so it skips 2 bytes too many.
-- `_parse_spu_control_state` bounds-checks only the first sequence; a later
-  next-sequence offset within 3 bytes of the end raises IndexError. F also
-  rejects offsets that go backwards.
+- `_parse_spu_control_state` accepts next-sequence offsets that go
+  backwards (relying on a visited set); F rejects them.
 - FSTA_DSP, STA_DSP and STP_DSP aren't read, so there's no per-SPU forced
   detection or start delay.
 - EVO subpictures in the 4-byte-offset layout would be misparsed.

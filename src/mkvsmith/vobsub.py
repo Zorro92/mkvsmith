@@ -204,7 +204,14 @@ class _VobScanCounts:
 
 
 class _SpuAccumulator:
-    """Join continuation PES packets that form one DVD subpicture."""
+    """Join continuation PES packets that form one DVD subpicture.
+
+    An SPU's first two bytes give its total size (SPDSZ), so it is complete
+    once that many bytes are in; it is also cut off when the stream's next
+    packet with a new PTS starts another. SPDSZ 0 is the HD DVD layout,
+    whose size is elsewhere: those end only at a new PTS
+    (docs/formats/subpictures.md).
+    """
 
     def __init__(self) -> None:
         self._packets: dict[int, tuple[int, list[bytes]]] = {}
@@ -214,7 +221,7 @@ class _SpuAccumulator:
     ) -> tuple[int, bytes] | None:
         if sub_stream_id not in self._packets:
             self._packets[sub_stream_id] = (pts, [chunk])
-            return None
+            return self._complete(sub_stream_id)
 
         accumulated_pts, chunks = self._packets[sub_stream_id]
         if pts and pts != accumulated_pts and chunks:
@@ -223,7 +230,17 @@ class _SpuAccumulator:
         chunks.append(chunk)
         if pts and not accumulated_pts:
             self._packets[sub_stream_id] = (pts, chunks)
-        return None
+        return self._complete(sub_stream_id)
+
+    def _complete(self, sub_stream_id: int) -> tuple[int, bytes] | None:
+        """The stream's SPU, trimmed to its size, once all of it is in."""
+        pts, chunks = self._packets[sub_stream_id]
+        data = b"".join(chunks)
+        size = int.from_bytes(data[:2], "big") if len(data) >= 2 else 0
+        if size < 4 or len(data) < size:
+            return None
+        del self._packets[sub_stream_id]
+        return pts, data[:size]
 
     def flush(self) -> dict[int, list[tuple[int, bytes]]]:
         result: dict[int, list[tuple[int, bytes]]] = {}
@@ -294,11 +311,14 @@ def _execute_spu_control_commands(
         elif opcode == 0x06:
             argument_length = 4
         elif opcode == 0x07:
+            # CHG_COLCON: a size word that counts itself, then the data.
             if command_offset + 2 > len(spu_data):
                 break
-            argument_length = 2 + (
-                (spu_data[command_offset] << 8) | spu_data[command_offset + 1]
-            )
+            argument_length = (spu_data[command_offset] << 8) | spu_data[
+                command_offset + 1
+            ]
+            if argument_length < 2:
+                break
         else:
             break
         if command_offset + argument_length > len(spu_data):
@@ -337,7 +357,7 @@ def _parse_spu_control_state(spu_data: bytes) -> _SpuControlState | None:
         if (
             next_offset == sequence_offset
             or next_offset < 4
-            or next_offset >= len(spu_data)
+            or next_offset + 4 > len(spu_data)
         ):
             break
         sequence_offset = next_offset

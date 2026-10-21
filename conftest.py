@@ -8,11 +8,29 @@ Run pytest from the repository root (``uv run pytest``). The
 
 from __future__ import annotations
 
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 FIXTURES_DIR = Path(__file__).parent / "tests" / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _temp_files_in_tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Each test's temp files go in its own pytest folder.
+
+    Scans and rips register temp files with the RuntimeState they were
+    given, and a test's state is never cleaned up at exit like the
+    process's; left in the system temp dir (often RAM-backed), they pile up.
+    """
+    saved = tempfile.tempdir
+    tempfile.tempdir = str(tmp_path_factory.mktemp("tempfile"))
+    try:
+        yield
+    finally:
+        tempfile.tempdir = saved
 
 
 @pytest.fixture

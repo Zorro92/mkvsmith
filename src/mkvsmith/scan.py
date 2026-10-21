@@ -2274,57 +2274,65 @@ class Scanner:
             first_vob_extracted = self._ensure_vob_suffix(
                 first_vob_extracted, self.cleanup.temp_files
             )
+            # The prefix is only read while this VTS's titles are built
+            # (subpictures, captions, the mkvmerge fallback); the titles then
+            # read the ISO. Kept to exit, every VTS's 256 MiB piles up in a
+            # RAM-backed temp dir.
+            try:
+                logical_title = vts_to_title_num.get(vts)
+                title_name = f"Title {vts}"
+                if logical_title:
+                    title_name = f"Title {logical_title} (VTS {vts})"
+                    log_debug(f"TT_SRPT: VTS {vts} -> DVD Title {logical_title}")
 
-            logical_title = vts_to_title_num.get(vts)
-            title_name = f"Title {vts}"
-            if logical_title:
-                title_name = f"Title {logical_title} (VTS {vts})"
-                log_debug(f"TT_SRPT: VTS {vts} -> DVD Title {logical_title}")
+                title = _build_title_from_ifo(
+                    self.titles,
+                    first_vob_extracted,
+                    ifo_path,
+                    [first_vob_extracted],
+                    vts,
+                    title_name=title_name,
+                    config=self.config,
+                )
+                if title is None:
+                    if title := _create_title(
+                        self.titles, first_vob_extracted, title_name
+                    ):
+                        title.disc_name = self.disc_name
+                        _apply_dvd_ifo_languages(title, ifo_path)
+                        self._apply_iso_dvd_source(
+                            title,
+                            vts,
+                            logical_title,
+                            first_vob_internal,
+                            vts_all_vobs,
+                            sizes,
+                        )
+                        self.titles.append(title)
+                    continue
 
-            title = _build_title_from_ifo(
-                self.titles,
-                first_vob_extracted,
-                ifo_path,
-                [first_vob_extracted],
-                vts,
-                title_name=title_name,
-                config=self.config,
-            )
-            if title is None:
-                if title := _create_title(self.titles, first_vob_extracted, title_name):
-                    title.disc_name = self.disc_name
-                    _apply_dvd_ifo_languages(title, ifo_path)
-                    self._apply_iso_dvd_source(
-                        title,
-                        vts,
-                        logical_title,
-                        first_vob_internal,
-                        vts_all_vobs,
-                        sizes,
-                    )
-                    self.titles.append(title)
-                continue
-
-            self._apply_iso_dvd_source(
-                title,
-                vts,
-                logical_title,
-                first_vob_internal,
-                vts_all_vobs,
-                sizes,
-            )
-            self.titles.append(title)
-            self._scan_iso_dvd_pgc_titles(
-                title,
-                ifo_path,
-                first_vob_extracted,
-                title_name,
-                vts,
-                logical_title,
-                first_vob_internal,
-                vts_all_vobs,
-                sizes,
-            )
+                self._apply_iso_dvd_source(
+                    title,
+                    vts,
+                    logical_title,
+                    first_vob_internal,
+                    vts_all_vobs,
+                    sizes,
+                )
+                self.titles.append(title)
+                self._scan_iso_dvd_pgc_titles(
+                    title,
+                    ifo_path,
+                    first_vob_extracted,
+                    title_name,
+                    vts,
+                    logical_title,
+                    first_vob_internal,
+                    vts_all_vobs,
+                    sizes,
+                )
+            finally:
+                first_vob_extracted.unlink(missing_ok=True)
 
     @staticmethod
     def _ensure_vob_suffix(extracted: Path, temp_files: list[Path]) -> Path:

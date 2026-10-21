@@ -145,7 +145,7 @@ What MTAG requires:
 
 ## Version floor
 
-mkvsmith doesn't check mkvmerge's version. What it relies on (NEWS):
+What mkvsmith relies on (NEWS):
 
 | Version | Change |
 |---|---|
@@ -161,6 +161,11 @@ mkvsmith doesn't check mkvmerge's version. What it relies on (NEWS):
 Below 54, a hearing-impaired or commentary stream makes mkvmerge reject the
 command line. Below 81, a UHD Dolby Vision playlist shows two video tracks.
 
+`models.mkvmerge_version()` reads `mkvmerge --version` once. Below 54,
+mkvsmith warns at startup and leaves those two flags out, so the mux still
+works; below 81, scanning a playlist with a Dolby Vision layer warns once.
+An unreadable version counts as new enough.
+
 ## Open mismatches
 
 - **`RATING` out of range.** It's written on TMDB's 0–10 scale.
@@ -171,4 +176,3 @@ command line. Below 81, a UHD Dolby Vision playlist shows two video tracks.
   tag.
 - **Flags left unset.** Visual-impaired (DVD audio code extension 2) and
   original-language aren't set.
-- **No version check.**

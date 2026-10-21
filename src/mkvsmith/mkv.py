@@ -79,6 +79,8 @@ from mkvsmith.models import (
     log_warn,
     log_debug,
     _HAS_MKVMERGE,
+    MKVMERGE_FLAGS_VERSION,
+    mkvmerge_at_least,
     _kill_process_group,
     RuntimeState,
     RUNTIME_STATE,
@@ -841,10 +843,13 @@ def _append_track_state_options(
     ]
     if stream.is_forced:
         cmd += ["--forced-track", f"{input_id}:yes"]
-    if stream.is_hearing_impaired:
-        cmd += ["--hearing-impaired-flag", f"{input_id}:yes"]
-    if stream.is_commentary:
-        cmd += ["--commentary-flag", f"{input_id}:yes"]
+    # Older mkvmerge rejects these options, and the whole command with them
+    # (the startup check warns).
+    if mkvmerge_at_least(MKVMERGE_FLAGS_VERSION):
+        if stream.is_hearing_impaired:
+            cmd += ["--hearing-impaired-flag", f"{input_id}:yes"]
+        if stream.is_commentary:
+            cmd += ["--commentary-flag", f"{input_id}:yes"]
 
 
 def _append_video_track_options(cmd: list[str], input_id: int, stream: Stream) -> None:

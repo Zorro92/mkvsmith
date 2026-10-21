@@ -26,6 +26,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections import Counter
 import hashlib
@@ -84,6 +85,8 @@ from mkvsmith.models import (
     RuntimeState,
     RUNTIME_STATE,
     _HAS_MKVMERGE,
+    MKVMERGE_DOLBY_VISION_VERSION,
+    mkvmerge_at_least,
     EditionAtom,
     EditionSpec,
     MasteringMetadata,
@@ -96,6 +99,19 @@ from mkvsmith.models import (
     log_error,
     log_debug,
 )
+
+
+@functools.cache
+def _warn_dolby_vision_needs_newer_mkvmerge() -> None:
+    """Once per run: older mkvmerge lists a UHD disc's Dolby Vision
+    enhancement layer as a second video track instead of merging it."""
+    log_warn(
+        tr(
+            "This disc has Dolby Vision, which needs mkvmerge {minimum} or "
+            "newer to mux as one video track; update MKVToolNix",
+            minimum=f"v{MKVMERGE_DOLBY_VISION_VERSION[0]}",
+        )
+    )
 
 
 def _streams_from_mpls(
@@ -112,6 +128,12 @@ def _streams_from_mpls(
     for stream_info in mpls_streams:
         stream_type = stream_info["type"]
         if stream_type == StreamType.VIDEO:
+            if stream_info.get(
+                "dynamic_range_type"
+            ) == "dolby_vision" and not mkvmerge_at_least(
+                MKVMERGE_DOLBY_VISION_VERSION
+            ):
+                _warn_dolby_vision_needs_newer_mkvmerge()
             stream = Stream(
                 0,
                 StreamType.VIDEO,

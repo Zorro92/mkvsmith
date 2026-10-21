@@ -53,6 +53,8 @@ from mkvsmith.models import (
     log_error,
     log_debug,
     _HAS_MKVMERGE,
+    MKVMERGE_FLAGS_VERSION,
+    mkvmerge_version,
     MKVSMITH_VERSION,
     sweep_stale_session_dirs,
 )
@@ -1270,6 +1272,19 @@ def _rip_multi_edition(
     creator.create_mkv(combined, creator.select_streams(combined, streams))
 
 
+def _warn_about_old_mkvmerge() -> None:
+    version = mkvmerge_version()
+    if version is not None and version < MKVMERGE_FLAGS_VERSION:
+        log_warn(
+            tr(
+                "mkvmerge {version} is older than {minimum}: hearing-impaired "
+                "and commentary tracks won't be flagged; update MKVToolNix",
+                version=f"v{version[0]}.{version[1]}",
+                minimum=f"v{MKVMERGE_FLAGS_VERSION[0]}",
+            )
+        )
+
+
 def _initialize_cli(
     runtime_state: RuntimeState | None = None,
 ) -> tuple[Path | None, str, int | None, list[str] | None, list[int] | None]:
@@ -1282,6 +1297,7 @@ def _initialize_cli(
     if not _HAS_MKVMERGE:
         log_error(tr("Missing: mkvmerge (install mkvtoolnix)"))
         sys.exit(1)
+    _warn_about_old_mkvmerge()
 
     # Missing settings are asked by the full-screen UI's setup screen; plain
     # CLI runs and scripts use the built-in default for anything missing.

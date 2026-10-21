@@ -34,6 +34,8 @@ from typing import Any
 _ES: dict[str, str] = {
     # --- main() startup / flow -------------------------------------------------
     "Missing: mkvmerge (install mkvtoolnix)": "Falta: mkvmerge (instala mkvtoolnix)",
+    "mkvmerge {version} is older than {minimum}: hearing-impaired and commentary tracks won't be flagged; update MKVToolNix": "mkvmerge {version} es anterior a {minimum}: las pistas para personas con discapacidad auditiva y de comentarios no se marcarán; actualiza MKVToolNix",
+    "This disc has Dolby Vision, which needs mkvmerge {minimum} or newer to mux as one video track; update MKVToolNix": "Este disco tiene Dolby Vision, que necesita mkvmerge {minimum} o posterior para multiplexarse como una sola pista de vídeo; actualiza MKVToolNix",
     "A source path is required": "Se requiere una ruta de origen",
     "Run with -h to see usage, e.g. script.py /path/to/media": "Ejecuta con -h para ver el uso, p. ej. script.py /ruta/al/medio",
     "No titles found": "No se encontraron títulos",

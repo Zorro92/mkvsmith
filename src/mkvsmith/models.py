@@ -12,11 +12,14 @@ Extracted from main.py. Contains:
 from __future__ import annotations
 
 import atexit
+import functools
 import json
 import os
+import re
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterable, Sequence
@@ -124,6 +127,44 @@ class RuntimeLogger:
 
 # Check at module level whether mkvmerge is on PATH.
 _HAS_MKVMERGE: bool = shutil.which("mkvmerge") is not None
+
+# mkvmerge versions some features need (MKVToolNix NEWS; see
+# docs/formats/matroska-output.md): the hearing-impaired and commentary
+# flags, and merging a UHD disc's two Dolby Vision layers into one track.
+MKVMERGE_FLAGS_VERSION = (54, 0)
+MKVMERGE_DOLBY_VISION_VERSION = (81, 0)
+
+
+def _parse_mkvmerge_version(text: str) -> tuple[int, int] | None:
+    """(major, minor) from ``mkvmerge --version`` ("mkvmerge v96.0 (...)")."""
+    match = re.search(r"\bv(\d+)\.(\d+)", text)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+@functools.cache
+def mkvmerge_version() -> tuple[int, int] | None:
+    """The installed mkvmerge's (major, minor), or None when it can't be told."""
+    if not _HAS_MKVMERGE:
+        return None
+    try:
+        result = subprocess.run(
+            ["mkvmerge", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _parse_mkvmerge_version(result.stdout)
+
+
+def mkvmerge_at_least(version: tuple[int, int]) -> bool:
+    """Whether mkvmerge is *version* or newer; an unknown version counts as
+    new enough, so a failed check never takes features away."""
+    installed = mkvmerge_version()
+    return installed is None or installed >= version
+
 
 # Keep in sync with pyproject.toml [project].version. Shared modules such as
 # discdb.py cannot import cli.py without creating a dependency cycle.

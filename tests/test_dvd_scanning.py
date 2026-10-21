@@ -281,7 +281,6 @@ def test_build_dvd_streams_uses_pgc_streams_and_pgc_languages(
                 coding_mode="run-length",
                 code_extension=9,
                 lang_code="fre",
-                is_hearing_impaired=True,
             )
         }
 
@@ -334,7 +333,8 @@ def test_build_dvd_streams_uses_pgc_streams_and_pgc_languages(
     assert plain_subtitle.type_index == 0
     assert forced_subtitle.language == "fre"
     assert forced_subtitle.is_forced is True
-    assert forced_subtitle.is_hearing_impaired is True
+    # Forced (code extension 9) isn't captions (5-7).
+    assert forced_subtitle.is_hearing_impaired is False
     assert forced_subtitle.type_index == 1
 
 
@@ -600,7 +600,6 @@ def test_apply_dvd_ifo_languages_updates_streams_and_timing(
             coding_mode="run-length",
             code_extension=9,
             lang_code="fre",
-            is_hearing_impaired=False,
         )
     }
 

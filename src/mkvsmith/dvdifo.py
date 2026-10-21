@@ -292,7 +292,6 @@ class _IFOSubpictureAttrs:
     coding_mode: str
     code_extension: int
     lang_code: str
-    is_hearing_impaired: bool
 
     @property
     def code_extension_label(self) -> str:
@@ -303,6 +302,15 @@ class _IFOSubpictureAttrs:
     @property
     def is_forced(self) -> bool:
         return self.code_extension == 9
+
+    @property
+    def is_hearing_impaired(self) -> bool:
+        """Captions: code extension 5, 6 or 7 (normal, large, children's).
+
+        See docs/formats/dvd-video.md, subpicture attributes. The low bits
+        of byte 0 are the language type, not a hearing-impaired flag.
+        """
+        return self.code_extension in (5, 6, 7)
 
     @property
     def is_commentary(self) -> bool:
@@ -320,8 +328,6 @@ class _IFOSubpictureAttrs:
             2: "reserved",
             3: "line-21 CC",
         }.get(coding_idx, "unknown")
-        # Byte 0, bit 0: subpicture type (0=normal, 1=hearing impaired)
-        is_hi = bool(b0 & 0x01)
         code_extension = data[offset + 5] if offset + 5 < len(data) else 0
         try:
             lang_code = lang_raw.decode("ascii", errors="replace")
@@ -331,7 +337,6 @@ class _IFOSubpictureAttrs:
             coding_mode=coding_mode,
             code_extension=code_extension,
             lang_code=lang_code,
-            is_hearing_impaired=is_hi,
         )
 
 

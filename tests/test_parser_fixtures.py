@@ -193,9 +193,11 @@ def test_parse_vts_subp_attrs_and_pgc_stream_languages(
     assert [
         (attrs[sid].lang_code, attrs[sid].is_hearing_impaired) for sid in sorted(attrs)
     ] == [
-        ("en", True),
-        ("fr", True),
-        ("es", True),
+        # Language type 1, code extension 0: not captions. (The flag used to
+        # come from the language-type bits, so every stream read True.)
+        ("en", False),
+        ("fr", False),
+        ("es", False),
     ]
     assert all(attrs[sid].code_extension == 0 for sid in attrs)
     assert _parse_pgc_stream_languages(data) == ({}, {})

@@ -255,15 +255,11 @@ Independent evidence so far:
 Places where `dvdifo.py` doesn't match this document yet. Remove an entry
 when it's fixed.
 
-1. **Subpicture "hearing impaired"** reads byte 0 bit 0, which is the
-   language type, so every subtitle with a language is flagged hearing
-   impaired (and muxed with `--hearing-impaired-flag`). Should be code
-   extension 5-7.
-2. **VTS_C_ADT** is read with a 4-byte header instead of 8, so entries are
+1. **VTS_C_ADT** is read with a 4-byte header instead of 8, so entries are
    misaligned (53 garbage entries instead of 81 on the disc above). Used by
    `_lookup_main_feature_range`.
-3. **Video "letterboxed"** is read from byte 0 bit 1 (automatic pan-scan
+2. **Video "letterboxed"** is read from byte 0 bit 1 (automatic pan-scan
    disallowed), which no source calls letterboxed. Harmless today: nothing
    uses the value.
-4. **Audio commentary** is any code extension of 2 or more, so a track for
+3. **Audio commentary** is any code extension of 2 or more, so a track for
    the visually impaired (2) counts as commentary.

@@ -48,7 +48,6 @@ def make_detail_title(tmp_path: Path) -> Title:
         coding_mode="run-length",
         code_extension=9,
         lang_code="fre",
-        is_hearing_impaired=True,
     )
     return title
 

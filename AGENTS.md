@@ -13,6 +13,15 @@ outside the main code** — a throwaway script under `scripts/`, a one-off shell
 command, or a test that cross-checks a parser's output against ffprobe on a real
 disc image. They must not become a runtime dependency of the shipped tool.
 
+The same goes for **CCExtractor** (closed captions; it rounds a DVD GOP's
+captions to one time, so it checks caption text and GOP placement, not
+per-frame timing) and **dovi_tool** (Dolby Vision RPUs, profiles and
+layers). Neither is in Debian's packages: they come from their GitHub
+releases (https://github.com/CCExtractor/ccextractor,
+https://github.com/quietvoid/dovi_tool). Scripts and tests that use them
+skip when they aren't on PATH. `scripts/compare_cc608_ccextractor.py` is
+the caption cross-check.
+
 ### Why
 
 This tool deliberately parses disc structures directly (`.mpls` / `.clpi` /

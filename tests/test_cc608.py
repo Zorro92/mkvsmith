@@ -241,15 +241,18 @@ def test_extract_captions_rebases_cell_clock_resets(
 def test_extract_captions_from_vob_fixture(fixtures_dir: Path, tmp_path: Path) -> None:
     """Regression: the film's first caption decodes with correct timing.
 
-    Each pair is timed by its frame within the GOP; FFmpeg's decoder gives
-    the whole GOP its picture's time, 3 frames (0.1 s) earlier here."""
+    Each pair is timed by its frame, counted from the GOP's first displayed
+    frame (its I-frame, with temporal reference 2, shows after 2 B-frames):
+    295003 is the I-frame's PTS, and the End Of Caption is pair 3.
+    CCExtractor gives the same start, 3.311 s; FFmpeg gives the I-frame's
+    time to the whole GOP, 3.278 s."""
     fixture = fixtures_dir / "treasure_vts_01_cc.vob"
 
     assert _has_cc608_data(fixture) is True
     events = extract_cc608_captions([fixture])
 
     assert len(events) == 7
-    assert events[3].pts == 295003 + 3 * 3003
+    assert events[3].pts == 295003 + (3 - 2) * 3003
     assert events[3].rows == ("[MUSIC PLAYING]",)
     # The styled view carries the same caption with its grid placement.
     assert len(events[3].styled) == 1
@@ -257,7 +260,7 @@ def test_extract_captions_from_vob_fixture(fixtures_dir: Path, tmp_path: Path) -
 
     srt = write_cc608_srt(events, tmp_path / "fixture_cc.srt")
     text = srt.read_text()
-    assert "1\n00:00:03,378 --> 00:00:05,246\n[MUSIC PLAYING]\n" in text
+    assert "1\n00:00:03,311 --> 00:00:05,180\n[MUSIC PLAYING]\n" in text
 
 
 def test_cc608_codecs_mark_text_subtitle_tracks() -> None:
@@ -433,3 +436,17 @@ def test_pairs_are_timed_by_their_frame_in_the_gop() -> None:
         (1, (0x14, 0x20)),
         (2, (0x00, 0x00)),
     ]
+
+
+def test_leading_b_frames_come_from_the_i_frames_temporal_reference() -> None:
+    # Picture header: start code, then temporal reference (10 bits) and
+    # coding type (3 bits: 1 = I). An I-frame shown third has reference 2.
+    def picture(reference: int, coding_type: int) -> bytes:
+        return b"\x00\x00\x01\x00" + bytes(
+            [reference >> 2, (reference & 3) << 6 | coding_type << 3, 0xFF, 0xF8]
+        )
+
+    assert cc608._leading_frames(b"\x00" * 8 + picture(2, 1), 0) == 2
+    assert cc608._leading_frames(picture(0, 1), 0) == 0
+    assert cc608._leading_frames(picture(2, 2), 0) == 0  # a P-frame
+    assert cc608._leading_frames(b"no picture here", 0) == 0

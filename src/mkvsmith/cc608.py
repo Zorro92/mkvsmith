@@ -51,6 +51,7 @@ _CC_USER_DATA_PREFIX = b"\x43\x43\x01\xf8"
 _USER_DATA_SEARCH = re.compile(b"\x00\x00\x01\xb2" + _CC_USER_DATA_PREFIX, re.DOTALL)
 _VIDEO_PES_START = b"\x00\x00\x01\xe0"
 _START_CODE = b"\x00\x00\x01"
+_PICTURE_START = b"\x00\x00\x01\x00"
 
 # Field 1 marker inside a caption segment (0xff; 0xfe marks Field 2).
 # Field 1's marker is 0xff in both segment patterns, including the
@@ -566,6 +567,19 @@ def _cc_frame_pairs_from_block(block: bytes) -> list[tuple[int, tuple[int, int]]
     return pairs
 
 
+def _leading_frames(data: bytes | mmap.mmap, after: int) -> int:
+    """How many frames the GOP shows before its I-frame: the temporal
+    reference (10 bits) of the first picture header after *after*, which
+    is the I-frame's display position in its GOP (ISO/IEC 13818-2 6.2.3).
+    CCExtractor's timing agrees on a real disc. 0 when not found."""
+    header = data.find(_PICTURE_START, after, after + 4096)
+    if header == -1 or header + 6 > len(data):
+        return 0
+    if (data[header + 5] >> 3) & 0x07 != 1:  # not an I-frame
+        return 0
+    return data[header + 4] << 2 | data[header + 5] >> 6
+
+
 def _scan_vob_cc608_file(path: Path) -> list[tuple[int, tuple[int, int]]]:
     """Scan one VOB for (pts, pair) DVD-CC captions in stream order."""
     results: list[tuple[int, tuple[int, int]]] = []
@@ -580,9 +594,13 @@ def _scan_vob_cc608_file(path: Path) -> list[tuple[int, tuple[int, int]]]:
                     block = bytes(data[start:end])
                     pes_start = data.rfind(_VIDEO_PES_START, 0, match.start())
                     pts = _video_pes_pts(data, pes_start) if pes_start != -1 else None
+                    if pts:
+                        # The PTS is the GOP's I-frame's; the pairs start
+                        # at the GOP's first displayed frame, which leading
+                        # B-frames put earlier.
+                        pts -= _leading_frames(data, end) * _NTSC_FRAME_TICKS
                     for frame, pair in _cc_frame_pairs_from_block(block):
-                        # A GOP's pairs share its PTS; each belongs to a
-                        # frame of its own (line 21 is NTSC: 3003 ticks).
+                        # One pair per frame (line 21 is NTSC: 3003 ticks).
                         frame_pts = pts + frame * _NTSC_FRAME_TICKS if pts else 0
                         results.append((frame_pts, pair))
     except (OSError, ValueError) as exc:

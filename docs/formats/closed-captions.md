@@ -86,9 +86,18 @@ alike as control prefixes, so CC2's controls act on CC1's screen.
 
 One GOP's user data bundles a pair per frame for the whole GOP (about 15
 frames) under one PTS. Pair *k* belongs to frame *k*: GOP PTS + *k* × 3003
-ticks on NTSC. (MP; the per-pair offset is our reading.) `cc608.py` times
-each pair so. FFmpeg's decoder gives every pair of the GOP its picture's
-time instead.
+ticks on NTSC. (MP; the per-pair offset is our reading.) Frame 0 is the
+GOP's first displayed frame: the PTS is the I-frame's, and leading B-frames
+show before it, as many as the I-frame's temporal reference (ISO/IEC
+13818-2 6.2.3). `cc608.py` times each pair so.
+
+Other decoders round to the GOP instead. FFmpeg gives every pair the
+I-frame's time. CCExtractor (0.96.5) puts each GOP's captions at one time
+too: on three retail NTSC DVDs its cue-to-cue gaps were whole GOPs. Its text
+matched `cc608.py`'s cue for cue (422, 322 and 469 cues). Its times were
+−3 to +13 frames from `cc608.py`'s, so its GOP time isn't always the first
+displayed frame either. On a test VOB whose caption ends early in its GOP,
+both gave 3.311 s. `scripts/compare_cc608_ccextractor.py` runs this check.
 
 ✔ real disc: on three retail NTSC DVDs the GOPs held 15 segments for 15
 frames (12 for 12), and per-frame timing left every caption's text

@@ -75,3 +75,50 @@ def test_audio_attributes() -> None:
         True,
         True,
     ]
+
+
+# --- cell address table ----------------------------------------------------------
+
+
+def _feature_and_extra() -> bytes:
+    """A feature in VOB 1 (two cells) and a 2-minute extra in VOB 2, whose
+    cells sit after the feature's.
+
+    The first cell ends at sector 0x201FF. Read 4 bytes off (as the parser
+    once did), that end sector becomes "VOB 2, cell 1": a valid-looking
+    entry pointing into the feature, so the extra was cut from the wrong
+    place, as happened on real discs.
+    """
+    feature = Pgc(
+        [
+            Cell(1500, 0, 0x201FF, vob_id=1, cell_id=1),
+            Cell(1500, 0x20200, 199_999, vob_id=1, cell_id=2),
+        ],
+        title=1,
+    )
+    extra = Pgc([Cell(120, 200_000, 203_999, vob_id=2, cell_id=1)], title=2)
+    return vts_ifo([feature, extra])
+
+
+def test_cell_address_table_entries() -> None:
+    cells = dvdifo._parse_vts_c_adt(_feature_and_extra())
+
+    assert cells == [
+        {"vob_id": 1, "cell_id": 1, "start_sector": 0, "end_sector": 0x201FF},
+        {"vob_id": 1, "cell_id": 2, "start_sector": 0x20200, "end_sector": 199_999},
+        {"vob_id": 2, "cell_id": 1, "start_sector": 200_000, "end_sector": 203_999},
+    ]
+
+
+def test_each_title_is_cut_from_its_own_cells() -> None:
+    data = _feature_and_extra()
+    vob_bytes = 204_000 * 2048
+
+    assert dvdifo._lookup_main_feature_range(data, vob_bytes, 1) == (
+        0,
+        200_000 * 2048,
+    )
+    assert dvdifo._lookup_main_feature_range(data, vob_bytes, 2) == (
+        200_000 * 2048,
+        204_000 * 2048,
+    )

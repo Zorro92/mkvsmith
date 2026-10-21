@@ -209,18 +209,20 @@ def test_parse_vts_c_adt_and_vobu_admap(fixtures_dir: Path) -> None:
     cells = _parse_vts_c_adt(data)
     vobus = _parse_vts_vobu_admap(data)
 
-    assert len(cells) == 53
+    # 8-byte header (10 VOBs, last byte 979), then (979 + 1 - 8) / 12 = 81
+    # entries. (These were once pinned as 53 entries read 4 bytes off.)
+    assert len(cells) == 81
     assert cells[0] == {
-        "vob_id": 6,
-        "cell_id": 70,
-        "start_sector": 399360,
-        "end_sector": 411275,
+        "vob_id": 1,
+        "cell_id": 1,
+        "start_sector": 0,
+        "end_sector": 54,
     }
     assert cells[-1] == {
-        "vob_id": 28,
-        "cell_id": 210,
-        "start_sector": 655616,
-        "end_sector": 1888940,
+        "vob_id": 10,
+        "cell_id": 1,
+        "start_sector": 1888940,
+        "end_sector": 1901298,
     }
     assert all(cell["start_sector"] < cell["end_sector"] for cell in cells)
 

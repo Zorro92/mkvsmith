@@ -2436,24 +2436,27 @@ def _vts_c_adt_bounds(ifo_data: bytes) -> tuple[int, int] | None:
     if base + 8 > len(ifo_data):
         return None
 
-    # VTS_C_ADT starts with a 4-byte end address relative to the IFO start.
-    # Some discs store a corrupt value far beyond the real table; callers scan
-    # for zero padding instead of trusting it unconditionally.
-    end_address = _read_u32(ifo_data, base)
+    # VTS_C_ADT: number of VOBs (2), reserved (2), last byte of the table
+    # relative to its start (4), then 12-byte entries from offset 8
+    # (docs/formats/dvd-video.md). Callers still stop at zero padding, in
+    # case a disc's last-byte value is wrong.
+    last_byte = _read_u32(ifo_data, base + 4)
     log_debug(
         f"VTS_C_ADT: sect_ptr={sector_pointer} base={base:#x} "
-        f"end_addr=0x{end_address:08x}"
+        f"vobs={_read_u16(ifo_data, base)} last_byte=0x{last_byte:08x}"
     )
-    return base + 4, end_address
+    return base + 8, last_byte
 
 
 def _scan_vts_c_adt_entries(
-    ifo_data: bytes, entry_base: int, max_slots: int, end_address: int
+    ifo_data: bytes, entry_base: int, max_slots: int, last_byte: int
 ) -> int:
-    n_address_slots = 0
-    if end_address > entry_base:
-        n_address_slots = (end_address - entry_base) // _VTS_C_ADT_ENTRY_LEN
-    n_entries = min(max_slots, max(n_address_slots, max_slots))
+    # The header's last byte gives the entry count; an implausible value
+    # (too small, or past the file) falls back to scanning every slot.
+    n_address_slots = (last_byte + 1 - 8) // _VTS_C_ADT_ENTRY_LEN
+    if not 0 < n_address_slots <= max_slots:
+        n_address_slots = max_slots
+    n_entries = n_address_slots
 
     # The table is zero-padded; the first all-zero 12-byte slot is its end.
     entry_count = 0
@@ -2467,7 +2470,7 @@ def _scan_vts_c_adt_entries(
 
     log_debug(
         f"VTS_C_ADT: {entry_count} raw entries "
-        f"(end_addr suggests {n_address_slots}, IFO caps at {max_slots})"
+        f"(last byte gives {n_address_slots}, IFO caps at {max_slots})"
     )
     return entry_count
 
@@ -2499,12 +2502,12 @@ def _parse_vts_c_adt(ifo_data: bytes) -> list[CadtCell]:
     bounds = _vts_c_adt_bounds(ifo_data)
     if bounds is None:
         return []
-    entry_base, end_address = bounds
+    entry_base, last_byte = bounds
 
     max_slots = (len(ifo_data) - entry_base) // _VTS_C_ADT_ENTRY_LEN
     if max_slots <= 0:
         return []
-    raw_count = _scan_vts_c_adt_entries(ifo_data, entry_base, max_slots, end_address)
+    raw_count = _scan_vts_c_adt_entries(ifo_data, entry_base, max_slots, last_byte)
     if raw_count == 0:
         return []
 
@@ -3385,10 +3388,9 @@ def _lookup_main_feature_range(
     Callers fall back to direct MPEG-PS PTS scanning on None.
     """
     # 1. Parse VTS_C_ADT and build a lookup by (VOB_ID, Cell_ID).
-    #    When the C_ADT is empty (e.g. seamless-branching discs where
-    #    vob_id/cell_id filtering rejects all entries), fall through
-    #    to the PGC cell-playback-info-table fallback below rather
-    #    than returning None immediately.
+    #    When the C_ADT is missing or empty, fall through to the PGC
+    #    cell-playback-info-table fallback below rather than returning
+    #    None immediately.
     cells = _parse_vts_c_adt(ifo_data)
     if not cells:
         log_debug(

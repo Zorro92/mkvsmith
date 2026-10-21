@@ -197,6 +197,12 @@ VOBs, last byte 979) and 81 entries, the first VOB 1 / cell 1 at sectors 0-54.
 On all 168 title-set IFOs of 10 retail DVDs, (last byte + 1 - 8) is a whole
 number of 12-byte entries.
 
+mkvsmith once read this table 4 bytes off. Most tables then came out
+empty and titles fell back to their PGC's own cells, but on 2 of the 10
+discs the misread produced valid-looking entries, and 7 short titles were
+cut from the wrong part of the VOBs. Read correctly, every title's range
+matches its PGC's own cells.
+
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 2 | number of VOBs |
@@ -255,10 +261,7 @@ Independent evidence so far:
 Places where `dvdifo.py` doesn't match this document yet. Remove an entry
 when it's fixed.
 
-1. **VTS_C_ADT** is read with a 4-byte header instead of 8, so entries are
-   misaligned (53 garbage entries instead of 81 on the disc above). Used by
-   `_lookup_main_feature_range`.
-2. **Video "letterboxed"** is read from byte 0 bit 1 (automatic pan-scan
+1. **Video "letterboxed"** is read from byte 0 bit 1 (automatic pan-scan
    disallowed), which no source calls letterboxed. Harmless today: nothing
    uses the value.
 

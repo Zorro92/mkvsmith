@@ -298,6 +298,7 @@ _ES: dict[str, str] = {
     "Combine titles {idxs} into one multi-edition MKV": "Combinar los títulos {idxs} en un MKV multiedición",
     "Show {n} hidden titles": "Mostrar {n} títulos ocultos",
     "Reset tracks to the defaults": "Restablecer las pistas predeterminadas",
+    "from the captions setting": "según el ajuste de subtítulos ocultos",
     "Choose at least one track": "Elige al menos una pista",
     "Ripping stopped: {err}": "Extracción detenida: {err}",
     "Skipped": "Omitido",

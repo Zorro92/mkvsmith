@@ -998,6 +998,20 @@ def has_closed_captions(titles: list[Title]) -> bool:
     )
 
 
+def is_closed_caption_track(title: Title, stream: Stream) -> bool:
+    """Whether *stream* is the DVD closed-caption track mkvsmith adds.
+
+    It's converted from the captions in the video whenever the disc's
+    closed-caption question is answered yes, whichever tracks are chosen.
+    (Only DVD titles get one; other sources' SRT/ASS tracks are real.)
+    """
+    return (
+        title.dvd_video_attrs is not None
+        and stream.stream_type == StreamType.SUBTITLE
+        and stream.codec in CC608_CODECS
+    )
+
+
 def drop_closed_caption_streams(titles: list[Title]) -> None:
     """Remove the detected closed-caption tracks (declined for this disc).
 

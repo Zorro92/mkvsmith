@@ -53,6 +53,7 @@ from mkvsmith.drives import (
     eject,
     list_optical_drives,
 )
+from mkvsmith.dvdbuild import is_closed_caption_track
 from mkvsmith.i18n import (
     available_languages,
     detect_locale_language,
@@ -1299,14 +1300,25 @@ class TitleScreen(_Page):
         self.disc_title = title
         # Tracks are kept by their position in title.streams (Stream.index
         # isn't unique: every DVD stream has index 0).
+        # The closed-caption track follows the captions setting, not this
+        # list, so it's shown without a checkbox.
+        self._info_only = {
+            n
+            for n, stream in enumerate(title.streams)
+            if is_closed_caption_track(title, stream)
+        }
         self._default = {
             n
             for n, choice in enumerate(track_plan(title, titles_screen.state.config))
-            if choice.keep
+            if choice.keep and n not in self._info_only
         }
         chosen = titles_screen.streams.get(title.index)
         self.keep = (
-            {n for n, s in enumerate(title.streams) if any(s is c for c in chosen)}
+            {
+                n
+                for n, s in enumerate(title.streams)
+                if any(s is c for c in chosen) and n not in self._info_only
+            }
             if chosen is not None
             else set(self._default)
         )
@@ -1336,6 +1348,8 @@ class TitleScreen(_Page):
             line = _non_video_stream_line(self.disc_title, stream)
         # The CLI's columns waste width on a narrow screen.
         line = re.sub(r"\s{2,}", "  ", line.strip())
+        if position in self._info_only:
+            return Text(f"    {line}  · {tr('from the captions setting')}")
         box = "[x]" if position in self.keep else "[ ]"
         if not stream.is_muxable:
             box = "[-]"
@@ -1371,7 +1385,7 @@ class TitleScreen(_Page):
                 Option(
                     self._track_prompt(n, stream),
                     id=f"track-{n}",
-                    disabled=not stream.is_muxable,
+                    disabled=not stream.is_muxable or n in self._info_only,
                 )
                 for n, stream in tracks
             ]

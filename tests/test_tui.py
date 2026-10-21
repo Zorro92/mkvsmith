@@ -1610,3 +1610,53 @@ def test_splitting_from_the_title_list_remaps_marked_and_custom_streams(
         assert screen.titles[0].streams[0] is not screen.titles[1].streams[0]
 
     titles_app(body, [packed, extra], tmp_path)
+
+
+def test_closed_captions_are_listed_without_a_checkbox(
+    tmp_path: Path, creator: type[FakeCreator]
+) -> None:
+    # Whether the converted CC track is added is the captions setting's
+    # call, so the track list only shows it.
+    from mkvsmith.cc608 import CC608_CODEC_SRT
+    from mkvsmith.dvdifo import _IFOVideoAttrs
+
+    title = make_title(0)
+    title.dvd_video_attrs = _IFOVideoAttrs(
+        mpeg_version="MPEG-2",
+        standard="NTSC",
+        aspect_ratio="16:9",
+        resolution=(720, 480),
+        letterboxed=False,
+        film_mode=False,
+        cc_field_1=True,
+        cc_field_2=False,
+    )
+    cc = Stream(
+        index=4,
+        stream_type=StreamType.SUBTITLE,
+        codec=CC608_CODEC_SRT,
+        language="eng",
+        type_index=1,
+    )
+    cc.title = "Closed Captions"
+    title.streams.append(cc)
+
+    async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        await at_titles(pilot, app)
+        await choose(pilot, app, "#titles", "title-0")
+        options = app.screen.query_one("#tracks", OptionList)
+        line = options.get_option("track-4")
+        assert line.disabled
+        text = str(line.prompt)
+        assert not text.lstrip().startswith("[")
+        assert "from the captions setting" in text
+        # Custom tracks leave it out: the captions setting adds it anyway.
+        await choose(pilot, app, "#tracks", "track-2")
+        assert "Reset tracks to the defaults" in option_texts(app, "#tracks")
+        await choose(pilot, app, "#tracks", "rip")
+        await rip_done(pilot, app)
+
+    titles_app(body, [title], tmp_path)
+    ((_, streams),) = creator.ripped
+    assert streams is not None
+    assert [s.display_id for s in streams] == ["v:0", "a:0", "a:1", "s:0"]

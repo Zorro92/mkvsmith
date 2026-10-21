@@ -386,8 +386,6 @@ ID and a 16-byte disc ID. `sound.bdmv` (`BCLK`) holds menu sound effects.
   - `_parse_clpi`'s comments misname its blocks and only fit the first
     program.
   - The module header calls libbluray GPL-2.0; it is LGPL-2.1-or-later.
-- **Dolby Vision tracks.** The STN's Dolby Vision entry is listed as a
-  further video stream, while mkvmerge 81.0+ shows one video track.
 - **Not supported.**
   - Only the first angle is used.
   - SubPath streams (text subtitles, out-of-mux audio) are listed but not

@@ -551,6 +551,9 @@ class MplsStreamInfo(TypedDict):
     subpath_id: NotRequired[int]
     dynamic_range_type: NotRequired[str]
     colorspace: NotRequired[str]
+    # An STN Dolby Vision entry: the enhancement layer of the primary video,
+    # not a video stream of its own.
+    dolby_vision_layer: NotRequired[bool]
     sample_rate: NotRequired[int | None]
     height: NotRequired[int | None]
     framerate: NotRequired[float | str | None]
@@ -816,6 +819,8 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
             if cat_kind == "ig":
                 continue
             if info and info["type"] is not None:
+                if cat_name == "dv":
+                    info["dolby_vision_layer"] = True
                 result.append(info)
             else:
                 result.append(placeholder_map[cat_kind].copy())

@@ -94,8 +94,9 @@ enhancement layer (NEWS). Earlier versions show two video tracks.
 layer (FEL), per dovi_tool's reading of the PID `1015` RPUs. mkvmerge v96
 lists one video track for it (number `0x1011`) and writes both a `dvcC`
 and an `hvcE` block addition mapping; the RPUs in the MKV read back as
-profile 7. mkvsmith lists the enhancement layer as a second video stream,
-which then matches no mkvmerge track.
+profile 7. So mkvsmith folds the stream table's Dolby Vision entry into
+the base layer's video stream (marked Dolby Vision in the listing) rather
+than listing a second video stream that would match no mkvmerge track.
 
 ### MPEG-2 (DVD, some BD)
 

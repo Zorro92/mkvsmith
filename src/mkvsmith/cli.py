@@ -276,9 +276,11 @@ def _stream_flags(stream: Stream) -> str:
 
 def _video_stream_line(stream: Stream) -> str:
     dimensions = f"{stream.width}x{stream.height}" if stream.width else "?"
+    dynamic_range = stream.dynamic_range_display
+    dynamic_range = f" {dynamic_range}" if dynamic_range else ""
     return (
         f"  {stream.codec_display:<14} {dimensions:<10} "
-        f"{stream.language_display}{_stream_flags(stream)}"
+        f"{stream.language_display}{dynamic_range}{_stream_flags(stream)}"
     )
 
 

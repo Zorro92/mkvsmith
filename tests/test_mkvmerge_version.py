@@ -87,7 +87,8 @@ def _dolby_vision_streams() -> list[MplsStreamInfo]:
          "dynamic_range_type": "hdr10", "colorspace": "bt2020"},
         {"type": StreamType.VIDEO, "codec": "hevc", "lang": "und", "channels": None,
          "pid": 0x1015, "height": 1080,
-         "dynamic_range_type": "dolby_vision", "colorspace": "bt2020"},
+         "dynamic_range_type": "dolby_vision", "colorspace": "bt2020",
+         "dolby_vision_layer": True},
     ]  # fmt: skip
 
 

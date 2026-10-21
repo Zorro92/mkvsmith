@@ -127,13 +127,20 @@ def _streams_from_mpls(
     title_streams: list[Stream] = []
     for stream_info in mpls_streams:
         stream_type = stream_info["type"]
-        if stream_type == StreamType.VIDEO:
-            if stream_info.get(
-                "dynamic_range_type"
-            ) == "dolby_vision" and not mkvmerge_at_least(
-                MKVMERGE_DOLBY_VISION_VERSION
-            ):
+        if stream_type == StreamType.VIDEO and stream_info.get("dolby_vision_layer"):
+            # The enhancement layer (PID 0x1015, beside the base layer in the
+            # same M2TS) is part of the primary video: mkvmerge 81+ merges
+            # it into that track and lists no track of its own, so a stream
+            # here would match nothing (docs/formats/codecs.md).
+            if not mkvmerge_at_least(MKVMERGE_DOLBY_VISION_VERSION):
                 _warn_dolby_vision_needs_newer_mkvmerge()
+            base = next(
+                (s for s in title_streams if s.stream_type == StreamType.VIDEO), None
+            )
+            if base is not None:
+                base.dolby_vision = True
+                continue
+        if stream_type == StreamType.VIDEO:
             stream = Stream(
                 0,
                 StreamType.VIDEO,

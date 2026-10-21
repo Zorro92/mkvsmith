@@ -652,10 +652,20 @@ class Stream:
     # HDR10 mastering display and light levels, for mkvmerge to write:
     # it takes none of them from a transport stream's SEI.
     mastering: MasteringMetadata | None = None
+    # A UHD Blu-ray base layer with a Dolby Vision enhancement layer, which
+    # mkvmerge (81+) merges into this track.
+    dolby_vision: bool = False
     field_order: str | None = None
     # LPCM bit depth from DVD IFO audio attributes: byte 1 bits 7-6 of
     # each audio attribute entry, 0=16, 1=20, 2=24 bits.
     bits_per_sample: int | None = None
+
+    @property
+    def dynamic_range_display(self) -> str:
+        """ "Dolby Vision", "HDR10" or "" (SDR, or not known)."""
+        if self.dolby_vision:
+            return "Dolby Vision"
+        return "HDR10" if self.color_transfer == "smpte2084" else ""
 
     @property
     def language_display(self) -> str:

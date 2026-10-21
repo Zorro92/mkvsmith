@@ -356,3 +356,36 @@ def test_playlists_without_the_extension_have_no_hdr_metadata(tmp_path: Path) ->
 
     assert info is not None
     assert info["static_hdr"] is None
+
+
+def test_the_dolby_vision_layer_is_part_of_the_base_video(tmp_path: Path) -> None:
+    # The STN's Dolby Vision entry (PID 0x1015, entry type 4) is the primary
+    # video's enhancement layer: mkvmerge 81+ merges it into the base layer's
+    # track, so it is no stream of its own (it used to be listed as a
+    # sub-path video that matched no track, with a warning at every rip).
+    from mkvsmith.cli import _video_stream_line
+    from mkvsmith.scan import _streams_from_mpls
+
+    stn = _uhd_stn()
+    stn.dolby_vision = [
+        Stream(
+            HEVC,
+            0x1015,
+            stream_type=4,
+            video_format=FORMAT_1080P,
+            rate=RATE_24,
+            dynamic_range=DOLBY_VISION,
+            colour_space=BT2020,
+        )
+    ]
+    playlist = mpls([PlayItem("00003", 0, 5400, stn)], static_hdr=[(1, _P3_D65)])
+    info = _parse_mpls(_write(tmp_path, "00010.mpls", playlist))
+
+    assert info is not None
+    videos = _streams_from_mpls(info["streams"], info["static_hdr"])
+    videos = [s for s in videos if s.stream_type == StreamType.VIDEO]
+    assert len(videos) == 1
+    assert videos[0].pid == 0x1011 and videos[0].dolby_vision
+    assert videos[0].mastering == info["static_hdr"]
+    assert videos[0].dynamic_range_display == "Dolby Vision"
+    assert "Dolby Vision" in _video_stream_line(videos[0])

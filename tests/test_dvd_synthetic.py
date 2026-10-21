@@ -426,3 +426,85 @@ def test_subpicture_packets_and_video_timestamps_are_found(tmp_path: Path) -> No
     assert [pts for pts, _offset in vobsub._scan_vob_pts([vob], max_bytes=1 << 20)] == [
         90_000
     ]
+
+
+# --- angle blocks and copy-protection layouts ------------------------------------
+
+
+def _block(first: Cell, second: Cell) -> list[Cell]:
+    """Two cells as a two-angle block (first / last of block, angle type)."""
+    first.block_mode, first.block_type, first.interleaved = 1, 1, True
+    second.block_mode, second.block_type, second.interleaved = 3, 1, True
+    return [first, second]
+
+
+def test_angle_blocks_with_unequal_angles_are_misauthored() -> None:
+    # Real angles film the same moment, so they run equally long; "angles"
+    # of 165 s and 95 s are consecutive film segments mislabelled.
+    opening = Cell(300, 0, 9999)
+    equal = _block(
+        Cell(120, 10_000, 19_999, cell_id=2), Cell(120, 10_000, 19_999, cell_id=3)
+    )
+    unequal = _block(
+        Cell(165, 20_000, 29_999, cell_id=4), Cell(95, 20_000, 29_999, cell_id=5)
+    )
+    data = vts_ifo(
+        [
+            Pgc([opening], title=1),
+            Pgc([opening, *equal], seconds=420, title=2),
+            Pgc([opening, *unequal], seconds=465, title=3),
+        ]
+    )
+
+    assert [dvdifo._pgc_angle_lengths_differ(data, pgc) for pgc in (1, 2, 3)] == [
+        False,
+        False,
+        True,
+    ]
+
+
+def test_padded_and_decoy_chains_are_told_from_the_real_one() -> None:
+    # The real chain plays three cells in disc order with exact ranges. A
+    # padded copy plays the same cells (same IDs) with ranges far beyond
+    # what their durations can hold; a decoy jumps back and forth.
+    def cell(cell_id: int, first: int, last: int) -> Cell:
+        return Cell(10, first, last, vob_id=1, cell_id=cell_id)
+
+    real = [cell(1, 0, 4_999), cell(2, 5_000, 9_999), cell(3, 10_000, 14_999)]
+    padded = [cell(1, 0, 99_999), cell(2, 5_000, 104_999), cell(3, 10_000, 114_999)]
+    decoy = [
+        cell(3, 10_000, 14_999),
+        cell(1, 0, 4_999),
+        cell(4, 200_000, 204_999),
+        cell(2, 5_000, 9_999),
+        cell(5, 150_000, 154_999),
+        cell(6, 1_000, 5_999),
+    ]
+    data = vts_ifo([Pgc(real, title=1), Pgc(padded, title=2), Pgc(decoy, title=3)])
+
+    layouts = [dvdifo.pgc_layout(data, pgc) for pgc in (1, 2, 3)]
+    assert all(layout is not None for layout in layouts)
+    first, second, third = (layout for layout in layouts if layout is not None)
+    assert (first.padded, first.backward_jumps) == (False, 0)
+    assert (second.padded, second.backward_jumps) == (True, 0)
+    assert second.fingerprint == first.fingerprint
+    assert third.backward_jumps >= 3
+
+
+def test_an_invalid_setstn_angle_plays_angle_one() -> None:
+    # Players ignore an angle outside 1-9 (protected discs set 11).
+    block = _block(Cell(120, 1000, 1999, cell_id=2), Cell(120, 1000, 1999, cell_id=3))
+    cells = [Cell(60, 0, 999), *block]
+    data = vts_ifo(
+        [
+            Pgc(cells, pre=[set_angle(1)], seconds=180, title=1),
+            Pgc(cells, pre=[set_angle(11)], seconds=180, title=2),
+        ]
+    )
+    main = dvdifo._find_main_pgc(data, 2)
+    assert main is not None
+
+    assert dvdifo._pgc_angle_from_commands(data, main[0]) == 1
+    first, second = dvdifo.pgc_layout(data, 1), dvdifo.pgc_layout(data, 2)
+    assert first is not None and second is not None
+    assert second.fingerprint == first.fingerprint == ((1, 1), (1, 2))

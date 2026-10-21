@@ -15,7 +15,8 @@ builder or test, and add to it whenever research settles something.
 - **Sources** ([sources/](sources/)): copies of reference material whose
   licence allows it, unchanged, each headed with its URL, exact commit,
   fetch date and licence.
-  - DVD: libdvdread (`ifo_types.h`, `ifo_read.c`, `ifo_print.c`), libdvdnav
+  - DVD: libdvdread (`ifo_types.h`, `ifo_read.c`, `ifo_print.c`,
+    `dvd_reader.c`), libdvdnav
     (`vmcmd.c`), dvdauthor (`dvdifo.c`, `dvdvob.c`), FFmpeg
     (`dvdvideodec.c`, `dvdsubdec.c`), VLC (`dvdread.c`, `dvdnav.c`).
   - Blu-ray: libbluray (`mpls_parse.c`, `mpls_data.h`, `clpi_parse.c`,

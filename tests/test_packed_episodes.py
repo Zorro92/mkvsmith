@@ -334,3 +334,50 @@ def test_split_episodes_flag_reaches_config() -> None:
     # Unset falls back to the saved setting (scan.split_episodes).
     assert parser.parse_args(["disc"]).split_episodes is None
     assert parser.parse_args(["--split-episodes", "disc"]).split_episodes is True
+
+
+def _packed_playlist(tmp_path: Path, episodes: list[list[float]], extra: float) -> Path:
+    """A playlist with one clip per episode (marks on each clip's own clock,
+    which starts at 10 s) and a final clip holding an extra."""
+    from tests import synth_bluray
+
+    items: list[synth_bluray.PlayItem] = []
+    chapters: list[tuple[int, float]] = []
+    for number, segments in enumerate([*episodes, [extra]]):
+        marks, length = _layout(segments)
+        items.append(synth_bluray.PlayItem(f"{number:05d}", 10, 10 + length))
+        chapters += [(number, 10 + mark) for mark in marks]
+    path = tmp_path / "00000.mpls"
+    path.write_bytes(synth_bluray.mpls(items, chapters=chapters))
+    return path
+
+
+def test_a_synthetic_season_disc_playlist(tmp_path: Path) -> None:
+    info = _parse_mpls(_packed_playlist(tmp_path, [_EPISODE] * 40, 180.0))
+    assert info is not None
+    duration = sum(item["duration"] for item in info["play_items"])
+
+    segments = detect_packed_episodes(info["chapter_times"], duration)
+
+    episodes = [s for s in segments if s.episode is not None]
+    assert len(episodes) == 40
+    assert all(s.end - s.start == pytest.approx(sum(_EPISODE)) for s in episodes)
+    assert [round(s.end - s.start) for s in segments if s.episode is None] == [180]
+
+
+def test_a_synthetic_season_disc_playlist_with_teasers(tmp_path: Path) -> None:
+    # Every fifth episode is followed by a 15 s teaser for the next one.
+    episodes = [[*_EPISODE, 15.0] if n % 5 == 4 else _EPISODE for n in range(38)]
+    info = _parse_mpls(_packed_playlist(tmp_path, episodes, 246.0))
+    assert info is not None
+    duration = sum(item["duration"] for item in info["play_items"])
+
+    segments = detect_packed_episodes(info["chapter_times"], duration)
+
+    found = [s for s in segments if s.episode is not None]
+    assert len(found) == 38
+    # The teaser opens the episode after it.
+    sixth = found[5]
+    after = min(m for m in info["chapter_times"] if m > sixth.start)
+    assert after - sixth.start == pytest.approx(15.0)
+    assert [round(s.end - s.start) for s in segments if s.episode is None] == [246]

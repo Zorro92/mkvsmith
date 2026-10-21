@@ -122,6 +122,44 @@ def test_build_bluray_title_from_mpls(fixtures_dir: Path, tmp_path: Path) -> Non
     assert title.chapters[-1] < title.duration_seconds
 
 
+def test_build_bluray_title_from_a_synthetic_playlist(tmp_path: Path) -> None:
+    from tests import synth_bluray as bd
+
+    stn = bd.Stn(
+        video=[bd.Stream(bd.H264, 0x1011)],
+        audio=[bd.Stream(bd.TRUEHD, 0x1100), bd.Stream(bd.AC3, 0x1101, lang="fra")],
+        pg=[bd.Stream(bd.PG, 0x1200)],
+    )
+    playlist = tmp_path / "00800.mpls"
+    playlist.write_bytes(
+        bd.mpls(
+            [
+                bd.PlayItem("00001", 0, 1800, stn),
+                bd.PlayItem("00002", 0, 1800, stn, connection=5),
+                bd.PlayItem("00003", 0, 1200, stn, connection=5),
+            ],
+            chapters=[(0, 0), (0, 900), (1, 0), (2, 0), (2, 600)],
+        )
+    )
+    info = _parse_mpls(playlist)
+    assert info is not None
+    clip_paths = [tmp_path / f"{item['clip']}.m2ts" for item in info["play_items"]]
+    for clip_path in clip_paths:
+        clip_path.write_bytes(b"0123456789")
+
+    title = _build_bluray_title_from_mpls([], playlist, clip_paths, info, "Test Disc")
+    assert title is not None
+
+    assert title.name == "Playlist 00800"
+    assert title.disc_name == "Test Disc"
+    assert title.source_file == clip_paths[0]
+    assert title.append_clips == clip_paths[1:]
+    assert len(title.streams) == 4
+    assert title.duration_seconds == pytest.approx(4800)
+    assert title.chapters == pytest.approx([0, 900, 1800, 3600, 4200])
+    assert title.chapters[-1] < title.duration_seconds
+
+
 def test_scan_iso_dvd_builds_vts_from_vmg_metadata(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

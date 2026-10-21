@@ -257,10 +257,6 @@ def test_extract_captions_from_vob_fixture(fixtures_dir: Path, tmp_path: Path) -
     assert "1\n00:00:03,278 --> 00:00:05,146\n[MUSIC PLAYING]\n" in text
 
 
-@pytest.mark.skipif(
-    not (Path(__file__).parent / "fixtures" / "treasure_vts_01_cc.vob").is_file(),
-    reason="Treasure Planet closed-caption VOB fixture not present",
-)
 def test_cc608_codecs_mark_text_subtitle_tracks() -> None:
     # The declared stream codecs mark the track for the muxer's sidecar
     # path rather than the VobSub fallback.
@@ -350,3 +346,31 @@ def test_rollup_clears_italics_on_vacated_row() -> None:
     )  # CR -> rolls row 13 into row 12, clears row 13
     assert event1 is not None
     assert dec.screens[dec.active].italics[12] == [False] * 32
+
+
+def test_extract_captions_from_a_synthetic_vob(tmp_path: Path) -> None:
+    """Captions in DVD-CC user data (tests/synth_dvd.py, per FFmpeg's
+    mpeg12dec.c) decode with their video packets' timing: a pop-on caption
+    shown at 1 s and cleared at 3 s, then another at 4 s."""
+    from tests.synth_dvd import text_pairs, video_cc_pack
+
+    rcl, eoc, edm = (0x14, 0x20), (0x14, 0x2F), (0x14, 0x2C)
+    pac = (0x14, 0x70)  # row 15, column 0
+    vob = tmp_path / "VTS_01_1.VOB"
+    vob.write_bytes(
+        video_cc_pack(90_000, [rcl, pac, *text_pairs("[MUSIC PLAYING]"), eoc])
+        + video_cc_pack(270_000, [edm])
+        + video_cc_pack(360_000, [rcl, pac, *text_pairs("HELLO"), eoc])
+    )
+
+    assert _has_cc608_data(vob) is True
+    events = extract_cc608_captions([vob])
+
+    assert [(event.pts, event.rows) for event in events] == [
+        (90_000, ("[MUSIC PLAYING]",)),
+        (270_000, ()),
+        (360_000, ("HELLO",)),
+    ]
+    assert events[0].styled[0].plain() == "[MUSIC PLAYING]"
+    srt = write_cc608_srt(events, tmp_path / "captions.srt").read_text()
+    assert "1\n00:00:01,000 --> 00:00:03,000\n[MUSIC PLAYING]\n" in srt

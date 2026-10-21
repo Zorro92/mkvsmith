@@ -56,6 +56,41 @@ def test_dvd_identifiers_use_real_ifo_fixtures(
     assert _compute_libdvdread_disc_id(video_ts) == ("2DC691009D9A0011AC3C6A9A14C98889")
 
 
+def test_dvd_identifiers_match_independent_implementations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A synthetic VIDEO_TS (tests/synth_dvd.py) with fixed creation times.
+
+    The CRC-64 disc ID was computed by pydvdid 1.1 (an independent
+    implementation) on these files and times. libdvdread's ID is the MD5 of
+    VIDEO_TS.IFO then each title set's IFO, in order (DVDDiscID in
+    docs/formats/sources/libdvdread-dvd_reader.c.md), recomputed here.
+    """
+    from tests.synth_dvd import Cell, Pgc, vmg_ifo, vts_ifo
+
+    video_ts = tmp_path / "VIDEO_TS"
+    video_ts.mkdir()
+    vmg = vmg_ifo([(1, 1), (2, 1)], provider="A STUDIO")
+    vts1 = vts_ifo([Pgc([Cell(600, 0, 999)], title=1)])
+    vts2 = vts_ifo([Pgc([Cell(90, 0, 99)], title=1)])
+    (video_ts / "VIDEO_TS.IFO").write_bytes(vmg)
+    (video_ts / "VTS_01_0.IFO").write_bytes(vts1)
+    (video_ts / "VTS_02_0.IFO").write_bytes(vts2)
+    (video_ts / "VIDEO_TS.BUP").write_bytes(vmg)
+    (video_ts / "VTS_01_1.VOB").write_bytes(bytes(4096))
+    names = sorted(path.name for path in video_ts.iterdir())
+    # Unix times 1000000000, ...01, ... in name order, as FILETIMEs.
+    filetimes = {
+        video_ts / name: (1_000_000_000 + n + 11_644_473_600) * 10_000_000
+        for n, name in enumerate(names)
+    }
+    monkeypatch.setattr("mkvsmith.dvdifo._dvd_creation_filetime", filetimes.__getitem__)
+
+    assert _compute_dvd_disc_id(video_ts) == "9c2625f59ad9cf44"
+    expected_md5 = hashlib.md5(vmg + vts1 + vts2).hexdigest().upper()
+    assert _compute_libdvdread_disc_id(video_ts) == expected_md5
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink permissions vary")
 def test_matrix256_matches_conformance_fragments(tmp_path: Path) -> None:
     empty = tmp_path / "empty"

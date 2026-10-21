@@ -410,3 +410,42 @@ def spu(size: int = 64) -> bytes:
     control = bytes([0x00, 0x00]) + struct.pack(">H", size - 6) + bytes([0x01, 0xFF])
     pixels = bytes(size - 4 - len(control))
     return struct.pack(">HH", size, 4 + len(pixels)) + pixels + control
+
+
+# --- Line 21 closed captions (DVD-CC user data) ----------------------------------
+
+
+def odd_parity(value: int) -> int:
+    """A 7-bit EIA-608 byte with its parity bit (bit 7) set to make it odd."""
+    value &= 0x7F
+    return value | (0x80 if bin(value).count("1") % 2 == 0 else 0)
+
+
+def text_pairs(text: str) -> list[tuple[int, int]]:
+    """EIA-608 basic characters, two per pair (padded with a null)."""
+    raw = text.encode("ascii")
+    raw += b"\x00" * (len(raw) % 2)
+    return [(raw[n], raw[n + 1]) for n in range(0, len(raw), 2)]
+
+
+def cc_user_data(pairs: list[tuple[int, int]]) -> bytes:
+    """MPEG-2 user data carrying Field-1 caption pairs in the DVD-CC wrapper.
+
+    Layout as FFmpeg's mpeg12dec.c documents it: user_data_start_code, "CC",
+    type 0x01, block size 0xF8, an attributes byte (bit 7: odd field first;
+    bits 5-1: block count), then per block a Field-1 triplet (marker 0xFF,
+    the pair) and a Field-2 triplet (marker 0xFE, a null pair: 0x80 0x80).
+    """
+    attributes = 0x80 | (len(pairs) & 0x1F) << 1
+    blocks = b"".join(
+        bytes([0xFF, odd_parity(a), odd_parity(b), 0xFE, 0x80, 0x80]) for a, b in pairs
+    )
+    return b"\x00\x00\x01\xb2CC\x01\xf8" + bytes([attributes]) + blocks
+
+
+def video_cc_pack(pts: int, pairs: list[tuple[int, int]]) -> bytes:
+    """A video pack: a GOP header, its caption user data, then a picture
+    start code, in a PES packet with a PTS."""
+    gop = b"\x00\x00\x01\xb8" + bytes([0x00, 0x08, 0x00, 0x00])
+    picture = b"\x00\x00\x01\x00" + bytes([0x00, 0x0F, 0xFF, 0xF8])
+    return pes_pack(0xE0, gop + cc_user_data(pairs) + picture, pts)

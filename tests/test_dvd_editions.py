@@ -142,3 +142,68 @@ def test_nav_ptm_is_read_from_the_pci() -> None:
     pack[pci + 7 + 12 : pci + 7 + 16] = (90000).to_bytes(4, "big")
     pack[pci + 7 + 16 : pci + 7 + 20] = (135045).to_bytes(4, "big")
     assert _read_nav_ptm_from_sector(bytes(pack)) == (90000, 135045)
+
+
+def test_combined_title_from_synthetic_chains() -> None:
+    """Three versions of a film share a two-angle block: two play the
+    finished scene (angle 1), the third the pencil test (angle 2); the
+    first and third add a scene. They combine over 6 unique cells."""
+    from tests.synth_dvd import Cell, Pgc, set_angle, vts_ifo
+
+    def cells(extra_scene: bool) -> list[Cell]:
+        out = [
+            Cell(600, 0, 9999, cell_id=1),
+            Cell(
+                300,
+                10_000,
+                19_999,
+                cell_id=2,
+                block_mode=1,
+                block_type=1,
+                interleaved=True,
+            ),
+            Cell(
+                300,
+                10_000,
+                19_999,
+                cell_id=3,
+                block_mode=3,
+                block_type=1,
+                interleaved=True,
+            ),
+            Cell(1200, 20_000, 39_999, cell_id=4),
+        ]
+        if extra_scene:
+            out.append(Cell(240, 40_000, 43_999, cell_id=5))
+        return [*out, Cell(900, 44_000, 59_999, cell_id=6)]
+
+    ifo = vts_ifo(
+        [
+            Pgc(cells(True), pre=[set_angle(1)], seconds=3240, title=1),
+            Pgc(cells(False), pre=[set_angle(1)], seconds=3000, title=1),
+            Pgc(cells(True), pre=[set_angle(2)], seconds=3240, title=1),
+        ]
+    )
+    titles: list[Title] = []
+    for index, pgc in enumerate((1, 2, 3)):
+        layout = pgc_layout(ifo, pgc)
+        assert layout is not None
+        chapters, duration = _parse_vts_pgc_info(ifo, pgc)
+        title = _chain(index, [])
+        title.dvd_ifo_data = ifo
+        title.dvd_pgc_number = pgc
+        title.duration_seconds = duration
+        title.chapters = chapters
+        title.dvd_cell_fingerprint = layout.fingerprint
+        title.dvd_cell_durations = layout.cell_durations
+        title.dvd_edition_label = f"Edition {index + 1}"
+        titles.append(title)
+
+    assert titles[2].dvd_cell_fingerprint[1] == (1, 3)  # the pencil-test angle
+    combined = scan.build_multi_edition_title(titles)
+
+    assert len(combined.dvd_edition_cells) == len(combined.clip_durations) == 6
+    assert [len(edition.atoms) > 0 for edition in combined.editions] == [True] * 3
+    for edition, title in zip(combined.editions, titles):
+        assert edition.duration == pytest.approx(title.duration_seconds, abs=0.5)
+    assert combined.editions[0].is_default

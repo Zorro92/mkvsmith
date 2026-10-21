@@ -40,6 +40,7 @@ from mkvsmith.dvdifo import (
     _IFOAudioAttrs,
     _IFOSubpictureAttrs,
     _IFOVideoAttrs,
+    _iso_639_1,
     _VTS_IFO_IDENT,
     _VTS_IFO_SUBP_COUNT,
     _VTS_IFO_SUBP_ATTR,
@@ -757,7 +758,9 @@ def _build_dvd_audio_streams(
             sub_id=stream_id,
         )
         stream.channels = channels
-        stream.sample_rate = "48000"
+        stream.sample_rate = (
+            "96000" if attrs and attrs.sample_rate == "96 kHz" else "48000"
+        )
         if audio_label:
             stream.title = audio_label
         if attrs and attrs.bits_per_sample:
@@ -923,7 +926,7 @@ def _append_undeclared_subpicture(
         if len(language_code) == 2 and all(
             character.isascii() and character.isalpha() for character in language_code
         ):
-            language = language_code
+            language = _iso_639_1(language_code)
             is_forced = attributes.is_forced
             is_hearing_impaired = attributes.is_hearing_impaired
             is_commentary = attributes.is_commentary

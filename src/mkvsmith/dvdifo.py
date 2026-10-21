@@ -227,15 +227,14 @@ class _IFOAudioAttrs:
         """
         return self.code_extension in (3, 4)
 
+    # Byte 0 bits 7-5; 1 and 5 are reserved (docs/formats/dvd-video.md).
     CODEC_MAP: ClassVar[dict[int, tuple[str, str]]] = {
         0: ("AC3", "ac3"),
-        1: ("MPEG Audio", "mp2"),
         2: ("MPEG Audio", "mp2"),
-        3: ("LPCM", "pcm_s16be"),
-        4: ("DTS", "dts"),
-        5: ("SDDS", "pcm_s16be"),
+        3: ("MPEG Audio", "mp2"),  # MPEG-2 with extension stream
+        4: ("LPCM", "pcm_s16be"),
         6: ("DTS", "dts"),
-        7: ("DTS", "dts"),
+        7: ("SDDS", "pcm_s16be"),
     }
     CHANNEL_MAP: ClassVar[dict[int, int]] = {
         0: 1,
@@ -253,19 +252,27 @@ class _IFOAudioAttrs:
         b0 = data[offset] if offset < len(data) else 0
         b1 = data[offset + 1] if offset + 1 < len(data) else 0
         b5 = data[offset + 5] if offset + 5 < len(data) else 0
+        b7 = data[offset + 7] if offset + 7 < len(data) else 0
         lang_raw = data[offset + 2 : offset + 4] if offset + 4 < len(data) else b""
 
         codec_idx = (b0 >> 5) & 7
         codec_name, _ = cls.CODEC_MAP.get(codec_idx, ("Unknown", ""))
         channels = cls.CHANNEL_MAP.get(b1 & 7, 0)
-        dsur = bool(b1 & 0x08)
-        bits_val = (b1 >> 4) & 3
+        # Byte 7 bit 3 is the Dolby Surround flag only in application
+        # mode 2 (byte 0 bits 1-0); in mode 1 that byte holds karaoke info.
+        dsur = (b0 & 3) == 2 and bool(b7 & 0x08)
+        # Byte 1 bits 7-6. A bit depth only for LPCM: AC-3 and DTS always
+        # carry 3, and for MPEG audio the field says whether DRC is present.
+        bits_val = (b1 >> 6) & 3
         quantization = {0: "16-bit", 1: "20-bit", 2: "24-bit", 3: "DRC"}.get(
             bits_val, "unknown"
         )
-        bits_per_sample = {0: 16, 1: 20, 2: 24}.get(bits_val)
+        bits_per_sample = (
+            {0: 16, 1: 20, 2: 24}.get(bits_val) if codec_name == "LPCM" else None
+        )
         code_extension = b5
-        sample_rate = "48 kHz"  # DVD audio is always 48 kHz
+        # Byte 1 bits 5-4: 0 = 48 kHz, 1 = 96 kHz (LPCM only), 2-3 reserved.
+        sample_rate = "96 kHz" if (b1 >> 4) & 3 == 1 else "48 kHz"
         try:
             lang_code = lang_raw.decode("ascii", errors="replace")
         except Exception:
@@ -378,6 +385,28 @@ _LANG_MAP_3_TO_2 = {
     "vie": "vi",
     "ind": "id",
 }
+
+# ISO 639-1 as mkvmerge's --list-languages has it (sh included). mkvmerge
+# exits with an error and writes nothing on any other two-letter code.
+_ISO_639_1 = frozenset(
+    "aa ab ae af ak am an ar as av ay az ba be bg bi bm bn bo br bs ca ce ch co"
+    " cr cs cu cv cy da de dv dz ee el en eo es et eu fa ff fi fj fo fr fy ga gd"
+    " gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ig ii ik io is it iu ja jv"
+    " ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg"
+    " mh mi mk ml mn mr ms mt my na nb nd ne ng nl nn no nr nv ny oc oj om or os"
+    " pa pi pl ps pt qu rm rn ro ru rw sa sc sd se sg sh si sk sl sm sn so sq sr"
+    " ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ug uk ur uz ve vi"
+    " vo wa wo xh yi yo za zh zu".split()
+)
+# Codes ISO 639-1 withdrew, which older DVDs still carry.
+_ISO_639_1_WITHDRAWN = {"in": "id", "iw": "he", "ji": "yi", "jw": "jv", "mo": "ro"}
+
+
+def _iso_639_1(code: str) -> str:
+    """*code* as a current ISO 639-1 code mkvmerge accepts, else ``und``."""
+    code = code.lower()
+    code = _ISO_639_1_WITHDRAWN.get(code, code)
+    return code if code in _ISO_639_1 else "und"
 
 
 # Subpicture code extension — byte 5 of each 6-byte SPST entry at VTSI_MAT+0x256.
@@ -1052,7 +1081,7 @@ def _parse_vts_ifo_languages(
         raw = ifo_data[off : off + 2]
         if raw == b"\x00\x00" or not all(97 <= b <= 122 or 65 <= b <= 90 for b in raw):
             return "und"
-        return raw.decode("ascii", "ignore")
+        return _iso_639_1(raw.decode("ascii"))
 
     audio_by_id: dict[int, str] = {}
     n_audio = min(_read_vts_audio_count(ifo_data), 8)

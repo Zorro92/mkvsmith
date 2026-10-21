@@ -81,21 +81,31 @@ class Audio:
     """audio_attr_t, 8 bytes.
 
     Byte 0: audio_format(3) multichannel(1) lang_type(2) app_mode(2); format
-    0 = AC-3, 4 = LPCM, 6 = DTS; lang_type 1 = a language code follows.
-    Byte 1: quantization(2) sample_frequency(2) unknown(1) channels-1 (3).
+    0 = AC-3, 2/3 = MPEG, 4 = LPCM, 6 = DTS, 7 = SDDS; lang_type 1 = a
+    language code follows. Byte 1: quantization(2) sample_frequency(2)
+    reserved(1) channels-1 (3); quantization is 0/1/2 = 16/20/24-bit for
+    LPCM and 3 for AC-3 and DTS, frequency 0 = 48 kHz, 1 = 96 kHz.
     Bytes 2-3: ISO 639-1 code. Byte 5: code_extension (2-4: visually
-    impaired / director's comments).
+    impaired / director's comments). Byte 7: application info; in app_mode
+    2, bit 3 = Dolby Surround. Quantization defaults to 0, not the 3 real
+    AC-3 streams carry, to keep the bytes a disc-ID test was computed on.
     """
 
     lang: str = "en"
     channels: int = 2
     audio_format: int = 0
     code_extension: int = 1
+    quantization: int = 0
+    sample_frequency: int = 0
+    app_mode: int = 0
+    app_info: int = 0
 
     def encode(self) -> bytes:
-        b0 = self.audio_format << 5 | 1 << 2
-        b1 = (self.channels - 1) & 7
-        return bytes([b0, b1, *self.lang.encode("ascii"), 0, self.code_extension, 0, 0])
+        b0 = self.audio_format << 5 | 1 << 2 | self.app_mode
+        b1 = self.quantization << 6 | self.sample_frequency << 4
+        b1 |= (self.channels - 1) & 7
+        lang = self.lang.encode("ascii")
+        return bytes([b0, b1, *lang, 0, self.code_extension, 0, self.app_info])
 
 
 @dataclass

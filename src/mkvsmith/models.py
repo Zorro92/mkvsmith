@@ -591,9 +591,8 @@ class Stream:
     color_primaries: str | None = None
     color_range: str | None = None
     field_order: str | None = None
-    # Audio quantization bit depth from DVD IFO audio attributes.
-    # On DVD, byte 1 bits 4-5 of each audio attribute entry encode
-    # the resolution: 0=16bps, 1=20bps, 2=24bps, 3=DRC.
+    # LPCM bit depth from DVD IFO audio attributes: byte 1 bits 7-6 of
+    # each audio attribute entry, 0=16, 1=20, 2=24 bits.
     bits_per_sample: int | None = None
 
     @property

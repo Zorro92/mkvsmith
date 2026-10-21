@@ -23,6 +23,7 @@ from mkvsmith import models
 from mkvsmith.models import StreamType
 from mkvsmith.models import Stream, Title
 from mkvsmith.tagger import ArtAttachment, MovieMetadata
+from tests.synth_dvd import Cell, Pgc, Video, vts_ifo
 
 
 def test_streams_match_by_source_id_and_refine_codec() -> None:
@@ -156,8 +157,10 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
         temp_files: list[Path],
         debug: bool,
         only_listed: bool,
+        frame_height: int,
     ) -> tuple[Path, list[dict[str, Any]]]:
         assert only_listed  # never the subtitles nobody chose
+        assert frame_height == 480  # no video attributes in the IFO: NTSC
         calls.append(
             (
                 inputs,
@@ -242,6 +245,37 @@ def test_dvd_subtitle_fallback_matches_tracks_to_streams_by_id(
     options = mkv._dvd_subtitle_fallback_options(streams, tracks, [{"id": 0}])
     assert options[options.index("--language") + 1] == "0:en"
     assert "1:es" in options
+
+
+def test_dvd_subtitle_fallback_sizes_pal_subtitles_to_576_lines(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    title = Title(0, tmp_path / "VTS_01_1.VOB", "Movie", 120)
+    title.dvd_ifo_data = vts_ifo([Pgc([Cell(120, 0, 999)])], video=Video(standard=1))
+    subtitle = Stream(
+        index=0,
+        stream_type=StreamType.SUBTITLE,
+        codec="dvd_subtitle",
+        language="en",
+        sub_id=0x20,
+    )
+    heights: list[object] = []
+
+    def extract(*_args: object, **kwargs: object) -> None:
+        heights.append(kwargs["frame_height"])
+
+    monkeypatch.setattr(mkv, "_extract_dvd_vobsubs", extract)
+
+    mkv._extract_dvd_subtitle_fallback(
+        title,
+        [make_mapped_entry(-1, "subtitles", subtitle)],
+        [title.source_file],
+        None,
+        None,
+        [],
+    )
+
+    assert heights == [576]
 
 
 def test_create_chapters_file_filters_trailing_chapter(

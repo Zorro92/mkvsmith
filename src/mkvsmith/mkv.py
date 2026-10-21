@@ -47,6 +47,7 @@ from mkvsmith.dvdifo import (
     _parse_vts_vobu_admap,
     _build_main_edition_vobu_ranges,
     _extract_dvd_ifo_palette,
+    _parse_vts_video_attrs,
 )
 from mkvsmith.vobsub import (
     _dvd_main_content_range,
@@ -1909,8 +1910,12 @@ def _extract_dvd_subtitle_fallback(
         )
     )
     palette: list[tuple[int, int, int]] | None = None
+    frame_height = 480
     if title.dvd_ifo_data is not None:
         palette = _extract_dvd_ifo_palette(title.dvd_ifo_data, None)
+        video = _parse_vts_video_attrs(title.dvd_ifo_data)
+        if video is not None and video.standard == "PAL":
+            frame_height = 576
 
     result = _extract_dvd_vobsubs(
         inputs,
@@ -1923,6 +1928,7 @@ def _extract_dvd_subtitle_fallback(
         temp_files=temp_files,
         debug=debug,
         only_listed=True,
+        frame_height=frame_height,
     )
     if result is None:
         return None, [], unmatched_subs

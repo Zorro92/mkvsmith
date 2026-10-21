@@ -95,6 +95,68 @@ def test_audio_attributes() -> None:
     ]
 
 
+def test_audio_coding_quantization_and_rate() -> None:
+    # Coding modes 0 AC-3, 2 MPEG-1, 3 MPEG-2 ext, 4 LPCM, 6 DTS, 7 SDDS.
+    data = _one_title(
+        audio=[
+            Audio("en", 6, quantization=3),
+            Audio("en", 2, audio_format=2, quantization=0),
+            Audio("en", 2, audio_format=3, quantization=1),
+            Audio("en", 2, audio_format=4, quantization=2, sample_frequency=1),
+            Audio("en", 2, audio_format=4, quantization=0),
+            Audio("en", 6, audio_format=6, quantization=3),
+            Audio("en", 6, audio_format=7, quantization=3),
+        ]
+    )
+
+    attrs = list(dvdifo._parse_vts_audio_attrs(data).values())
+
+    assert [a.codec for a in attrs] == [
+        "AC3",
+        "MPEG Audio",
+        "MPEG Audio",
+        "LPCM",
+        "LPCM",
+        "DTS",
+        "SDDS",
+    ]
+    # Only LPCM has a bit depth; for the rest the field is DRC.
+    assert [a.bits_per_sample for a in attrs] == [None, None, None, 24, 16, None, None]
+    assert [a.sample_rate for a in attrs] == ["48 kHz"] * 3 + ["96 kHz"] + [
+        "48 kHz"
+    ] * 3
+
+
+def test_dolby_surround_is_read_in_application_mode_2() -> None:
+    data = _one_title(
+        audio=[
+            Audio("en", 2, app_mode=2, app_info=0x08),
+            Audio("en", 2, app_mode=2),
+            Audio("en", 2, app_mode=1, app_info=0x08),  # karaoke: not surround
+        ]
+    )
+
+    attrs = list(dvdifo._parse_vts_audio_attrs(data).values())
+
+    assert [a.dsur for a in attrs] == [True, False, False]
+    assert dvdifo._ifo_audio_title(attrs[0]) == "AC3 Dolby Surround"
+    assert dvdifo._ifo_audio_title(attrs[1]) == "AC3 2.0"
+
+
+def test_languages_mkvmerge_would_refuse_are_mapped() -> None:
+    # Withdrawn ISO 639-1 codes get their replacements; letters that are no
+    # language at all become und, since mkvmerge fails the mux on either.
+    data = _one_title(
+        audio=[Audio("in"), Audio("ji"), Audio("xx"), Audio("EN")],
+        subpictures=[Subpicture("iw"), Subpicture("qq")],
+    )
+
+    audio, subtitles = dvdifo._parse_vts_ifo_languages(data)
+
+    assert list(audio.values()) == ["id", "yi", "und", "en"]
+    assert list(subtitles.values()) == ["he", "und"]
+
+
 # --- cell address table ----------------------------------------------------------
 
 

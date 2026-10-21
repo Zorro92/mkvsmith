@@ -1419,6 +1419,7 @@ def _build_vobsub_idx_lines(
     forced_by_id: dict[int, bool],
     found_palette: list[tuple[int, int, int]] | None,
     pts_offset: int,
+    frame_height: int = 480,
 ) -> list[str]:
     palette = found_palette or []
     palette_string = (
@@ -1429,7 +1430,7 @@ def _build_vobsub_idx_lines(
     lines = [
         "# VobSub index file, v7 (do not modify this line!)",
         "",
-        "size: 720x480",
+        f"size: 720x{frame_height}",
         "org: 0, 0",
         "alpha: 100%",
         "smooth: OFF",
@@ -1586,6 +1587,7 @@ def _write_vobsub_files(
     *,
     temp_files: list[Path],
     debug: bool = False,
+    frame_height: int = 480,
 ) -> tuple[Path, list[dict[str, Any]]] | None:
     """Write VobSub .idx and .sub files from scanned SPU data.
 
@@ -1610,6 +1612,8 @@ def _write_vobsub_files(
         muxed video instead of trailing by the VOB's true (non-zero) start
         PTS - most noticeable as subtitles appearing at a fixed offset from
         their correct time throughout the whole file.
+    frame_height: 480 (NTSC) or 576 (PAL). Players size the subtitle
+        canvas from the .idx ``size:`` line.
 
     Returns ``(idx_path, track_list)`` on success, ``None`` on failure.
     """
@@ -1636,6 +1640,7 @@ def _write_vobsub_files(
         forced_by_id,
         found_palette,
         pts_offset,
+        frame_height,
     )
 
     idx_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1680,6 +1685,7 @@ def _extract_dvd_vobsubs(
     temp_files: list[Path],
     debug: bool = False,
     only_listed: bool = False,
+    frame_height: int = 480,
 ) -> tuple[Path, list[dict[str, Any]]] | None:
     """Extract DVD VobSub subtitles from VOB files by scanning the MPEG-PS
     bitstream directly.
@@ -1698,6 +1704,7 @@ def _extract_dvd_vobsubs(
         PTS discontinuities at run boundaries. When provided, subtitles are
         scanned per-part and PTS values are remapped to form a continuous
         timeline matching the muxed video.
+    frame_height: the video's frame height, 480 (NTSC) or 576 (PAL).
 
     Returns (idx_path, track_list) on success, None on failure.
     """
@@ -1754,6 +1761,7 @@ def _extract_dvd_vobsubs(
         pts_offset=pts_offset,
         temp_files=temp_files,
         debug=debug,
+        frame_height=frame_height,
     )
 
 

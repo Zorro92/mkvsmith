@@ -98,6 +98,7 @@ def test_write_vobsub_files_interleaves_tracks_by_pts(
     assert (tmp_path / "movie.sub").stat().st_size == 3 * 2048
 
     idx = idx_path.read_text(encoding="utf-8")
+    assert "size: 720x480" in idx
     assert "palette: " in idx
     assert "id: en, index: 0" in idx
     assert "id: fr, index: 1" in idx
@@ -119,3 +120,21 @@ def test_filter_vobsub_streams_only_listed_drops_unchosen_streams() -> None:
     filtered, languages = _filter_vobsub_streams(spus, {0x21: "fr"})
     assert sorted(filtered) == [0x20, 0x21, 0x22]
     assert languages[0x20] == "und"
+
+
+def test_pal_subtitles_get_a_576_line_canvas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(vobsub, "_HAS_MKVMERGE", False)
+
+    result = _write_vobsub_files(
+        {0x20: [(90_000, b"line")]},
+        {0x20: "en"},
+        {},
+        tmp_path / "movie",
+        temp_files=[],
+        frame_height=576,
+    )
+
+    assert result is not None
+    assert "size: 720x576" in result[0].read_text(encoding="utf-8")

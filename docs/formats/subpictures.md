@@ -174,8 +174,8 @@ from `size:`, so it must be 720x576 for PAL.
 K requires version 7. `id:` starts a track (`und` if empty); `alt:` and
 `langidx:` are ignored; `timestamp:` needs `filepos:`. Every other line goes
 into the CodecPrivate, which is built once per file and **shared by every
-track** in it. Nothing in K reads a forced flag; mkvsmith sets FlagForced
-with `--forced-track`. Each SPU becomes one Matroska frame (MK: "the
+track** in it. Nothing in K reads a forced flag, so mkvsmith writes none to
+the `.idx` and sets FlagForced with `--forced-track`. Each SPU becomes one Matroska frame (MK: "the
 CodecPrivate contains the palette: and size: lines").
 
 ## Blu-ray PGS (summary)
@@ -189,9 +189,6 @@ PGS stream is forced. mkvmerge passes PGS through as `S_HDMV/PGS`. (FP, MK)
 
 ## Open parser mismatches
 
-- `_build_vobsub_idx_lines` writes a `forced: on` line under each forced
-  stream. It isn't an `.idx` key (X flags it), and K copies it into every
-  track's CodecPrivate.
 - `_SpuAccumulator` splits SPUs on a PTS change rather than by SPDSZ, so two
   SPUs with the same PTS on one stream would be joined.
 - `_raw_vobsub_spu_scan` and `_try_scan_private2_for_spu` look for `00 04`

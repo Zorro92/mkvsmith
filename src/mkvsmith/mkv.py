@@ -1891,12 +1891,12 @@ def _extract_dvd_subtitle_fallback(
     if not unmatched_subs:
         return None, [], unmatched_subs
 
+    # Forced status reaches the MKV through --forced-track; the .idx has no
+    # key for it.
     language_by_id: dict[int, str] = {}
-    forced_by_id: dict[int, bool] = {}
     for stream in unmatched_subs:
         if stream.sub_id is not None:
             language_by_id[stream.sub_id] = stream.language
-            forced_by_id[stream.sub_id] = stream.is_forced
 
     log_debug(
         "DVD subtitle fallback: %d IFO subs (%s), scanning %d VOB(s)"
@@ -1920,7 +1920,6 @@ def _extract_dvd_subtitle_fallback(
     result = _extract_dvd_vobsubs(
         inputs,
         language_by_id,
-        forced_by_id,
         ifo_palette=palette,
         vobu_parts=vobu_parts,
         vobu_part_sizes=vobu_part_sizes if vobu_parts else None,

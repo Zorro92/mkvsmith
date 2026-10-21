@@ -84,7 +84,6 @@ def test_write_vobsub_files_interleaves_tracks_by_pts(
             0x21: [(90_000, b"alternate")],
         },
         {0x20: "eng", 0x21: "fra"},
-        {0x21: True},
         base,
         pts_offset=90_000,
         temp_files=temp_files,
@@ -102,7 +101,8 @@ def test_write_vobsub_files_interleaves_tracks_by_pts(
     assert "palette: " in idx
     assert "id: en, index: 0" in idx
     assert "id: fr, index: 1" in idx
-    assert "forced: on" in idx
+    # Forced is a track flag (--forced-track); .idx has no key for it.
+    assert "forced:" not in idx
     assert "timestamp: 00:00:00:000, filepos: 000000000" in idx
     assert "timestamp: 00:00:01:000, filepos: 000001000" in idx
     assert "timestamp: 00:00:00:000, filepos: 000000800" in idx
@@ -130,7 +130,6 @@ def test_pal_subtitles_get_a_576_line_canvas(
     result = _write_vobsub_files(
         {0x20: [(90_000, b"line")]},
         {0x20: "en"},
-        {},
         tmp_path / "movie",
         temp_files=[],
         frame_height=576,

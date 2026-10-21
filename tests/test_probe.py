@@ -132,3 +132,20 @@ def _probe_apply_dimensions(stream: Stream, dimensions: str) -> None:
     from mkvsmith.probe import _apply_mkvmerge_video_properties
 
     _apply_mkvmerge_video_properties(stream, {"pixel_dimensions": dimensions})
+
+
+def test_codec_names_mkvmerge_reports_for_disc_streams() -> None:
+    # What mkvmerge v96 -J reports for MPEG-2, H.264, HEVC and MP2 in a
+    # program or transport stream (docs/formats/codecs.md), and TrueHD with
+    # Atmos.
+    names = {
+        "MPEG-1/2": "mpeg2video",
+        "AVC/H.264/MPEG-4p10": "h264",
+        "HEVC/H.265/MPEG-H": "h265",
+        "MP2": "mp2",
+        "TrueHD Atmos": "truehd",
+    }
+    for name, codec in names.items():
+        track: dict[str, Any] = {"id": 0, "codec": name, "properties": {}}
+        stream = _stream_from_mkvmerge_track(track, StreamType.VIDEO, 0)
+        assert stream.codec == codec, name

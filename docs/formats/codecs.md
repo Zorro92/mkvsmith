@@ -220,15 +220,14 @@ DVD `0xC0`–`0xC7`, rare. Matroska `A_MPEG/L1`, `L2`, `L3`.
 | MPEG-1 layer II | `MP2` |
 
 mkvmerge also reports `TrueHD Atmos` (since 8.7.0) and names the DTS
-family "DTS-HD Master Audio", "DTS-HD High Resolution", "DTS Express".
-Nothing in NEWS mentions identifying DTS:X or E-AC-3 Atmos.
+family "DTS-HD Master Audio", "DTS-HD High Resolution Audio", "DTS
+Express". Nothing in NEWS mentions identifying DTS:X or E-AC-3 Atmos,
+though the v96 binary holds the string `DTS:X`; what `-J` reports for such
+a stream is untested. `probe._MKVMERGE_CODEC_MAP` maps every string in the
+table above.
 
 ## Open parser mismatches
 
-- `probe._MKVMERGE_CODEC_MAP` lacks `MPEG-1/2`, `AVC/H.264/MPEG-4p10`,
-  `HEVC/H.265/MPEG-H`, `MP2` and `TrueHD Atmos`. Where the DVD title
-  builder falls back to `mkvmerge -J`, the raw string becomes the codec, and
-  MPEG-2 loses its chroma siting.
 - The H.264 VUI colour and chroma location are read past and dropped; AVC
   colour comes from the picture height instead.
 - No header check for Atmos or DTS:X, so track names can't say so.

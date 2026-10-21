@@ -148,7 +148,6 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
     def extract(
         inputs: list[Path],
         language_by_id: dict[int, str] | None,
-        forced_by_id: dict[int, bool] | None,
         *,
         ifo_palette: list[tuple[int, int, int]] | None,
         vobu_parts: list[Path] | None,
@@ -165,7 +164,6 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
             (
                 inputs,
                 language_by_id,
-                forced_by_id,
                 ifo_palette,
                 vobu_parts,
                 vobu_part_sizes,
@@ -195,7 +193,6 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
         (
             [title.source_file],
             {0x20: "en"},
-            {0x20: True},
             [(1, 2, 3)],
             None,
             None,

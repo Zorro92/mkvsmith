@@ -1416,7 +1416,6 @@ def _build_vobsub_idx_lines(
     sorted_ids: list[int],
     track_positions: dict[int, list[tuple[int, int]]],
     lang_by_id: dict[int, str],
-    forced_by_id: dict[int, bool],
     found_palette: list[tuple[int, int, int]] | None,
     pts_offset: int,
     frame_height: int = 480,
@@ -1454,8 +1453,6 @@ def _build_vobsub_idx_lines(
         lines.append("id: %s, index: %d" % (language_two, track_index))
         if language_three != "und":
             lines.append("# %s: %s" % (language_name, language_three))
-        if forced_by_id.get(sub_stream_id, False):
-            lines.append("forced: on")
         lines.extend(
             "timestamp: %s, filepos: %09x"
             % (_format_vobsub_timestamp(pts, pts_offset), file_position)
@@ -1580,7 +1577,6 @@ def _vobsub_pts_offset(vob_paths: list[Path]) -> int:
 def _write_vobsub_files(
     spus_by_id: dict[int, list[tuple[int, bytes]]],
     lang_by_id: dict[int, str],
-    forced_by_id: dict[int, bool],
     base: Path,
     ifo_palette: list[tuple[int, int, int]] | None = None,
     pts_offset: int = 0,
@@ -1601,7 +1597,6 @@ def _write_vobsub_files(
 
     spus_by_id: ``{sub_stream_id: [(pts, spu_data), ...]}``
     lang_by_id: ``{sub_stream_id: iso_639_2_code}``
-    forced_by_id: ``{sub_stream_id: is_forced}``
     base: base path (.idx and .sub are derived from it)
     ifo_palette: optional 16-entry RGB palette from the IFO's PGC.
     pts_offset: 90 kHz-clock PTS value of the muxed video/audio's own first
@@ -1637,7 +1632,6 @@ def _write_vobsub_files(
         sorted_ids,
         track_positions,
         lang_by_id,
-        forced_by_id,
         found_palette,
         pts_offset,
         frame_height,
@@ -1676,7 +1670,6 @@ def _write_vobsub_files(
 def _extract_dvd_vobsubs(
     vob_paths: list[Path],
     lang_by_id: dict[int, str] | None = None,
-    forced_by_id: dict[int, bool] | None = None,
     ifo_palette: list[tuple[int, int, int]] | None = None,
     vobu_parts: list[Path] | None = None,
     vobu_part_sizes: list[int] | None = None,
@@ -1696,7 +1689,6 @@ def _extract_dvd_vobsubs(
 
     vob_paths: VOB file(s) to scan. Use the trimmed VOB when available.
     lang_by_id: {sub_stream_id: iso_639_2_code} from the IFO.
-    forced_by_id: {sub_stream_id: is_forced} from the IFO.
     ifo_palette: optional 16-entry RGB palette from the VTS IFO PGC.
     vobu_parts: when the VOB was assembled from non-contiguous VOBU runs
         (seamless-branching discs), this is the list of per-run temp files.
@@ -1713,8 +1705,6 @@ def _extract_dvd_vobsubs(
         return None
     if lang_by_id is None:
         lang_by_id = {}
-    if forced_by_id is None:
-        forced_by_id = {}
 
     log_debug(
         "_extract_dvd_vobsubs: scanning %d file(s), IFO has %d sub(s)"
@@ -1755,7 +1745,6 @@ def _extract_dvd_vobsubs(
     return _write_vobsub_files(
         filtered,
         lang_by_id,
-        forced_by_id,
         base,
         ifo_palette=ifo_palette,
         pts_offset=pts_offset,

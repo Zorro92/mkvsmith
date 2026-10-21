@@ -116,33 +116,34 @@ def _parse_stn_table_languages(stn_bytes: bytes) -> tuple[list[str], list[str]]:
     return audio_langs, subtitle_langs
 
 
-# Blu-ray (BDMV) stream coding types used in MPLS STN table entries.
-# See Blu-ray Disc Read-Only Format spec and dvdutils / python-dvdvideo references.
+# Blu-ray (BDMV) stream coding types used in MPLS STN table entries, as
+# libbluray's bluray.h names them (docs/formats/bluray.md, code values).
 _BD_VIDEO_CODING_MAP: dict[int, str] = {
     0x01: "mpeg1video",
     0x02: "mpeg2video",
-    0x14: "h264",  # Secondary video (H.264 MVC for 3D)
     0x1B: "h264",
     0x24: "hevc",
     0xEA: "vc1",
 }
 
 _BD_AUDIO_CODING_MAP: dict[int, tuple[str, str]] = {
-    0x80: ("lpcm", "pcm_s16le"),
+    0x03: ("mp2", "mp2"),  # MPEG-1 audio
+    0x04: ("mp2", "mp2"),  # MPEG-2 audio
+    0x80: ("lpcm", "pcm_bluray"),  # HDMV LPCM: own header, big-endian
     0x81: ("ac3", "ac3"),
     0x82: ("dts", "dts"),
     0x83: ("truehd", "truehd"),  # Dolby TrueHD
     0x84: ("eac3", "eac3"),  # Dolby Digital Plus (E-AC-3)
     0x85: ("dts_hd_hr", "dts"),  # DTS-HD High Resolution
     0x86: ("dts_hd_ma", "dts"),  # DTS-HD Master Audio
-    0xA1: ("eac3", "eac3"),  # E-AC3 (Dolby Digital Plus alternate)
-    0xA2: ("dts", "dts"),  # DTS (alternate)
+    0xA1: ("eac3", "eac3"),  # secondary E-AC-3
+    0xA2: ("dts", "dts"),  # secondary DTS-HD (DTS Express)
 }
 
 _BD_SUB_CODING_MAP: dict[int, str] = {
     0x90: "hdmv_pgs_subtitle",
     0x91: "hdmv_pgs_subtitle",  # Interactive Graphics (also PGS)
-    0x92: "dvd_subtitle",  # Text subtitle stream
+    0x92: "hdmv_text_subtitle",  # TextST (Matroska S_HDMV/TEXTST)
 }
 
 # CHARACTER_CODE mapping for text subtitles (coding_type 0x92).
@@ -178,41 +179,33 @@ _BD_FRAMERATE_MAP: dict[int, Fraction] = {
     2: Fraction(24, 1),  # 24
     3: Fraction(25, 1),  # 25
     4: Fraction(30000, 1001),  # 29.97
-    5: Fraction(30, 1),  # 30
-    6: Fraction(50, 1),  # 50
+    6: Fraction(50, 1),  # 50 (5 is reserved)
     7: Fraction(60000, 1001),  # 59.94
 }
 
-# CLPI audio channel layout ID -> channel count.
-# These are the standard BD channel layout values from the spec.
+# CLPI audio presentation type -> channel count. libbluray names only 1, 3,
+# 6 and 12; 6 ("multi-channel") and 12 (a stereo core plus multi-channel)
+# say no count, so mkvmerge's at mux time is used (5.1 is the commonest).
 _BD_CHANNEL_LAYOUT_MAP: dict[int, int] = {
     1: 1,  # Mono
-    2: 2,  # Dual mono
     3: 2,  # Stereo
-    4: 3,  # 3ch
-    5: 4,  # 4ch
-    6: 6,  # 5.1ch
-    7: 7,  # 6.1ch
-    8: 8,  # 7.1ch
-    9: 8,  # 7.1ch (alternative)
+    6: 6,  # Multi-channel
 }
 
 # CLPI sample rate ID -> sample rate in Hz.
 _BD_SAMPLE_RATE_MAP: dict[int, int] = {
     1: 48000,
-    2: 96000,
-    3: 192000,
-    4: 96000,  # 96kHz (alternative encoding)
-    5: 192000,  # 192kHz (alternative encoding)
-    12: 48000,  # 48/192 combo
-    14: 48000,  # 48/96 combo
+    4: 96000,
+    5: 192000,
+    # A core (AC-3/DTS) plus the HD stream mkvmerge outputs: the HD rate.
+    12: 192000,  # 48 or 96 kHz core, 192 kHz HD
+    14: 96000,  # 48 kHz core, 96 kHz HD
 }
 
 # CLPI aspect ratio ID -> display aspect ratio string.
 _BD_ASPECT_RATIO_MAP: dict[int, str] = {
     2: "4:3",
     3: "16:9",
-    4: ">2.20:1",
 }
 
 # Dynamic range type for HEVC video (coding_type 0x24 in MPLS stream attributes).
@@ -572,7 +565,7 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
     Reads all 8 stream category counts (primary video/audio/PG/IG, secondary
     audio/video/PG, and Dolby Vision) per the BD-ROM specification. Handles
     HEVC (0x24) with dynamic_range_type/colorspace extraction, CHARACTER_CODE
-    encoding for text subtitles (0x92), and secondary video (0x14).
+    encoding for text subtitles (0x92).
 
     Returns a list of dicts, each with:
       type          : StreamType

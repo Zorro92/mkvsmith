@@ -467,3 +467,26 @@ def test_uhd_dolby_vision_playlist_is_tagged_hdr() -> None:
     assert [s.get("dynamic_range_type") for s in videos] == ["hdr10", "dolby_vision"]
     base = _streams_from_mpls(videos)[0]
     assert (base.color_primaries, base.color_transfer) == ("bt2020", "smpte2084")
+
+
+def test_coding_types_get_the_codecs_libbluray_names() -> None:
+    # 0x03 is MPEG-1 audio (once listed as a placeholder AC-3 track) and 0x92
+    # HDMV text subtitles (once labelled a DVD subtitle).
+    text_sub = _entry(1, 0x1800) + bytes([5, 0x92, 0x01]) + b"eng"
+    stn = _stn(
+        video=[VIDEO],
+        audio=[_entry(1, 0x1100) + _attr(0x03), _entry(1, 0x1101) + _attr(0x80)],
+        pg=[text_sub],
+    )
+
+    codecs = [s["codec"] for s in _parse_stn_table_streams(stn)]
+
+    assert codecs == ["h264", "mp2", "lpcm", "hdmv_text_subtitle"]
+
+
+def test_combo_sample_rates_are_the_hd_streams() -> None:
+    # A stereo AC-3/DTS core with a lossless stream: mkvmerge outputs the HD
+    # part, at 192 kHz (rate 12) or 96 kHz (rate 14).
+    assert bluray._BD_SAMPLE_RATE_MAP[12] == 192_000
+    assert bluray._BD_SAMPLE_RATE_MAP[14] == 96_000
+    assert 2 not in bluray._BD_SAMPLE_RATE_MAP  # reserved

@@ -367,15 +367,8 @@ ID and a 16-byte disc ID. `sound.bdmv` (`BCLK`) holds menu sound effects.
 - **Version `0240` is refused.** `_parse_clpi` accepts only versions
   `0100`, `0200` and `0300`, so a 3D disc's clip info merge does nothing.
   Its `HDBD` magic has no source.
-- **`_BD_AUDIO_CODING_MAP` lacks `03` and `04`.** A playlist's MPEG audio
-  is listed as a placeholder `ac3` stream.
-- **Audio labels.** Presentation type 12 gives no channel count. Rates 12
-  and 14 are reported as 48 kHz, though the HD part mkvmerge outputs is 192
-  or 96 kHz. LPCM is labelled `pcm_s16le`.
-- **Unsourced labels.** Coding type `14` is labelled MVC, which is `20`.
-  `92` is labelled a DVD subtitle, though it's TextST. Frame rate 5 is
-  read as 30 fps. Presentation types 2, 4, 5, 7, 8 and 9, sample rates 2
-  and 3, and aspect ratio 4 are all guessed.
+- **Channel counts.** Presentation types 6 and 12 say no count; 6 is
+  taken as 5.1 and 12 gives none until mkvmerge's count at mux time.
 - **Picture-in-picture.** In-mux PiP streams (entry type 3) are skipped in
   the clip info merge, though their PIDs are in the main clip.
 - **Unread attributes.** The playlist's audio format and rate are never

@@ -620,6 +620,7 @@ class Stream:
             "vc1": "VC-1",
             "dvd_subtitle": "DVD Sub",
             "hdmv_pgs_subtitle": "PGS",
+            "hdmv_text_subtitle": "TextST",
             "dts": "DTS",
             "ac3": "AC3",
             "eac3": "E-AC3",
@@ -628,6 +629,7 @@ class Stream:
             "dts_hd_hr": "DTS-HD HR",
             "dts_hd_ma": "DTS-HD MA",
             "lpcm": "LPCM",
+            "mp2": "MP2",
         }.get(self.codec, self.codec.upper())
 
 

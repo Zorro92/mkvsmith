@@ -37,9 +37,14 @@ from mkvsmith.models import StreamType, Stream, Title, _HAS_MKVMERGE
 # =============================================================================
 # Core Helpers
 # =============================================================================
+# mkvmerge -J's "codec" strings. MPEG-1/2, the long AVC and HEVC names and
+# MP2 are what mkvmerge v96 reports for disc streams (docs/formats/codecs.md).
 _MKVMERGE_CODEC_MAP = {
+    "MPEG-1/2": "mpeg2video",
     "MPEG-2 Video": "mpeg2video",
+    "AVC/H.264/MPEG-4p10": "h264",
     "AVC/H.264": "h264",
+    "HEVC/H.265/MPEG-H": "h265",
     "HEVC/H.265": "h265",
     "VC-1": "vc1",
     "AC-3": "ac3",
@@ -50,9 +55,11 @@ _MKVMERGE_CODEC_MAP = {
     "DTS-HD High Resolution Audio": "dts_hd_hr",
     "PCM": "lpcm",
     "TrueHD": "truehd",
+    "TrueHD Atmos": "truehd",
     "FLAC": "flac",
     "Vorbis": "vorbis",
     "AAC": "aac",
+    "MP2": "mp2",
     "MP3": "mp3",
     "SubStationAlpha": "ass",
     "VobSub": "dvd_subtitle",

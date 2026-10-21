@@ -2558,9 +2558,7 @@ class MKVCreator:
             unmatched_ifo_subs = []
 
         cc608_srt = None
-        if input_plan.is_dvd_vob and any(
-            stream.codec in CC608_CODECS for stream in streams
-        ):
+        if input_plan.is_dvd_vob:
             cc608_srt = _extract_dvd_cc608_sidecar(
                 title, input_plan.inputs, self.cleanup.temp_files, self.config
             )

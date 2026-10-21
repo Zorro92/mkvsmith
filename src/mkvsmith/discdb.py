@@ -704,8 +704,7 @@ def _quoted(value: object) -> str:
     return f'"{text}"'
 
 
-def _stream_lines(title_index: int, stream: Stream) -> list[str]:
-    stream_index = stream.index
+def _stream_lines(title_index: int, stream_index: int, stream: Stream) -> list[str]:
     lines = [
         f"SINFO:{title_index},{stream_index},1,0,"
         f"{_quoted(_stream_type_name(stream.stream_type))}"
@@ -779,8 +778,8 @@ def synthetic_scan_log(titles: list[Title], is_bluray: bool) -> str:
         lines.extend(
             f"TINFO:{index},{code},0,{_quoted(value)}" for code, value in fields
         )
-        for stream in title.streams:
-            lines.extend(_stream_lines(index, stream))
+        for stream_index, stream in enumerate(title.streams):
+            lines.extend(_stream_lines(index, stream_index, stream))
     return "\n".join(lines) + "\n"
 
 

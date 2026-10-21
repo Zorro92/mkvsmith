@@ -967,7 +967,7 @@ def test_iso_disc_hash_uses_existing_iso_listing_sizes(tmp_path: Path):
     assert scanner.disc_metadata.disc_hash == expected
 
 
-def test_synthetic_scan_log_uses_stream_index_and_folder_hash_matches_uppercase_m2ts(
+def test_synthetic_scan_log_uses_stream_position_and_folder_hash_matches_uppercase_m2ts(
     tmp_path: Path,
 ) -> None:
     stream_dir = tmp_path / "BDMV" / "STREAM"
@@ -999,3 +999,37 @@ def test_synthetic_scan_log_uses_stream_index_and_folder_hash_matches_uppercase_
     assert 'SINFO:0,0,1,0,"Video"' in log
     assert 'SINFO:0,1,1,0,"Audio"' in log
     assert 'SINFO:0,2,1,0,"Subtitle"' in log
+
+    dvd_title = Title(
+        index=0,
+        source_file=tmp_path / "VTS_01_1.VOB",
+        name="Movie",
+        duration_seconds=3600,
+        dvd_title_id=1,
+        streams=[
+            Stream(
+                index=0,
+                stream_type=StreamType.VIDEO,
+                codec="mpeg2video",
+                type_index=0,
+            ),
+            Stream(
+                index=0,
+                stream_type=StreamType.AUDIO,
+                codec="ac3",
+                language="eng",
+                type_index=0,
+            ),
+            Stream(
+                index=0,
+                stream_type=StreamType.SUBTITLE,
+                codec="dvd_subtitle",
+                language="eng",
+                type_index=0,
+            ),
+        ],
+    )
+    dvd_log = discdb.synthetic_scan_log([dvd_title], is_bluray=False)
+    assert 'SINFO:0,0,1,0,"Video"' in dvd_log
+    assert 'SINFO:0,1,1,0,"Audio"' in dvd_log
+    assert 'SINFO:0,2,1,0,"Subtitle"' in dvd_log

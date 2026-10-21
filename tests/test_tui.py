@@ -793,12 +793,14 @@ async def dialog(pilot: Pilot[None], app: tui.MkvsmithApp, kind: type) -> None:
 
     Its lines exist before its on_mount runs, and on_mount sets the starting
     highlight: a line chosen in between (on a slow machine) gets reset.
-    Every dialog focuses something on mount, so wait for that.
+    Focus alone doesn't show on_mount has run (Textual auto-focuses while
+    composing), so wait for the screen to be mounted too.
     """
     await wait_until(
         pilot,
         lambda: (
             isinstance(app.screen, kind)
+            and app.screen.is_mounted
             and bool(app.screen.query("#choices, #actions"))
             and app.screen.focused is not None
         ),

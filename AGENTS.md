@@ -70,6 +70,15 @@ unblocked:
 - **Test at the helper/action level** (see `tests/test_cli_actions.py`), not
   only through argv parsing, so the GUI-callable path is the tested path.
 
+## Format notes: check them first, add to them
+
+`docs/formats/` holds what we know about each disc format, field by field,
+with the source of every table, what real discs confirmed, and where
+sources disagree (see `docs/formats/README.md`). Read the relevant write-up
+before changing a parser or writing a test builder, and record anything
+new you settle there, with its evidence. Copies of sources that can't be
+published live in `.agents/specs/` (gitignored, local only).
+
 ## Reference implementations & specs (read, don't depend on)
 
 When extending a parser (a new CLPI/IFO/MPLS field, a codec's channel layout,

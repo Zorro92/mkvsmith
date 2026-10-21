@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -906,6 +907,81 @@ def test_an_encrypted_dvd_asks_before_listing_and_warns_above_it(
     run_app(body, source=Path("/discs/movie.iso"))
     # Nothing can be ripped, so the other per-disc questions aren't asked.
     assert asked_captions == []
+
+
+@pytest.mark.parametrize("dialog_open", [True, False])
+def test_a_click_reported_off_the_screen_keeps_the_focus(dialog_open: bool) -> None:
+    """Terminals that report the mouse in pixels can place a click outside
+    the screen; Textual would drop the focus, and Enter would do nothing."""
+    answers: list[bool | None] = []
+
+    async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        if dialog_open:
+            app.push_screen(
+                tui.ConfirmDialog("Show its titles anyway?"), answers.append
+            )
+            await dialog(pilot, app, tui.ConfirmDialog)
+        focused = app.focused
+        assert focused is not None
+        for event in (events.MouseMove, events.MouseDown, events.MouseUp):
+            app.post_message(
+                event(
+                    None,
+                    500,
+                    500,
+                    0,
+                    0,
+                    1,
+                    False,
+                    False,
+                    False,
+                    screen_x=500,
+                    screen_y=500,
+                )
+            )
+        await pilot.pause()
+        assert app.focused is focused
+        if dialog_open:
+            await pilot.press("down", "enter")
+            await wait_until(pilot, lambda: answers == [False])
+
+    run_app(body)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the Linux/macOS driver")
+@pytest.mark.parametrize("enabled", [False, True])
+def test_the_driver_keeps_the_mouse_in_cells(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool
+) -> None:
+    """A terminal answering that in-band resize is supported (as Termius on
+    Android does, then sends pixels but no size report) doesn't get pixel
+    mouse coordinates turned on."""
+    from textual.drivers.linux_driver import LinuxDriver
+    from textual.messages import InBandWindowResize
+
+    async def check() -> None:  # a driver needs a running event loop
+        driver_class = tui._cell_mouse_driver(LinuxDriver)
+        assert driver_class is not LinuxDriver
+        driver = driver_class(cast(Any, object()), size=(80, 24))
+        written: list[str] = []
+        sent: list[object] = []
+        monkeypatch.setattr(driver, "write", written.append)
+        monkeypatch.setattr(driver, "send_message", sent.append)
+
+        driver.process_message(InBandWindowResize(supported=True, enabled=enabled))
+
+        assert written == (["\x1b[?2048l"] if enabled else [])
+        [message] = sent
+        assert isinstance(message, InBandWindowResize)
+        assert not message.supported and not message.enabled
+
+    asyncio.run(check())
+
+
+def test_other_drivers_are_left_alone() -> None:
+    from textual.drivers.headless_driver import HeadlessDriver
+
+    assert tui._cell_mouse_driver(HeadlessDriver) is HeadlessDriver
 
 
 @pytest.mark.parametrize("outcome", ["listed", "abandoned"])

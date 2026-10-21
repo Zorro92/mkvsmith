@@ -20,6 +20,7 @@ import asyncio
 import os
 import re
 import shutil
+import sys
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -30,6 +31,9 @@ from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
+from textual.driver import Driver
+from textual.message import Message
+from textual.messages import InBandWindowResize
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Header, Input, Label, OptionList, RichLog, Static
 from textual.widgets.option_list import Option, OptionDoesNotExist
@@ -349,6 +353,20 @@ def _strip_yes_no(message: str) -> str:
     return re.sub(r"\s*\[y/N\]:?\s*$", "", message)
 
 
+def _off_screen(screen: Screen[Any], event: events.Event) -> bool:
+    """Whether *event* is a mouse event reported outside *screen*.
+
+    Textual drops the focus for one (the mouse is over no widget), leaving a
+    list where Enter does nothing. Terminals that report the mouse in pixels
+    can place a click there when their pixel and cell sizes disagree.
+    """
+    return (
+        isinstance(event, events.MouseEvent)
+        and screen.app.mouse_captured is None
+        and not screen.region.contains(event.x, event.y)
+    )
+
+
 class _Dialog(ModalScreen[T]):
     """A box over the screen: an optional heading, the question, then lines.
 
@@ -360,6 +378,10 @@ class _Dialog(ModalScreen[T]):
         super().__init__()
         self._question = question
         self._heading = heading
+
+    def _forward_event(self, event: events.Event) -> None:
+        if not _off_screen(self, event):
+            super()._forward_event(event)
 
     def compose_question(self) -> ComposeResult:
         if self._heading:
@@ -641,6 +663,10 @@ class _Page(Screen[None]):
 
     def compose_body(self) -> ComposeResult:
         yield from ()
+
+    def _forward_event(self, event: events.Event) -> None:
+        if not _off_screen(self, event):
+            super()._forward_event(event)
 
     @property
     def mkvsmith(self) -> MkvsmithApp:
@@ -1799,6 +1825,34 @@ class AboutScreen(_Page):
 # =============================================================================
 
 
+def _cell_mouse_driver(driver: type[Driver]) -> type[Driver]:
+    """*driver*, made to keep the mouse in cells rather than pixels.
+
+    Where the terminal supports in-band resize reports (mode 2048), Textual
+    turns them on along with pixel mouse coordinates (mode 1016) and scales
+    the pixels by the size the reports give. Some terminals (Termius on
+    Android) do send pixels but never a report, so a tap's pixels are read
+    as cells and land far off the screen. A list only needs the row tapped,
+    so leave both modes off.
+    """
+    if sys.platform == "win32":
+        return driver
+    from textual.drivers.linux_driver import LinuxDriver
+
+    if driver is not LinuxDriver:
+        return driver
+
+    class CellMouseDriver(LinuxDriver):
+        def process_message(self, message: Message) -> None:
+            if isinstance(message, InBandWindowResize):
+                if message.enabled:  # left on by an earlier program
+                    self.write("\x1b[?2048l")
+                message = InBandWindowResize(supported=False, enabled=False)
+            super().process_message(message)
+
+    return CellMouseDriver
+
+
 class MkvsmithApp(App[None]):
     """The whole interactive session: setup, menu, scan, titles, rips."""
 
@@ -1874,6 +1928,9 @@ class MkvsmithApp(App[None]):
         self.tagging = TaggingChoice.from_options(state.tag_options)
         self.quit_after_rip = False
         self._thread_id = threading.get_ident()
+
+    def get_driver_class(self) -> type[Driver]:
+        return _cell_mouse_driver(super().get_driver_class())
 
     # -- start-up -----------------------------------------------------------
 

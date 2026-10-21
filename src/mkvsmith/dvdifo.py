@@ -2177,12 +2177,32 @@ class PgcStreamIds:
     subtitles: dict[int, int]
 
 
+# First ID of each audio coding's streams in the VOBs: a private stream 1
+# sub-stream, or for MPEG audio its own PES stream ID (FFmpeg
+# dvdvideo_audio_stream_analyze; docs/formats/dvd-video.md).
+_AUDIO_STREAM_ID_BASE: dict[str, int] = {
+    "AC3": 0x80,
+    "DTS": 0x88,
+    "SDDS": 0x90,
+    "LPCM": 0xA0,
+    "MPEG Audio": 0xC0,
+}
+
+
+def _dvd_audio_stream_id(attrs: _IFOAudioAttrs | None, number: int) -> int:
+    """The ID audio stream *number* has in the VOBs, by its coding."""
+    base = _AUDIO_STREAM_ID_BASE.get(attrs.codec, 0x80) if attrs else 0x80
+    return base + (number & 0x07)
+
+
 def _pgc_audio_ids(ifo_data: bytes, pgc_abs: int) -> dict[int, int]:
     """The audio streams a PGC enables: physical ID -> attribute key.
 
     An AST_CTL entry (8 x 2 bytes at PGC+0x0C) is available when bit 15 is
-    set; bits 10-8 hold the physical stream number.
+    set; bits 10-8 hold the stream number, which counts from its coding's
+    first ID (AC-3 0x80, DTS 0x88, LPCM 0xA0, MPEG 0xC0).
     """
+    attrs = _parse_vts_audio_attrs(ifo_data)
     ids: dict[int, int] = {}
     for logical in range(_PGCOffset.NUM_AST_ENTRIES):
         offset = pgc_abs + _PGCOffset.AST_CTL + logical * 2
@@ -2190,7 +2210,8 @@ def _pgc_audio_ids(ifo_data: bytes, pgc_abs: int) -> dict[int, int]:
             break
         first = ifo_data[offset]
         if first & 0x80:
-            ids.setdefault(0x80 + (first & 0x07), 0x80 + logical)
+            key = 0x80 + logical
+            ids.setdefault(_dvd_audio_stream_id(attrs.get(key), first), key)
     return ids
 
 

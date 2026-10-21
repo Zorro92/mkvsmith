@@ -2158,3 +2158,33 @@ def test_probe_with_mkvmerge_reads_container_properties_duration(
     title = Title(0, tmp_path / "video.mkv", "Video", result["duration"])
     probe._parse_mkvmerge_streams(result, title)
     assert title.streams[0].codec_display == "H.265"
+
+
+def test_dvd_audio_matches_mkvmerge_tracks_by_sub_stream() -> None:
+    # mkvmerge numbers a VOB's private stream 1 tracks (sub-stream << 32) |
+    # 0xBD (seen on real DVDs); positional matching paired a disc's first
+    # stream, DTS (0x88), with mkvmerge's first audio track, an AC-3 one.
+    dts = Stream(index=1, stream_type=StreamType.AUDIO, codec="dts", sub_id=0x88)
+    ac3 = Stream(
+        index=2, stream_type=StreamType.AUDIO, codec="ac3", sub_id=0x81, type_index=1
+    )
+    tracks = [
+        {"id": 0, "type": "video", "properties": {"number": 0xE0}},
+        {"id": 1, "type": "audio", "properties": {"number": 0x81 << 32 | 0xBD}},
+        {"id": 2, "type": "audio", "properties": {"number": 0x88 << 32 | 0xBD}},
+    ]
+
+    match_dts = mkv._ident_track_for_source_id(dts, tracks)
+    match_ac3 = mkv._ident_track_for_source_id(ac3, tracks)
+
+    assert match_dts is not None and match_dts["id"] == 2
+    assert match_ac3 is not None and match_ac3["id"] == 1
+
+
+def test_dvd_source_ids_by_coding(tmp_path: Path) -> None:
+    title = Title(0, tmp_path / "VTS_02_1.VOB", "Movie", 120)
+    title.dvd_pgc_number = 1  # a DVD title, not a lone VOB
+    expected = {0x88: "0288BD", 0xA0: "02A0BD", 0x81: "0281BD", 0xC0: "0200C0"}
+    for sub_id, source_id in expected.items():
+        stream = Stream(index=1, stream_type=StreamType.AUDIO, sub_id=sub_id)
+        assert mkv._source_id_for_stream(stream, title) == source_id

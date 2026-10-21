@@ -183,7 +183,10 @@ display 3 (dvdauthor's `dvdunauthor` warns otherwise).
 The sub-stream that carries audio stream *n* depends on its coding: AC-3
 `0x80` + *n*, DTS `0x88` + *n*, LPCM `0xA0` + *n* (all in private stream 1),
 MPEG audio stream ID `0xC0` + *n*. (F `dvdvideo_audio_stream_analyze`, M
-`dvdmpeg.md`)
+`dvdmpeg.md`) ✔ real disc: a retail NTSC DVD's first audio stream is DTS
+stream 0, sub-stream `0x88`, beside AC-3 streams `0x81` and `0x82`.
+mkvmerge numbers such a track `(sub-stream << 32) | 0xBD`
+(`0x88000000BD`), and video by its stream ID (`0xE0`).
 
 ### Subpicture attributes (6 bytes)
 
@@ -447,22 +450,16 @@ when it's fixed.
 1. **Video "letterboxed"** is read from byte 0 bit 1 (automatic pan-scan
    disallowed), which no source calls letterboxed. Harmless today: nothing
    uses the value.
-2. **Audio sub-stream IDs** are `0x80` + *n* for every codec
-   (`_pgc_audio_ids`, `_parse_vts_ifo_languages`, `_parse_vts_audio_attrs`),
-   so DTS, LPCM and MPEG tracks get the wrong `SOURCE_ID` tag. And mkvmerge
-   numbers program-stream tracks `(sub-stream ID << 32) | stream ID`
-   (MKVToolNix `r_mpeg_ps.cpp`), so `_ident_track_for_source_id` never
-   matches a DVD track by number and falls back to position.
-3. **PGC still time and playback mode** are swapped (`_PGCOffset`: `A2`
+2. **PGC still time and playback mode** are swapped (`_PGCOffset`: `A2`
    still, `A3` mode). Nothing reads them yet.
-4. **"Offset mode" stream control.** `_parse_pgc_stream_languages` treats
+3. **"Offset mode" stream control.** `_parse_pgc_stream_languages` treats
    PGC bytes 0-1 as a flag that turns the stream control tables into
    offsets. No source describes it; those bytes are reserved, and `00 00`
    on every real PGC sampled, so the path never runs.
-5. **TXTDT_MG** is parsed with a layout and character-set codes that don't
+4. **TXTDT_MG** is parsed with a layout and character-set codes that don't
    match R's. No sampled disc has the table, so it has never run on real
    bytes.
-6. **Unsourced values.** `RES_MAP` has widths for resolution codes 4 (544)
+5. **Unsourced values.** `RES_MAP` has widths for resolution codes 4 (544)
    and 5 (480), which M calls reserved. Subpicture coding mode 3 is
    labelled "line-21 CC". Command counts are masked with `0x3F`.
 

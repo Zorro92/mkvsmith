@@ -570,3 +570,34 @@ def test_an_invalid_setstn_angle_plays_angle_one() -> None:
     first, second = dvdifo.pgc_layout(data, 1), dvdifo.pgc_layout(data, 2)
     assert first is not None and second is not None
     assert second.fingerprint == first.fingerprint == ((1, 1), (1, 2))
+
+
+def test_audio_stream_ids_count_from_their_codings_base() -> None:
+    # A disc's first audio is DTS stream 0, then AC-3 streams 1 and 2, then
+    # LPCM stream 0 and MPEG stream 0: in the VOBs, 0x88, 0x81, 0x82, 0xA0
+    # and 0xC0 (each coding counts from its own first ID).
+    from mkvsmith import dvdbuild
+
+    data = vts_ifo(
+        [Pgc([Cell(600, 0, 999)], audio=[0, 1, 2, 0, 0])],
+        audio=[
+            Audio("en", 6, audio_format=6, quantization=3),
+            Audio("en", 6, quantization=3),
+            Audio("fr", 6, quantization=3),
+            Audio("en", 2, audio_format=4),
+            Audio("de", 2, audio_format=2),
+        ],
+    )
+
+    streams = dvdbuild._build_dvd_streams_from_ifo(data, 600, 1)
+
+    audio = [s for s in streams if s.stream_type.value == "audio"]
+    # In the disc's own order, so its first audio stays first.
+    assert [(s.codec, s.sub_id) for s in audio] == [
+        ("dts", 0x88),
+        ("ac3", 0x81),
+        ("ac3", 0x82),
+        ("lpcm", 0xA0),
+        ("mpeg audio", 0xC0),
+    ]
+    assert [s.type_index for s in audio] == [0, 1, 2, 3, 4]

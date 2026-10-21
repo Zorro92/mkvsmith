@@ -532,11 +532,16 @@ def _ident_track_for_source_id(
     source_id = stream.pid or stream.sub_id
     if source_id is None:
         return None
+    numbers = {source_id}
+    if stream.pid is None and stream.stream_type == StreamType.AUDIO:
+        # mkvmerge numbers a program stream's private stream 1 tracks
+        # (sub-stream << 32) | 0xBD; MPEG audio has its own stream ID.
+        numbers.add(source_id << 32 | 0xBD)
     return next(
         (
             track
             for track in ident_tracks
-            if track.get("properties", {}).get("number") == source_id
+            if track.get("properties", {}).get("number") in numbers
         ),
         None,
     )
@@ -955,6 +960,10 @@ def _source_id_for_stream(
         sub_id = 0x00
     else:
         sub_id = stream.sub_id if stream.sub_id is not None else 0x00
+    if stream.stream_type == StreamType.AUDIO and 0xC0 <= sub_id <= 0xC7:
+        # MPEG audio is its own PES stream, as video is (an assumption: no
+        # reference rip with MPEG audio was available).
+        pack_id, sub_id = sub_id, 0x00
     return f"{vts:02d}{sub_id:02X}{pack_id:02X}"
 
 

@@ -40,6 +40,7 @@ from mkvsmith.dvdifo import (
     _IFOAudioAttrs,
     _IFOSubpictureAttrs,
     _IFOVideoAttrs,
+    _dvd_audio_stream_id,
     _iso_639_1,
     _VTS_IFO_IDENT,
     _VTS_IFO_SUBP_COUNT,
@@ -737,11 +738,14 @@ def _build_dvd_audio_streams(
     """Audio streams for *audio_ids* (physical ID -> attribute key).
 
     The physical ID is what the VOBs carry (the stream's ``sub_id``); the
-    attribute key selects its codec, channels and language.
+    attribute key selects its codec, channels and language. Streams come in
+    the disc's own order (by key): the IDs of mixed codings don't sort that
+    way (a first DTS stream is 0x88, after AC-3's 0x80s).
     """
     audio_attrs = _parse_vts_audio_attrs(ifo_data)
     streams: list[Stream] = []
-    for type_index, (stream_id, key) in enumerate(sorted(audio_ids.items())):
+    ordered = sorted(audio_ids.items(), key=lambda item: (item[1], item[0]))
+    for type_index, (stream_id, key) in enumerate(ordered):
         attrs = audio_attrs.get(key)
         codec_name = attrs.codec.lower() if attrs else "ac3"
         channels = attrs.channels if attrs else 2
@@ -820,7 +824,11 @@ def _build_dvd_streams_from_ifo(
     audio_languages, subtitle_languages = _merged_dvd_stream_languages(
         ifo_data, pgc_number
     )
-    audio_ids = ids.audio or {key: key for key in audio_languages}
+    audio_attrs = _parse_vts_audio_attrs(ifo_data)
+    audio_ids = ids.audio or {
+        _dvd_audio_stream_id(audio_attrs.get(key), key - 0x80): key
+        for key in audio_languages
+    }
     subtitle_ids = ids.subtitles or {key: key for key in subtitle_languages}
     if not ids.audio and audio_ids:
         log_debug(f"No PGC audio control; using the VTS attribute IDs: {audio_ids}")

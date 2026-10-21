@@ -553,6 +553,24 @@ class StreamType(Enum):
     SUBTITLE = "subtitle"
 
 
+@dataclass(frozen=True)
+class MasteringMetadata:
+    """HDR10 static metadata (SMPTE ST 2086 plus MaxCLL/MaxFALL).
+
+    Chromaticities are CIE 1931 x, y; luminances cd/m². A value of 0 means
+    the source left it unset.
+    """
+
+    red: tuple[float, float]
+    green: tuple[float, float]
+    blue: tuple[float, float]
+    white: tuple[float, float]
+    max_luminance: float
+    min_luminance: float
+    max_cll: int
+    max_fall: int
+
+
 @dataclass
 class Stream:
     index: int
@@ -590,6 +608,9 @@ class Stream:
     color_transfer: str | None = None
     color_primaries: str | None = None
     color_range: str | None = None
+    # HDR10 mastering display and light levels, for mkvmerge to write:
+    # it takes none of them from a transport stream's SEI.
+    mastering: MasteringMetadata | None = None
     field_order: str | None = None
     # LPCM bit depth from DVD IFO audio attributes: byte 1 bits 7-6 of
     # each audio attribute entry, 0=16, 1=20, 2=24 bits.

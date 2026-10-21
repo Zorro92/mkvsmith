@@ -67,6 +67,7 @@ from mkvsmith.models import (
     DiscMetadata,
     EditionAtom,
     EditionSpec,
+    MasteringMetadata,
     StreamType,
     Stream,
     Title,
@@ -861,6 +862,32 @@ def _append_video_track_options(cmd: list[str], input_id: int, stream: Stream) -
     siting = _chroma_siting_for_codec(stream.codec)
     if siting is not None:
         cmd += ["--chroma-siting", f"{input_id}:{siting}"]
+    if stream.mastering is not None:
+        cmd += _mastering_options(input_id, stream.mastering)
+
+
+def _mastering_options(input_id: int, m: MasteringMetadata) -> list[str]:
+    """mkvmerge options for HDR10 static metadata; unset (0) values are left
+    out. mkvmerge copies none of it from a transport stream itself
+    (docs/formats/codecs.md)."""
+    options: list[str] = []
+    if any(m.red + m.green + m.blue):
+        coordinates = ",".join(f"{c:g}" for c in (*m.red, *m.green, *m.blue))
+        options += ["--chromaticity-coordinates", f"{input_id}:{coordinates}"]
+    if any(m.white):
+        options += [
+            "--white-color-coordinates",
+            f"{input_id}:{m.white[0]:g},{m.white[1]:g}",
+        ]
+    if m.max_luminance:
+        options += ["--max-luminance", f"{input_id}:{m.max_luminance:g}"]
+    if m.min_luminance:
+        options += ["--min-luminance", f"{input_id}:{m.min_luminance:g}"]
+    if m.max_cll:
+        options += ["--max-content-light", f"{input_id}:{m.max_cll}"]
+    if m.max_fall:
+        options += ["--max-frame-light", f"{input_id}:{m.max_fall}"]
+    return options
 
 
 def _track_name_for_stream(entry: MappedStream) -> str:

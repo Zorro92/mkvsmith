@@ -271,3 +271,88 @@ def test_a_uhd_dolby_vision_playlist_is_tagged_hdr(tmp_path: Path) -> None:
     assert [s.get("dynamic_range_type") for s in videos] == ["hdr10", "dolby_vision"]
     base = _streams_from_mpls(videos)[0]
     assert (base.color_primaries, base.color_transfer) == ("bt2020", "smpte2084")
+
+
+def _uhd_stn() -> Stn:
+    return Stn(
+        video=[
+            Stream(
+                HEVC,
+                0x1011,
+                video_format=FORMAT_2160P,
+                rate=RATE_24,
+                dynamic_range=HDR10,
+                colour_space=BT2020,
+            ),
+        ],
+    )
+
+
+# A UHD disc's values, as its HEVC SEI also gives them: P3 primaries (green,
+# blue, red), D65, 1000 / 0.0001 cd/m², MaxCLL 331, MaxFALL 226.
+_P3_D65 = [13250, 34500, 7500, 3000, 34000, 16000, 15635, 16450, 1000, 1, 331, 226]
+
+
+def test_static_hdr_metadata_reaches_the_base_layer(tmp_path: Path) -> None:
+    from mkvsmith.mkv import _append_video_track_options
+    from mkvsmith.scan import _streams_from_mpls
+
+    # An SDR entry with nothing set comes first and is skipped.
+    playlist = mpls(
+        [PlayItem("00003", 0, 5400, _uhd_stn())],
+        static_hdr=[(0, [0] * 12), (1, _P3_D65)],
+    )
+    info = _parse_mpls(_write(tmp_path, "00010.mpls", playlist))
+
+    assert info is not None
+    hdr = info["static_hdr"]
+    assert hdr is not None
+    assert (hdr.green, hdr.blue, hdr.red) == ((0.265, 0.69), (0.15, 0.06), (0.68, 0.32))
+    assert hdr.white == (0.3127, 0.329)
+    assert (hdr.max_luminance, hdr.min_luminance) == (1000, 0.0001)
+    assert (hdr.max_cll, hdr.max_fall) == (331, 226)
+
+    video = _streams_from_mpls(info["streams"], hdr)[0]
+    assert video.mastering == hdr
+    cmd: list[str] = []
+    _append_video_track_options(cmd, 0, video)
+    assert cmd[cmd.index("--chromaticity-coordinates") :] == [
+        "--chromaticity-coordinates",
+        "0:0.68,0.32,0.265,0.69,0.15,0.06",
+        "--white-color-coordinates",
+        "0:0.3127,0.329",
+        "--max-luminance",
+        "0:1000",
+        "--min-luminance",
+        "0:0.0001",
+        "--max-content-light",
+        "0:331",
+        "--max-frame-light",
+        "0:226",
+    ]
+
+
+def test_unset_light_levels_are_left_out(tmp_path: Path) -> None:
+    from mkvsmith.mkv import _append_video_track_options
+    from mkvsmith.scan import _streams_from_mpls
+
+    values = _P3_D65[:10] + [0, 0]
+    playlist = mpls([PlayItem("00003", 0, 5400, _uhd_stn())], static_hdr=[(1, values)])
+    info = _parse_mpls(_write(tmp_path, "00010.mpls", playlist))
+
+    assert info is not None
+    cmd: list[str] = []
+    _append_video_track_options(
+        cmd, 0, _streams_from_mpls(info["streams"], info["static_hdr"])[0]
+    )
+    assert "--max-luminance" in cmd
+    assert "--max-content-light" not in cmd and "--max-frame-light" not in cmd
+
+
+def test_playlists_without_the_extension_have_no_hdr_metadata(tmp_path: Path) -> None:
+    info = _parse_mpls(
+        _write(tmp_path, "00010.mpls", mpls([PlayItem("00003", 0, 5400, _uhd_stn())]))
+    )
+
+    assert info is not None
+    assert info["static_hdr"] is None

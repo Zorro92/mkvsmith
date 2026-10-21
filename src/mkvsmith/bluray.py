@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
 from mkvsmith.dvdifo import _read_u16, _read_u32
-from mkvsmith.models import StreamType, Stream, Title, log_debug
+from mkvsmith.models import MasteringMetadata, StreamType, Stream, Title, log_debug
 
 
 # =============================================================================
@@ -483,6 +483,54 @@ def _set_video_color_from_info(s: Stream, si: MplsStreamInfo) -> None:
         s.color_transfer = "bt709"
         s.color_space = "bt709"
         s.color_range = "limited"
+
+
+def _parse_mpls_static_hdr(data: bytes) -> MasteringMetadata | None:
+    """The playlist's HDR10 static metadata (extension ID1 3, ID2 5), if any.
+
+    Layout per libbluray ``_parse_static_metadata``: length (4), count (1),
+    reserved (3), then 28-byte entries of dynamic range type (high nibble),
+    3 reserved bytes, the display primaries (green, blue, red: x, y), white
+    point x, y, max and min mastering luminance, MaxCLL and MaxFALL, 16 bits
+    each. Units, matched against a UHD disc's HEVC SEI: chromaticity 0.00002,
+    max luminance and the light levels 1 cd/m², min luminance 0.0001 cd/m²
+    (docs/formats/bluray.md).
+    """
+    if len(data) < 0x14:
+        return None
+    ext = _read_u32(data, 0x10)
+    if not ext or ext + 12 > len(data):
+        return None
+    for n in range(data[ext + 11]):
+        entry = ext + 12 + n * 12
+        if entry + 12 > len(data):
+            break
+        if (_read_u16(data, entry), _read_u16(data, entry + 2)) != (3, 5):
+            continue
+        block = ext + _read_u32(data, entry + 4)
+        if block + 8 > len(data):
+            return None
+        for i in range(data[block + 4]):
+            item = block + 8 + i * 28
+            if item + 28 > len(data):
+                break
+            if data[item] >> 4 != 1:  # HDR10 only
+                continue
+            v = [_read_u16(data, item + 4 + 2 * k) for k in range(12)]
+            if not any(v):
+                continue
+            return MasteringMetadata(
+                green=(v[0] / 50000, v[1] / 50000),
+                blue=(v[2] / 50000, v[3] / 50000),
+                red=(v[4] / 50000, v[5] / 50000),
+                white=(v[6] / 50000, v[7] / 50000),
+                max_luminance=float(v[8]),
+                min_luminance=v[9] / 10000,
+                max_cll=v[10],
+                max_fall=v[11],
+            )
+        return None
+    return None
 
 
 class MplsStreamInfo(TypedDict):
@@ -980,6 +1028,7 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
             "chapter_times": chapter_times,
             "streams": streams,
             "subpath_entries": subpath_entries,
+            "static_hdr": _parse_mpls_static_hdr(data),
         }
     except Exception as e:
         log_debug(f"MPLS parse failed for {path.name}: {e}")

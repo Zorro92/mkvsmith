@@ -229,9 +229,15 @@ def mpls(
     *,
     chapters: list[tuple[int, float]] | None = None,
     subpaths: list[SubPath] | None = None,
+    static_hdr: list[tuple[int, list[int]]] | None = None,
 ) -> bytes:
     """A playlist. *chapters* are (PlayItem index, seconds on that item's
-    clock) entry marks; by default one at the start of each item."""
+    clock) entry marks; by default one at the start of each item.
+
+    *static_hdr* adds the HDR static metadata extension (ID1 3, ID2 5): per
+    entry a dynamic range type and its 12 raw 16-bit values (green, blue, red
+    x/y, white x/y, max and min mastering luminance, MaxCLL, MaxFALL).
+    """
     subpaths = subpaths or []
     if chapters is None:
         chapters = [(n, item.in_seconds) for n, item in enumerate(items)]
@@ -252,8 +258,23 @@ def mpls(
 
     list_pos = 0x28 + len(appinfo)
     mark_pos = list_pos + len(playlist)
-    header = b"MPLS0200" + struct.pack(">III", list_pos, mark_pos, 0) + bytes(20)
-    return header + appinfo + playlist + marks
+    extension = b""
+    if static_hdr is not None:
+        block_body = bytes([len(static_hdr), 0, 0, 0]) + b"".join(
+            bytes([kind << 4, 0, 0, 0]) + struct.pack(">12H", *values)
+            for kind, values in static_hdr
+        )
+        block = struct.pack(">I", len(block_body)) + block_body
+        # Container: length, data start, 3 padding bytes, entry count, then
+        # one 12-byte entry (ID1, ID2, start from the container, length).
+        start = 12 + 12
+        entries = struct.pack(">HHII", 3, 5, start, len(block))
+        body = struct.pack(">I", start) + bytes(3) + b"\x01" + entries + block
+        extension = struct.pack(">I", len(body)) + body
+    ext_pos = mark_pos + len(marks) if extension else 0
+    header = b"MPLS0300" if static_hdr is not None else b"MPLS0200"
+    header += struct.pack(">III", list_pos, mark_pos, ext_pos) + bytes(20)
+    return header + appinfo + playlist + marks + extension
 
 
 # --- clip info ------------------------------------------------------------------------

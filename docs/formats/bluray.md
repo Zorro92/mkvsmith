@@ -173,8 +173,14 @@ Static HDR metadata (L `_parse_static_metadata`): length (4), count (1),
 reserved (3), then 28 bytes per entry: dynamic range type (4 bits),
 28 reserved bits, three display primaries (x, y; 2 bytes each), white point
 x and y, max and min mastering luminance, MaxCLL, MaxFALL (2 bytes each).
-Their units haven't been checked against a disc's SEI (see
-[codecs.md](codecs.md)).
+
+✔ real disc: on a UHD Blu-ray with HDR10 and Dolby Vision, the feature
+playlist's entry matched the HEVC stream's SEI value for value, which fixes
+the units: chromaticities in 0.00002 (green, blue, red, as in the SEI), max
+luminance in cd/m² (`1000`), min luminance in 0.0001 cd/m² (`1`), MaxCLL
+and MaxFALL in cd/m² (`331`, `226`). Playlists without HDR video carry the
+extension with no entries, or an entry of type 0 with every value 0.
+mkvsmith passes these to mkvmerge (`bluray._parse_mpls_static_hdr`).
 
 If a playlist won't parse, L retries `BDMV/BACKUP/PLAYLIST/` (L `mpls_get`).
 
@@ -386,7 +392,7 @@ ID and a 16-byte disc ID. `sound.bdmv` (`BCLK`) holds menu sound effects.
   - Only the first angle is used.
   - SubPath streams (text subtitles, out-of-mux audio) are listed but not
     muxed.
-  - The static HDR metadata and the chapter names aren't read.
+  - The chapter names aren't read.
   - There's no `BACKUP` fallback.
   - Repeated-segment playlists aren't filtered: L drops playlists that
     repeat a segment more than twice; mkvmerge's GUI treats five repeats

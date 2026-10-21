@@ -419,7 +419,9 @@ def test_build_iso_bluray_playlist_title_sets_source_metadata(
     ) -> Path | None:
         return clpi_dir / "A.clpi"
 
-    def streams_from_mpls(_streams: list[MplsStreamInfo]) -> list[Stream]:
+    def streams_from_mpls(
+        _streams: list[MplsStreamInfo], _static_hdr: object = None
+    ) -> list[Stream]:
         return [stream]
 
     monkeypatch.setattr(scan, "_first_iso_playlist_clpi", first_iso_playlist_clpi)
@@ -476,7 +478,9 @@ def test_build_iso_bluray_playlist_title_filters_short_and_streamless(
         is None
     )
 
-    def streams_from_mpls(_streams: list[MplsStreamInfo]) -> list[Stream]:
+    def streams_from_mpls(
+        _streams: list[MplsStreamInfo], _static_hdr: object = None
+    ) -> list[Stream]:
         return []
 
     monkeypatch.setattr(scan, "_streams_from_mpls", streams_from_mpls)

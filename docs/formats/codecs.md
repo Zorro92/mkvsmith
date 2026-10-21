@@ -66,8 +66,9 @@ The disc itself carries the static HDR10 values too: libbluray parses a
 playlist extension (ID1 3, ID2 5) whose entries hold the dynamic range
 type, the display primaries and white point, max and min mastering
 luminance, MaxCLL and MaxFALL, as u16 each (LBR `_parse_static_metadata`;
-see [bluray.md](bluray.md)). Their units haven't been checked against a real
-disc's SEI.
+see [bluray.md](bluray.md)). ✔ real disc: on a UHD Blu-ray they equal the
+SEI's values, with max luminance in whole cd/m² where the SEI counts
+0.0001 cd/m².
 
 HDR10+ on the disc side is only a flag (`hdr_plus_flag`) in the stream
 table; the metadata itself is per frame, in SEI.
@@ -125,7 +126,8 @@ display size, aspect ratio, frame rate and colour (`color_prim`,
 mkvmerge reports colour in `-J` output only for Matroska and MP4 input
 (68.0). So the colour in mkvsmith's output is the colour it passes:
 `mkv.py` chooses it from the disc's dynamic range and colour space, or
-from the picture height.
+from the picture height, plus the playlist's HDR10 static metadata on UHD
+discs.
 
 Since 103.0 mkvmerge sets StereoMode from an H.264 or HEVC frame-packing
 SEI (payload type 45), TS input included (NEWS).

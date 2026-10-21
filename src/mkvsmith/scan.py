@@ -86,6 +86,7 @@ from mkvsmith.models import (
     _HAS_MKVMERGE,
     EditionAtom,
     EditionSpec,
+    MasteringMetadata,
     StreamType,
     Stream,
     Title,
@@ -97,7 +98,11 @@ from mkvsmith.models import (
 )
 
 
-def _streams_from_mpls(mpls_streams: list[MplsStreamInfo]) -> list[Stream]:
+def _streams_from_mpls(
+    mpls_streams: list[MplsStreamInfo], static_hdr: MasteringMetadata | None = None
+) -> list[Stream]:
+    """Streams from a playlist's STN table. *static_hdr*, the playlist's
+    HDR10 metadata, goes on its first PQ video stream (the base layer)."""
     type_counts = {
         StreamType.VIDEO: 0,
         StreamType.AUDIO: 0,
@@ -125,6 +130,12 @@ def _streams_from_mpls(mpls_streams: list[MplsStreamInfo]) -> list[Stream]:
                 if height in (720, 1080, 2160) and stream_info.get("aspect") != "4:3":
                     stream.width = height * 16 // 9
             _set_video_color_from_info(stream, stream_info)
+            if (
+                static_hdr is not None
+                and stream.color_transfer == "smpte2084"
+                and not any(s.mastering for s in title_streams)
+            ):
+                stream.mastering = static_hdr
             title_streams.append(stream)
             type_counts[StreamType.VIDEO] += 1
         elif stream_type == StreamType.AUDIO:
@@ -920,7 +931,7 @@ def _build_bluray_title_from_mpls(
     disc_name: str | None,
 ) -> Title | None:
     total_duration = sum(play_item["duration"] for play_item in info["play_items"])
-    title_streams = _streams_from_mpls(info.get("streams", []))
+    title_streams = _streams_from_mpls(info.get("streams", []), info.get("static_hdr"))
     if title_streams:
         title = Title(
             len(titles),
@@ -1408,7 +1419,9 @@ def _build_iso_bluray_playlist_title(
         log_debug(f"  No M2TS files found for {playlist_path.name}, skipping")
         return None
 
-    title_streams = _streams_from_mpls(playlist_info.get("streams", []))
+    title_streams = _streams_from_mpls(
+        playlist_info.get("streams", []), playlist_info.get("static_hdr")
+    )
     if not title_streams:
         log_debug(f"  No usable streams from {playlist_path.name}, skipping")
         return None

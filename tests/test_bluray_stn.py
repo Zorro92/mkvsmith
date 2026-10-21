@@ -467,6 +467,11 @@ def test_uhd_dolby_vision_playlist_is_tagged_hdr() -> None:
     assert [s.get("dynamic_range_type") for s in videos] == ["hdr10", "dolby_vision"]
     base = _streams_from_mpls(videos)[0]
     assert (base.color_primaries, base.color_transfer) == ("bt2020", "smpte2084")
+    # Its static HDR metadata matches the stream's own SEI on the disc.
+    hdr = info["static_hdr"]
+    assert hdr is not None
+    assert (hdr.max_luminance, hdr.min_luminance) == (1000, 0.0001)
+    assert (hdr.max_cll, hdr.max_fall) == (331, 226)
 
 
 def test_coding_types_get_the_codecs_libbluray_names() -> None:

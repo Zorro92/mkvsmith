@@ -33,7 +33,7 @@ in [codecs.md](codecs.md).
 | Name | `--track-name` | codec and channel label |
 | Colour | `--color-primaries`, `-transfer-characteristics`, `-matrix-coefficients`, `-range` | from the disc, else by picture height |
 | ChromaSiting | `--chroma-siting` | MPEG-2 only: `1,2` (left, half), as FF's encoder writes it |
-| MasteringMetadata, MaxCLL, MaxFALL | `--max-luminance` and others | not set |
+| MasteringMetadata, MaxCLL, MaxFALL | `--chromaticity-coordinates`, `--white-color-coordinates`, `--max-luminance`, `--min-luminance`, `--max-content-light`, `--max-frame-light` | UHD: from the playlist's static HDR extension, on the base layer |
 | FlagInterlaced, FieldOrder | set afterwards with `mkvpropedit` | AVC only, from `h264.py` |
 
 `--default-track` and `--forced-track` were renamed `--default-track-flag`
@@ -163,9 +163,6 @@ command line. Below 81, a UHD Dolby Vision playlist shows two video tracks.
 
 ## Open mismatches
 
-- **No HDR10 metadata on UHD rips.** No mastering metadata, MaxCLL or
-  MaxFALL is passed, and mkvmerge takes none from TS input. The playlist's
-  static HDR extension has the values.
 - **`RATING` out of range.** It's written on TMDB's 0–10 scale.
 - **Tag names outside the spec.** `CONTENT_RATING`, `ORIGINAL_LANGUAGE`
   and `RUNTIME` are written, and the standalone tag XML (`--save-tag-xml`)

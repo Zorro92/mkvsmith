@@ -29,6 +29,7 @@ from mkvsmith.m2ts import (
 )
 from mkvsmith.mkv import MappedStream
 from mkvsmith.models import Stream, StreamType, Title
+from tests import synth_bluray, synth_m2ts
 
 AUDIO_PIDS = {0x1100, 0x1101, 0x1103}
 
@@ -290,3 +291,161 @@ def test_clone_or_copy_preserves_content(tmp_path: Path) -> None:
 
     assert dst.read_bytes() == src.read_bytes()
     assert src.read_bytes() == bytes(range(256)) * 1024
+
+
+# --- the same, on synthetic clips (run everywhere) ------------------------------
+
+# Three clips of 48 film frames with TrueHD (and its AC-3 core), AC-3 and
+# E-AC-3 (core + dependent frames). Every audio track runs on its own frame
+# grid to the video end, so AC-3 overhangs by 1248 ticks (13.9 ms) and
+# TrueHD by 33 (0.4 ms) at each join.
+_FRAMES = 48
+_VIDEO_END = synth_m2ts.FILM_FRAME * _FRAMES
+_TRACKS = [
+    synth_m2ts.Track(
+        0x1100, synth_m2ts.TRUEHD_UNIT, synth_m2ts.EXTENDED, synth_m2ts.TRUEHD_EXT
+    ),
+    synth_m2ts.Track(
+        0x1100,
+        synth_m2ts.AC3_FRAME,
+        synth_m2ts.EXTENDED,
+        synth_m2ts.TRUEHD_AC3_CORE_EXT,
+    ),
+    synth_m2ts.Track(0x1101, synth_m2ts.AC3_FRAME),
+    synth_m2ts.Track(
+        0x1103,
+        synth_m2ts.AC3_FRAME,
+        synth_m2ts.EXTENDED,
+        synth_m2ts.EAC3_EXT,
+        repeat=2,
+    ),
+]
+
+
+def _synthetic_clips(folder: Path) -> list[Path]:
+    folder.mkdir(exist_ok=True)
+    clips = []
+    for n in range(3):
+        path = folder / f"{n:05d}.m2ts"
+        path.write_bytes(synth_m2ts.clip(_VIDEO_END, _TRACKS))
+        clips.append(path)
+    return clips
+
+
+def test_mpls_connection_conditions_on_a_synthetic_playlist(tmp_path: Path) -> None:
+    playlist = tmp_path / "00800.mpls"
+    playlist.write_bytes(
+        synth_bluray.mpls(
+            [
+                synth_bluray.PlayItem("00001", 0, 10, connection=1),
+                synth_bluray.PlayItem("00002", 0, 10, connection=5),
+                synth_bluray.PlayItem("00003", 0, 10, connection=5),
+            ]
+        )
+    )
+
+    info = _parse_mpls(playlist)
+
+    assert info is not None
+    assert [i["connection_condition"] for i in info["play_items"]] == [1, 5, 5]
+    assert has_seamless_connections(info["play_items"])
+
+
+def test_scan_clip_tail_on_a_synthetic_clip(tmp_path: Path) -> None:
+    (clip,) = _synthetic_clips(tmp_path)[:1]
+
+    tail = scan_clip_tail(clip, AUDIO_PIDS)
+
+    assert tail.video_end == _VIDEO_END
+    truehd = tail.audio[0x1100]
+    # The TrueHD access units, not the embedded AC-3 core (another
+    # stream_id_extension on the same PID): no core frame is among them.
+    assert truehd.frame_duration == synth_m2ts.TRUEHD_UNIT
+    assert all(pts % synth_m2ts.TRUEHD_UNIT == 0 for pts, _ in truehd.frames)
+    assert truehd.end - tail.video_end == 33
+    ac3 = tail.audio[0x1101]
+    assert ac3.frame_duration == synth_m2ts.AC3_FRAME
+    assert ac3.end - tail.video_end == 1248
+    eac3 = tail.audio[0x1103]
+    # Core + dependent frames share a PTS and collapse to one frame each.
+    assert len({pts for pts, _ in eac3.frames}) == len(eac3.frames)
+    assert eac3.frame_duration == synth_m2ts.AC3_FRAME
+
+
+def test_plan_on_synthetic_clips_drops_the_overhanging_ac3_frame(
+    tmp_path: Path,
+) -> None:
+    # After two joins the AC-3 is 2 x 13.9 ms late, past half a frame, so
+    # the second clip's last AC-3 frame is dropped.
+    tails = [scan_clip_tail(c, AUDIO_PIDS) for c in _synthetic_clips(tmp_path)]
+
+    plan = plan_seamless_trim(tails, AUDIO_PIDS)
+
+    assert plan is not None
+    assert 0x1101 not in plan[0]
+    _last_pts, last_offset = max(tails[1].audio[0x1101].frames)
+    assert plan[1][0x1101] == last_offset
+    # TrueHD is 33 ticks late after one join (less than half a 75-tick unit,
+    # so kept), 66 after two: dropping a unit there brings it to -9.
+    assert 0x1100 not in plan[0]
+    _last_unit_pts, last_unit_offset = max(tails[1].audio[0x1100].frames)
+    assert plan[1][0x1100] == last_unit_offset
+
+
+def test_null_packets_from_drops_only_the_cut_pid_on_a_synthetic_clip(
+    tmp_path: Path,
+) -> None:
+    (clip,) = _synthetic_clips(tmp_path)[:1]
+    before = scan_clip_tail(clip, AUDIO_PIDS)
+    last_pts, last_offset = max(before.audio[0x1101].frames)
+    size = clip.stat().st_size
+
+    assert null_packets_from(clip, {0x1101: last_offset}) == 1
+
+    after = scan_clip_tail(clip, AUDIO_PIDS)
+    assert clip.stat().st_size == size
+    assert max(after.audio[0x1101].frames)[0] == last_pts - synth_m2ts.AC3_FRAME
+    assert after.video_end == before.video_end
+    assert after.audio[0x1100].end == before.audio[0x1100].end
+    assert after.audio[0x1103].end == before.audio[0x1103].end
+
+
+def test_prepare_seamless_append_on_synthetic_clips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def temp_base(*_args: object, **_kwargs: object) -> Path:
+        return tmp_path
+
+    monkeypatch.setattr("mkvsmith.disc_reader.temp_base_for_title", temp_base)
+    clips = _synthetic_clips(tmp_path / "source")
+    digests = [_digest(p) for p in clips]
+    title = Title(0, clips[0], "T", 10.0)
+
+    # Not seamless, or a PID muxed twice (TrueHD + its AC-3 core): untouched.
+    assert (
+        mkv._prepare_seamless_append(title, clips, _mapped([0x1101]), set(), [], [])
+        is None
+    )
+    title.seamless_connections = True
+    shared = _mapped([0x1100, 0x1100])
+    assert mkv._prepare_seamless_append(title, clips, shared, set(), [], []) is None
+
+    # Clips we don't own are copied before trimming; the sources stay intact.
+    cleanup: list[Path] = []
+    temp_dirs: list[Path] = []
+    result = mkv._prepare_seamless_append(
+        title, clips, _mapped([0x1100, 0x1101]), set(), cleanup, temp_dirs
+    )
+    assert result is not None
+    assert result[0] == clips[0] and result[2] == clips[2]
+    assert result[1] != clips[1] and result[1].parent == temp_dirs[0]
+    assert cleanup == [result[1]]
+    assert [_digest(p) for p in clips] == digests
+    assert _digest(result[1]) != digests[1]
+
+    # Clips we own (extracted to temp) are trimmed in place.
+    owned = mkv._prepare_seamless_append(
+        title, clips, _mapped([0x1101]), set(clips), [], []
+    )
+    assert owned == clips
+    assert _digest(clips[1]) != digests[1]

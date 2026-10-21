@@ -1478,16 +1478,18 @@ def _sort_and_reindex_titles(titles: list[Title]) -> None:
 
 
 def _resolve_iso_source(source: Path) -> Path:
+    from mkvsmith.disc_reader import disc_images_in
+
     if not source.is_dir():
         return source
 
-    isos = sorted(source.glob("*.iso"))
-    if not isos:
-        log_warn(tr("No ISO file found in {path}", path=source))
+    images = disc_images_in(source)
+    if not images:
+        log_warn(tr("No disc image found in {path}", path=source))
         return source
 
-    selected = isos[0]
-    log_info(tr("Using ISO file in directory: {name}", name=selected.name))
+    selected = images[0]
+    log_info(tr("Using the disc image in this folder: {name}", name=selected.name))
     return selected
 
 
@@ -1600,6 +1602,13 @@ class Scanner:
         if source_type == SourceType.ISO_UNKNOWN:
             self.source = _resolve_iso_source(self.source)
             self._scan_iso()
+        elif source_type == SourceType.UNKNOWN:
+            log_error(
+                tr(
+                    "Can't open {path}: it isn't a disc, a disc image or a video file",
+                    path=self.source,
+                )
+            )
         else:
             self._scan_source_type(source_type)
         self._check_css_encryption()

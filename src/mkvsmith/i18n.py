@@ -337,8 +337,9 @@ _ES: dict[str, str] = {
     "Created: {name} ({size:.1f} {unit})": "Creado: {name} ({size:.1f} {unit})",
     # --- scan status -----------------------------------------------------------
     "Source type: {type}": "Tipo de origen: {type}",
-    "Using ISO file in directory: {name}": "Usando archivo ISO del directorio: {name}",
-    "No ISO file found in {path}": "No se encontró ningún archivo ISO en {path}",
+    "Using the disc image in this folder: {name}": "Usando la imagen de disco de esta carpeta: {name}",
+    "No disc image found in {path}": "No se encontró ninguna imagen de disco en {path}",
+    "Can't open {path}: it isn't a disc, a disc image or a video file": "No se puede abrir {path}: no es un disco, una imagen de disco ni un archivo de vídeo",
     "{path} is not a valid disc image (no ISO9660 or UDF filesystem found)": "{path} no es una imagen de disco válida (no se encontró sistema de archivos ISO9660 o UDF)",
     "Scanning ISO...": "Escaneando ISO...",
     "Could not find any .mpls, .m2ts, .vob, or .evo files inside the ISO.": "No se encontró ningún archivo .mpls, .m2ts, .vob o .evo dentro de la ISO.",

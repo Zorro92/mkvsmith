@@ -76,6 +76,44 @@ def _probe_has_disc_image_fs(iso_path: Path) -> bool:
         return False
 
 
+# Names disc images go by. Images are recognised by their contents too
+# (see is_disc_image), so these only decide what the file browser lists and
+# which files get "not a valid disc image" rather than "can't open".
+DISC_IMAGE_EXTENSIONS = (".iso", ".img", ".mdf", ".bin", ".udf")
+
+
+def is_disc_image(path: Path) -> bool:
+    """Whether *path* is (meant to be) a disc image.
+
+    True for a file named like one, or for any file whose contents carry an
+    ISO9660 or UDF filesystem, whatever it's called.
+    """
+    try:
+        if not path.is_file():
+            return False
+    except OSError:
+        return False
+    if path.suffix.lower() in DISC_IMAGE_EXTENSIONS:
+        return True
+    if path.suffix.lower() in _VIDEO_FILE_EXTENSIONS:
+        return False
+    return _probe_has_disc_image_fs(path)
+
+
+def disc_images_in(folder: Path) -> list[Path]:
+    """The disc images directly inside *folder*, sorted by name."""
+    try:
+        with os.scandir(folder) as entries:
+            paths = [
+                Path(entry.path) for entry in entries if not entry.name.startswith(".")
+            ]
+    except OSError:
+        return []
+    return sorted(
+        (path for path in paths if is_disc_image(path)), key=lambda p: p.name.lower()
+    )
+
+
 def _has_file_with_ext(root: Path, exts: tuple[str, ...]) -> bool:
     """Case-insensitive, short-circuiting search for any file with a given suffix."""
     lowered = {e.lower() for e in exts}
@@ -113,7 +151,7 @@ def _directory_source_type(source: Path) -> SourceType | None:
         return SourceType.DVD_RAW
     if _has_file_with_ext(source, (".evo",)):
         return SourceType.HDDVD_RAW
-    if _has_file_with_ext(source, (".iso", ".img")):
+    if disc_images_in(source):
         return SourceType.ISO_UNKNOWN
     return None
 
@@ -121,10 +159,10 @@ def _directory_source_type(source: Path) -> SourceType | None:
 def _file_source_type(source: Path) -> SourceType | None:
     if not source.is_file():
         return None
-    if source.suffix.lower() in (".iso", ".img"):
-        return SourceType.ISO_UNKNOWN
     if source.suffix.lower() in _VIDEO_FILE_EXTENSIONS:
         return SourceType.VIDEO_FILE
+    if is_disc_image(source):
+        return SourceType.ISO_UNKNOWN
     return None
 
 
@@ -580,7 +618,7 @@ def css_scrambled_packets(data: bytes) -> tuple[int, int]:
 def _dvd_video_sample(title: Title) -> bytes | None:
     """Up to 2 MB from the middle of *title*'s first VOB (folder or ISO)."""
     try:
-        if title.iso_internal_paths and title.source_file.suffix.lower() == ".iso":
+        if title.iso_internal_paths:
             image = IsoImage(title.source_file)
             try:
                 entry = image.entries.get(title.iso_internal_paths[0])

@@ -43,6 +43,7 @@ from mkvsmith.cli import (
 )
 from mkvsmith.disc_reader import (
     _VIDEO_FILE_EXTENSIONS,
+    DISC_IMAGE_EXTENSIONS,
     SourceType,
     detect_source_type,
 )
@@ -117,7 +118,7 @@ T = TypeVar("T")
 # =============================================================================
 
 # Files the browser lists besides folders.
-_SOURCE_FILE_SUFFIXES = frozenset({".iso", ".img", *_VIDEO_FILE_EXTENSIONS})
+_SOURCE_FILE_SUFFIXES = frozenset({*DISC_IMAGE_EXTENSIONS, *_VIDEO_FILE_EXTENSIONS})
 
 # Loose disc streams: a folder holding these directly (e.g. BDMV/STREAM or a
 # copied VIDEO_TS) can be ripped as it is.
@@ -802,8 +803,8 @@ _USE_FOLDER_ID = "use-folder"
 class BrowseScreen(_Page):
     """One folder at a time, as a list.
 
-    ``..`` goes up; Enter or a click opens a folder or uses an ISO / video
-    file. Inside a disc folder (or one holding loose disc streams) a "Use
+    ``..`` goes up; Enter or a click opens a folder or uses a disc image /
+    video file. Inside a disc folder (or one holding loose disc streams) a "Use
     this folder" line appears under ``..``. ``/`` types a path instead.
     """
 

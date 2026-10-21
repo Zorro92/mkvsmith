@@ -12,7 +12,7 @@ files, ...).
 - **Running it:** the `mkvsmith` command once installed (see the
   README), or `python -m mkvsmith`. From a clone, `uv run mkvsmith` or
   `./main.py`.
-- **Sources:** an optical drive, an ISO image, a disc folder (`VIDEO_TS`,
+- **Sources:** an optical drive, a disc image, a disc folder (`VIDEO_TS`,
   `BDMV`, or `HVDVD_TS` with its XPL playlists), raw `.m2ts`/`.vob`/`.evo`
   files, or a plain video file.
 - **One action per run:** `-t`, `-m`, `-a`, `-i`, `-d`, `--multi-edition`
@@ -163,9 +163,12 @@ DVD cell IDs.
     would need bitstream-level processing.
   - It's unverified whether the enhancement layer can show up as a stray
     extra video track.
-- **ISO images** are read by a built-in UDF/ISO9660 reader. Images of burned
-  rewritable or recordable media (sparable or virtual UDF partitions) aren't
-  supported yet.
+- **Disc images** are read by a built-in UDF/ISO9660 reader, and recognised
+  by their contents, so the name doesn't matter: `.iso`, `.img`, `.mdf`
+  (Alcohol 120%), `.bin`, or none at all. A folder holding one image (a
+  typical download) opens it, or the first by name if there are several.
+  Images of burned rewritable or recordable media (sparable or virtual UDF
+  partitions) aren't supported yet.
 - **Temporary files** go to `/var/tmp` when usable, else the system temp
   folder. If the temp folder is RAM-backed (tmpfs, e.g. `--temp-dir /tmp`),
   oversized extractions spill to disk automatically.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mkvsmith import disc_reader
+from mkvsmith import disc_reader, scan
 
 
 def test_is_iso_media_path_matches_compatible_scanning_subset() -> None:
@@ -43,9 +43,12 @@ def test_directory_source_type_detects_disc_structures_and_media(
     raw_dvd = source("raw-dvd") / "VIDEO"
     raw_dvd.mkdir(parents=True)
     (raw_dvd / "movie.vob").write_bytes(b"vob")
-    iso_dir = source("iso-dir") / "nested"
-    iso_dir.mkdir(parents=True)
-    (iso_dir / "movie.iso").write_bytes(b"iso")
+    source("iso-dir").mkdir()
+    (source("iso-dir") / "movie.iso").write_bytes(b"iso")
+    # Only images directly inside count: that's where the scan looks.
+    nested = source("nested-iso") / "inner"
+    nested.mkdir(parents=True)
+    (nested / "movie.iso").write_bytes(b"iso")
     source("empty").mkdir()
 
     assert (
@@ -71,6 +74,7 @@ def test_directory_source_type_detects_disc_structures_and_media(
         disc_reader._directory_source_type(source("iso-dir"))
         == disc_reader.SourceType.ISO_UNKNOWN
     )
+    assert disc_reader._directory_source_type(source("nested-iso")) is None
     assert disc_reader._directory_source_type(source("empty")) is None
 
 
@@ -101,6 +105,40 @@ def test_file_source_type_matches_iso_and_video_extensions(
     text_file = tmp_path / "movie.txt"
     text_file.write_bytes(b"text")
     assert disc_reader._file_source_type(text_file) is None
+
+
+def test_disc_images_are_recognised_by_content_whatever_their_name(
+    tmp_path: Path,
+) -> None:
+    for name in ("disc", "disc.dat", "DISC.BIN"):
+        image = tmp_path / name
+        _write_sector16(image, b"BEA01")
+        assert (
+            disc_reader._file_source_type(image) == disc_reader.SourceType.ISO_UNKNOWN
+        )
+    not_an_image = tmp_path / "notes.dat"
+    not_an_image.write_bytes(b"x" * 40_000)
+    assert disc_reader._file_source_type(not_an_image) is None
+    # Named like an image: opened as one, so a broken image says so.
+    for extension in disc_reader.DISC_IMAGE_EXTENSIONS:
+        named = tmp_path / f"broken{extension}"
+        named.write_bytes(b"")
+        assert (
+            disc_reader._file_source_type(named) == disc_reader.SourceType.ISO_UNKNOWN
+        )
+
+
+def test_a_folder_holding_an_unnamed_disc_image_is_an_image_source(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "release"
+    folder.mkdir()
+    (folder / "readme.nfo").write_bytes(b"info")
+    _write_sector16(folder / "Movie (USA)", b"CD001")
+
+    assert disc_reader.detect_source_type(folder) == disc_reader.SourceType.ISO_UNKNOWN
+    assert disc_reader.disc_images_in(folder) == [folder / "Movie (USA)"]
+    assert scan._resolve_iso_source(folder) == folder / "Movie (USA)"
 
 
 def test_detect_source_type_matches_files_devices_and_unknown(

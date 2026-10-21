@@ -649,12 +649,14 @@ def test_prepare_inputs_preserves_folder_inputs(tmp_path: Path) -> None:
     assert plan.vobu_part_sizes is None
 
 
+# A disc image is read from inside whatever it's called.
+@pytest.mark.parametrize("name", ["movie.iso", "movie.img", "movie.mdf", "movie"])
 def test_prepare_inputs_uses_iso_and_injected_registries(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
 ) -> None:
     runtime_state = models.RuntimeState()
     creator = mkv.MKVCreator(tmp_path, runtime_state=runtime_state)
-    source = tmp_path / "movie.iso"
+    source = tmp_path / name
     title = Title(
         index=0,
         source_file=source,

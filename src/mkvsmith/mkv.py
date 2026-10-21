@@ -2449,9 +2449,8 @@ class MKVCreator:
     def _prepare_inputs(self, title: Title, streams: list[Stream]) -> _MuxInputPlan:
         from mkvsmith.disc_reader import _extract_full_for_muxing, temp_base_for_title
 
-        is_iso = bool(
-            title.iso_internal_paths and title.source_file.suffix.lower() == ".iso"
-        )
+        # Paths inside a disc image (whatever the image file is called).
+        is_iso = bool(title.iso_internal_paths)
         estimated_size = title.estimated_size_bytes
         if not estimated_size and not is_iso:
             try:

@@ -13,8 +13,8 @@ y mkvmerge es el único otro programa que necesitas.
 
 ## Qué hace
 
-- **Extrae DVD, Blu-ray y HD DVD**: desde una unidad, una imagen ISO o una
-  carpeta de disco (`VIDEO_TS`, `BDMV`, `HVDVD_TS`).
+- **Extrae DVD, Blu-ray y HD DVD**: desde una unidad, una imagen de disco
+  (`.iso`, `.img`, …) o una carpeta de disco (`VIDEO_TS`, `BDMV`, `HVDVD_TS`).
 - **Encuentra la película principal por ti**, o todos los episodios de un
   disco de serie, y oculta menús, tráileres y títulos señuelo.
 - **Conserva lo importante**: las pistas de audio que quieras, los
@@ -64,7 +64,7 @@ una línea con Intro o con un clic. **Esc** vuelve atrás y **q** sale. La
 barra de abajo muestra las teclas de cada pantalla, y también puedes hacer
 clic en ellas.
 
-1. **Elige un disco.** Escoge una unidad, o busca una ISO o una carpeta de
+1. **Elige un disco.** Escoge una unidad, o busca una imagen o una carpeta de
    disco. También puedes abrir uno directamente:
    `mkvsmith pelicula.iso`.
 2. **Elige qué extraer.** Arriba de la lista está la opción más probable: la

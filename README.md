@@ -13,8 +13,8 @@ mkvmerge is the only other program you need.
 
 ## What it does
 
-- **Rips DVDs, Blu-rays and HD DVDs**: from a drive, an ISO image, or a disc
-  folder (`VIDEO_TS`, `BDMV`, `HVDVD_TS`).
+- **Rips DVDs, Blu-rays and HD DVDs**: from a drive, a disc image (`.iso`,
+  `.img`, …), or a disc folder (`VIDEO_TS`, `BDMV`, `HVDVD_TS`).
 - **Finds the main feature for you**, or every episode on a TV series disc,
   and hides menus, trailers and decoy titles.
 - **Keeps what matters**: every audio track you want, subtitles (including
@@ -62,7 +62,7 @@ Everything is a list. Move with the arrow keys or the mouse wheel, and pick a
 line with Enter or a click. **Esc** goes back and **q** quits. The bar at the
 bottom shows the keys for each screen, and you can click them too.
 
-1. **Choose a disc.** Pick a drive, or browse to an ISO or disc folder. You
+1. **Choose a disc.** Pick a drive, or browse to a disc image or disc folder. You
    can also open one straight away: `mkvsmith movie.iso`.
 2. **Pick what to rip.** The top of the list offers the likely choice: the
    main feature on a movie, or every episode on a series disc. Below it are

@@ -465,9 +465,6 @@ when it's fixed.
 
 Not modelled yet:
 
-- **Visually impaired audio** (code extension 2) could be muxed with
-  mkvmerge's `--visual-impaired-flag`. mkvsmith has no such stream flag,
-  and none of the 10 retail DVDs checked uses it.
 - **BUP fallback:** P opens the `.BUP` copy when an IFO won't read or
   validate (its `CHECK_VALUE`s), and mkvsmith doesn't.
 - **STC discontinuities:** the per-cell flag isn't read; mkvmerge's

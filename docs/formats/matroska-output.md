@@ -27,9 +27,9 @@ in [codecs.md](codecs.md).
 | FlagForced | `--forced-track` | forced subtitles |
 | FlagHearingImpaired | `--hearing-impaired-flag` | caption subtitles |
 | FlagCommentary | `--commentary-flag` | commentary audio and subtitles |
-| FlagVisualImpaired | `--visual-impaired-flag` | not set |
+| FlagVisualImpaired | `--visual-impaired-flag` | DVD audio code extension 2 |
 | FlagTextDescriptions | `--text-descriptions-flag` | not set |
-| FlagOriginal | `--original-flag` | not set |
+| FlagOriginal | `--original-flag` | audio in TMDB's original language, when tagging (not commentary or visually-impaired tracks) |
 | Name | `--track-name` | codec and channel label |
 | Colour | `--color-primaries`, `-transfer-characteristics`, `-matrix-coefficients`, `-range` | from the disc, else by picture height |
 | ChromaSiting | `--chroma-siting` | MPEG-2 only: `1,2` (left, half), as FF's encoder writes it |
@@ -174,5 +174,3 @@ An unreadable version counts as new enough.
   spells `IMDb`.
 - **Lists in one tag.** Multi-value fields are comma-joined into a single
   tag.
-- **Flags left unset.** Visual-impaired (DVD audio code extension 2) and
-  original-language aren't set.

@@ -47,6 +47,7 @@ from mkvsmith.dvdifo import (
     _parse_vts_vobu_admap,
     _build_main_edition_vobu_ranges,
     _extract_dvd_ifo_palette,
+    _LANG_MAP_3_TO_2,
     _parse_vts_video_attrs,
 )
 from mkvsmith.vobsub import (
@@ -850,6 +851,10 @@ def _append_track_state_options(
             cmd += ["--hearing-impaired-flag", f"{input_id}:yes"]
         if stream.is_commentary:
             cmd += ["--commentary-flag", f"{input_id}:yes"]
+        if stream.is_visual_impaired:
+            cmd += ["--visual-impaired-flag", f"{input_id}:yes"]
+        if stream.is_original:
+            cmd += ["--original-flag", f"{input_id}:yes"]
 
 
 def _append_video_track_options(cmd: list[str], input_id: int, stream: Stream) -> None:
@@ -1727,6 +1732,24 @@ def _mkvmerge_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{fraction:09d}"
 
 
+def _mark_original_language_audio(
+    mapped: list[MappedStream], original_language: str
+) -> None:
+    """Flag the audio tracks in the film's original language (TMDB's ISO
+    639-1 code; streams carry 639-1 on DVD, 639-2 on Blu-ray). Commentary
+    and visually-impaired tracks aren't the original soundtrack."""
+    original = original_language.lower()
+    for entry in mapped:
+        stream = entry["stream"]
+        if stream.stream_type != StreamType.AUDIO:
+            continue
+        if stream.is_commentary or stream.is_visual_impaired:
+            continue
+        language = stream.language.lower()
+        if _LANG_MAP_3_TO_2.get(language, language) == original:
+            stream.is_original = True
+
+
 def _build_mkvmerge_command(
     title: Title,
     out_file: Path,
@@ -1779,6 +1802,8 @@ def _build_mkvmerge_command(
             f"parts:{_mkvmerge_timestamp(start)}-{_mkvmerge_timestamp(end)}",
         ]
 
+    if metadata is not None and metadata.original_language:
+        _mark_original_language_audio(mapped, metadata.original_language)
     track_filter_opts = _track_filter_options(ident_tracks, mapped, title)
     cmd += track_filter_opts
     need_positional_fallback = not (ident_tracks and mapped)

@@ -771,6 +771,8 @@ def _build_dvd_audio_streams(
             stream.bits_per_sample = attrs.bits_per_sample
         if attrs and attrs.is_commentary:
             stream.is_commentary = True
+        if attrs and attrs.is_visual_impaired:
+            stream.is_visual_impaired = True
         streams.append(stream)
     return streams
 

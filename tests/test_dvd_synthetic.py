@@ -601,3 +601,17 @@ def test_audio_stream_ids_count_from_their_codings_base() -> None:
         ("mpeg audio", 0xC0),
     ]
     assert [s.type_index for s in audio] == [0, 1, 2, 3, 4]
+
+
+def test_audio_for_the_visually_impaired_is_flagged() -> None:
+    from mkvsmith import dvdbuild
+
+    data = vts_ifo(
+        [Pgc([Cell(600, 0, 999)], audio=[0, 1])],
+        audio=[Audio("en", 6), Audio("en", 2, code_extension=2)],
+    )
+
+    streams = dvdbuild._build_dvd_streams_from_ifo(data, 600, 1)
+
+    audio = [s for s in streams if s.stream_type.value == "audio"]
+    assert [s.is_visual_impaired for s in audio] == [False, True]

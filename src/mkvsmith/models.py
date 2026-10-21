@@ -623,6 +623,10 @@ class Stream:
     is_forced: bool = False
     is_hearing_impaired: bool = False
     is_commentary: bool = False
+    # Audio described for the visually impaired (DVD audio code extension 2).
+    is_visual_impaired: bool = False
+    # In the film's original language (from TMDB, when tagging).
+    is_original: bool = False
     sample_rate: str | None = None
     channels: int | None = None
     width: int | None = None

@@ -1279,8 +1279,9 @@ def _warn_about_old_mkvmerge() -> None:
     if version is not None and version < MKVMERGE_FLAGS_VERSION:
         log_warn(
             tr(
-                "mkvmerge {version} is older than {minimum}: hearing-impaired "
-                "and commentary tracks won't be flagged; update MKVToolNix",
+                "mkvmerge {version} is older than {minimum}: accessibility, "
+                "commentary and original-language tracks won't be flagged; "
+                "update MKVToolNix",
                 version=f"v{version[0]}.{version[1]}",
                 minimum=f"v{MKVMERGE_FLAGS_VERSION[0]}",
             )

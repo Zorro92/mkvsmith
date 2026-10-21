@@ -106,3 +106,56 @@ def test_dolby_vision_warns_once_on_an_old_mkvmerge(
 
     assert len(warnings) == (1 if warned else 0)
     scan._warn_dolby_vision_needs_newer_mkvmerge.cache_clear()
+
+
+def test_visual_impaired_and_original_tracks_are_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mkv, "mkvmerge_at_least", lambda version: True)
+    stream = Stream(
+        index=1,
+        stream_type=StreamType.AUDIO,
+        language="en",
+        is_visual_impaired=True,
+        is_original=True,
+    )
+    cmd: list[str] = []
+
+    mkv._append_track_state_options(cmd, 1, stream)
+
+    assert cmd[-4:] == ["--visual-impaired-flag", "1:yes", "--original-flag", "1:yes"]
+
+
+def test_audio_in_the_films_original_language_is_marked() -> None:
+    def audio(
+        language: str, *, commentary: bool = False, visual_impaired: bool = False
+    ) -> mkv.MappedStream:
+        stream = Stream(
+            index=1,
+            stream_type=StreamType.AUDIO,
+            language=language,
+            is_commentary=commentary,
+            is_visual_impaired=visual_impaired,
+        )
+        return {
+            "input_id": 1,
+            "type": "audio",
+            "stream": stream,
+            "ident_channels": None,
+        }
+
+    mapped = [
+        audio("eng"),  # Blu-ray: ISO 639-2
+        audio("en", commentary=True),
+        audio("fr"),
+        audio("en", visual_impaired=True),
+    ]
+
+    mkv._mark_original_language_audio(mapped, "en")
+
+    assert [entry["stream"].is_original for entry in mapped] == [
+        True,
+        False,
+        False,
+        False,
+    ]

@@ -227,6 +227,11 @@ class _IFOAudioAttrs:
         """
         return self.code_extension in (3, 4)
 
+    @property
+    def is_visual_impaired(self) -> bool:
+        """Code extension 2: audio for the visually impaired (SPRM 17)."""
+        return self.code_extension == 2
+
     # Byte 0 bits 7-5; 1 and 5 are reserved (docs/formats/dvd-video.md).
     CODEC_MAP: ClassVar[dict[int, tuple[str, str]]] = {
         0: ("AC3", "ac3"),

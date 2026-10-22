@@ -45,6 +45,14 @@ bits 5-4). (R `dvd_time_t`, M `pgc.md`)
 How to read a 30 fps value is disputed; see
 [Sources disagree](#sources-disagree).
 
+## Backups
+
+Every IFO has a backup with the same contents: `VIDEO_TS.BUP`,
+`VTS_xx_0.BUP`. P opens it when the IFO fails to read or validate
+(`ifoOpen`). mkvsmith's `dvdifo.read_ifo` does the same when the IFO won't
+read or lacks its identifier, and lists a title set that has only its
+`.BUP`; the disc IDs still hash the IFOs themselves.
+
 ## VIDEO_TS.IFO (VMGI_MAT)
 
 | Offset | Size | Field | Source |
@@ -114,7 +122,7 @@ set's stream attributes can be read from VIDEO_TS.IFO alone. (M
 its table (2), reserved (2). Each table holds, for levels 8 down to 1, a
 2-byte mask for the VMG and each title set. (M, R `ptl_mait_t`)
 
-**TXTDT_MG** (R calls its own layout "Incomplete"): a 12-byte disc name,
+**TXTDT_MG** (R calls its own layout "Incomplete"; mkvsmith doesn't read it): a 12-byte disc name,
 2 unknown bytes, number of language units (2), last byte (4); then per
 language unit (8 bytes): language code (2), reserved (1), character set
 (1), start byte of its text (4). Character sets: 0x00 reserved (Unicode),
@@ -447,26 +455,17 @@ them per stream (`stp_ptm1`, `stp_ptm2`, `gap_len1`, `gap_len2` × 8). Same
 Places where `dvdifo.py` doesn't match this document yet. Remove an entry
 when it's fixed.
 
-1. **Video "letterboxed"** is read from byte 0 bit 1 (automatic pan-scan
-   disallowed), which no source calls letterboxed. Harmless today: nothing
-   uses the value.
-2. **PGC still time and playback mode** are swapped (`_PGCOffset`: `A2`
-   still, `A3` mode). Nothing reads them yet.
-3. **"Offset mode" stream control.** `_parse_pgc_stream_languages` treats
-   PGC bytes 0-1 as a flag that turns the stream control tables into
-   offsets. No source describes it; those bytes are reserved, and `00 00`
-   on every real PGC sampled, so the path never runs.
-4. **TXTDT_MG** is parsed with a layout and character-set codes that don't
-   match R's. No sampled disc has the table, so it has never run on real
-   bytes.
-5. **Unsourced values.** `RES_MAP` has widths for resolution codes 4 (544)
-   and 5 (480), which M calls reserved. Subpicture coding mode 3 is
-   labelled "line-21 CC". Command counts are masked with `0x3F`.
+None known. `letterboxed` follows M and LX (byte 1 bit 2) while the
+sources tie; nothing uses it. TXTDT_MG isn't read: R reads only its header
+and language units, no source describes the text items, and no sampled disc
+has the table. The parser mkvsmith had, which read a layout R's header
+contradicts, was removed, as was an "offset mode" for the stream control
+tables that no source describes (PGC bytes 0-1 are reserved). ✔ real disc:
+on 10 retail DVDs, every title, stream and language scans the same with
+these changes.
 
 Not modelled yet:
 
-- **BUP fallback:** P opens the `.BUP` copy when an IFO won't read or
-  validate (its `CHECK_VALUE`s), and mkvsmith doesn't.
 - **STC discontinuities:** the per-cell flag isn't read; mkvmerge's
   timestamp handling covers the joins.
 - **Still cells:** still times (PGC, cell, VOBU still) aren't modelled, so

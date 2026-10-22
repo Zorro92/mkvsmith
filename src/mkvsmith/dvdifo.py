@@ -96,14 +96,15 @@ class _PGCOffset:
     PLAYBACK_TIME = 0x004  # 4 bytes (BCD: hh:mm:ss.ff)
     PROHIBITED_USER_OPS = 0x008  # 4 bytes
     # Stream control table pointers/offsets
-    AST_CTL = 0x00C  # 2 bytes (simplified) or 2B offset
-    SPST_CTL = 0x01C  # 2 bytes (simplified) or 2B offset
+    AST_CTL = 0x00C  # 8 x 2 bytes, inline
+    SPST_CTL = 0x01C  # 32 x 4 bytes, inline
     # Navigation
     NEXT_PGC = 0x09C  # 2 bytes
     PREV_PGC = 0x09E  # 2 bytes
     GOUP_PGC = 0x0A0  # 2 bytes
-    STILL_TIME = 0x0A2  # 1 byte
-    PG_PLAYBACK_MODE = 0x0A3  # 1 byte
+    # 0 sequential; else bit 7 shuffle (1) or random, bits 6-0 programs - 1.
+    PG_PLAYBACK_MODE = 0x0A2  # 1 byte
+    STILL_TIME = 0x0A3  # 1 byte, 255 = infinite
     PALETTE = 0x0A4  # 16x4 = 64 bytes
     # Sub-table offsets (2 bytes each)
     COMMANDS_OFFSET = 0x0E4
@@ -166,14 +167,10 @@ class _IFOVideoAttrs:
         ("NTSC", 1): (704, 480),
         ("NTSC", 2): (352, 480),
         ("NTSC", 3): (352, 240),
-        ("NTSC", 4): (544, 480),
-        ("NTSC", 5): (480, 480),
         ("PAL", 0): (720, 576),
         ("PAL", 1): (704, 576),
         ("PAL", 2): (352, 576),
         ("PAL", 3): (352, 288),
-        ("PAL", 4): (544, 576),
-        ("PAL", 5): (480, 576),
     }
 
     @classmethod
@@ -183,7 +180,9 @@ class _IFOVideoAttrs:
         mpeg_version = cls.MPEG_MAP.get((b0 >> 6) & 3, "unknown")
         standard = cls.STANDARD_MAP.get((b0 >> 4) & 3, "unknown")
         aspect_ratio = cls.ASPECT_MAP.get((b0 >> 2) & 3, "unknown")
-        letterboxed = bool(b0 & 0b10)
+        # Byte 1 bit 2 (mpucoder, Linux DVB); libdvdread and dvdauthor say
+        # bit 1 (docs/formats/dvd-video.md, Sources disagree). Unused.
+        letterboxed = bool(b1 & 0b100)
         film_mode = bool(b1 & 0b1)
         res_idx = (b1 >> 3) & 0b111
         resolution = cls.RES_MAP.get((standard, res_idx))
@@ -338,7 +337,7 @@ class _IFOSubpictureAttrs:
             0: "run-length",
             1: "extended",
             2: "reserved",
-            3: "line-21 CC",
+            3: "reserved",
         }.get(coding_idx, "unknown")
         code_extension = data[offset + 5] if offset + 5 < len(data) else 0
         try:
@@ -528,10 +527,6 @@ _VMG_PTR_TXTDT_MG = 0xD4  # Text Data Management Area (disc name)
 _VMG_TT_SRPT_ENTRY_LEN = 12
 _VMG_TT_SRPT_ENTRY = struct.Struct(">6xBB4x")  # VTS number + VTS_TTN bytes
 
-# Character coding values for VMG text data entries.
-_VMG_CHAR_ISO_8859_1 = 0x00
-_VMG_CHAR_UNICODE = 0x01
-
 
 # =============================================================================
 # Cell playback / position constants
@@ -656,43 +651,6 @@ def _ycbcr_to_rgb(y: int, cb: int, cr: int) -> tuple[int, int, int]:
 # =============================================================================
 
 
-def _dvd_lang_code_to_str(raw: bytes) -> str:
-    """Convert a 2-byte DVD compressed language code to ISO 639-1 string.
-
-    The DVD format stores languages as two bytes where each byte equals
-    0x60 + offset from 'a'.  A value of 0x00 means 'no language'.
-    Returns "??" on unrecognised input.
-    """
-    if len(raw) < 2 or raw == b"\x00\x00":
-        return "??"
-    b1, b2 = raw[0] - 0x60, raw[1] - 0x60
-    if 1 <= b1 <= 26 and 1 <= b2 <= 26:
-        return chr(ord("a") + b1 - 1) + chr(ord("a") + b2 - 1)
-    return "??"
-
-
-def _decode_vmg_text(data: bytes, char_code: int) -> str | None:
-    """Decode a VMG text data entry into a Python string.
-
-    Supports ISO 8859-1 (char_code=0x00) and Unicode UTF-16 BE (char_code=0x01).
-    Returns None for unsupported encodings or empty results.
-    Strips trailing null bytes and leading/trailing whitespace.
-    """
-    if not data:
-        return None
-    try:
-        if char_code == _VMG_CHAR_ISO_8859_1:
-            s = data.decode("latin-1", "replace")
-        elif char_code == _VMG_CHAR_UNICODE:
-            s = data.decode("utf-16-be", "replace")
-        else:
-            return None
-    except Exception:
-        return None
-    s = s.rstrip("\x00").strip()
-    return s if s else None
-
-
 class VmgInfo(TypedDict, total=False):
     """Parsed VMG IFO metadata (see ``_parse_vmg_ifo``)."""
 
@@ -703,15 +661,16 @@ class VmgInfo(TypedDict, total=False):
 
 
 def _parse_vmg_text_metadata(ifo_data: bytes) -> tuple[str | None, str | None]:
-    """Return the VMG disc name and barcode, when present."""
-    txtdt_sector = _read_u32(ifo_data, _VMG_PTR_TXTDT_MG)
-    if not txtdt_sector:
-        return None, None
+    """The VMG text data's disc name and barcode: never read, so (None, None).
 
-    base_offset = txtdt_sector * 2048
-    disc_name = _extract_vmg_disc_name(ifo_data, base_offset)
-    barcode = _extract_vmg_barcode(ifo_data, base_offset)
-    return disc_name, barcode
+    libdvdread reads only TXTDT_MG's header and language units, and no
+    source describes the text items in them (docs/formats/dvd-video.md);
+    no local disc carries the table. The parser mkvsmith had read a layout
+    libdvdread's header contradicts, so nothing is taken from it on a guess.
+    """
+    if _read_u32(ifo_data, _VMG_PTR_TXTDT_MG):
+        log_debug("VMG has text data (TXTDT_MG); its text items aren't read")
+    return None, None
 
 
 def _parse_vmg_provider_id(ifo_data: bytes) -> str:
@@ -750,11 +709,36 @@ def _parse_vmg_title_map(ifo_data: bytes) -> dict[int, tuple[int, int]]:
     return title_map
 
 
+def read_ifo(path: Path) -> bytes | None:
+    """An IFO's bytes, or its .BUP copy's when only the copy reads as an IFO.
+
+    Every IFO has a backup (``VIDEO_TS.BUP``, ``VTS_xx_0.BUP``) with the
+    same contents; libdvdread opens it when the IFO fails to read or
+    validate (``ifoOpen``), as on a scratched disc or a damaged image.
+    Validation here is an IFO identifier (VMG or VTS; callers check which)
+    and a minimal length.
+    """
+    backup = path.with_suffix(".bup" if path.suffix.islower() else ".BUP")
+    readable: bytes | None = None
+    for candidate in (path, backup):
+        try:
+            data = candidate.read_bytes()
+        except OSError:
+            continue
+        if len(data) >= 0x100 and data[:12] in (_VMG_IFO_IDENT, _VTS_IFO_IDENT):
+            if candidate is backup:
+                log_debug(f"{path.name} unreadable or invalid; using {backup.name}")
+            return data
+        if readable is None:
+            readable = data
+    # Neither copy looks valid: the bytes as read, for the caller to judge.
+    return readable
+
+
 def _parse_vmg_ifo(vmg_path: Path) -> VmgInfo:
     """Parse VIDEO_TS.IFO provider, text, and title-search metadata."""
-    try:
-        ifo_data = vmg_path.read_bytes()
-    except Exception:
+    ifo_data = read_ifo(vmg_path)
+    if ifo_data is None:
         log_debug("VMG IFO read failed")
         return {}
     if len(ifo_data) < 0x100 or ifo_data[:12] != _VMG_IFO_IDENT:
@@ -915,78 +899,6 @@ def _compute_libdvdread_disc_id(video_ts: Path) -> str:
         key=lambda path: path.name.upper(),
     )
     return _compute_libdvdread_disc_id_from_paths(vmg, vts_ifos)
-
-
-def _extract_vmg_text_strings(ifo_data: bytes, base_off: int) -> list[str]:
-    """Extract all text strings from the VMG TXTDT area.
-
-    Returns every non-empty text string found across all language blocks,
-    ordered by (priority, appearance). The first entry is typically the
-    disc/volume name; subsequent entries may include a UPC/EAN barcode.
-    """
-    if base_off + 2 > len(ifo_data):
-        return []
-    n_lang = _read_u16(ifo_data, base_off)
-    if n_lang == 0:
-        return []
-
-    off = base_off + 2
-    all_strings: list[tuple[int, str]] = []  # (priority, text)
-
-    for _ in range(n_lang):
-        if off + 4 > len(ifo_data):
-            break
-        lang_code = _dvd_lang_code_to_str(ifo_data[off : off + 2])
-        n_str = _read_u16(ifo_data, off + 2)
-        off += 4
-        for _ in range(n_str):
-            if off + 4 > len(ifo_data):
-                break
-            char_code = _read_u16(ifo_data, off)
-            str_len = _read_u16(ifo_data, off + 2)
-            off += 4
-            if off + str_len > len(ifo_data):
-                break
-            raw = ifo_data[off : off + str_len]
-            off += str_len
-            text = _decode_vmg_text(raw, char_code)
-            if text:
-                priority = (2 if lang_code == "en" else 0) + (
-                    1 if char_code == _VMG_CHAR_UNICODE else 0
-                )
-                all_strings.append((priority, text))
-
-    if not all_strings:
-        return []
-    all_strings.sort(key=lambda x: -x[0])
-    return [t for _, t in all_strings]
-
-
-def _extract_vmg_disc_name(ifo_data: bytes, base_off: int) -> str | None:
-    """Extract the disc volume name from VMG_TXTDT_MG.
-
-    Uses ``_extract_vmg_text_strings`` and returns the first non-empty
-    text entry (the disc/volume name), preferring Unicode entries over
-    ISO 8859-1 and English over other languages.
-    """
-    strings = _extract_vmg_text_strings(ifo_data, base_off)
-    return strings[0] if strings else None
-
-
-def _extract_vmg_barcode(ifo_data: bytes, base_off: int) -> str | None:
-    """Extract a UPC/EAN barcode from VMG_TXTDT_MG.
-
-    The barcode is typically the second text entry in each language block
-    (after the disc name).  Returns the first text string that looks like
-    a numeric barcode (12-13 digits, optionally with dashes).
-    """
-    strings = _extract_vmg_text_strings(ifo_data, base_off)
-    # Disc name is index 0; other entries may include the barcode.
-    for s in strings[1:]:
-        digits_only = re.sub(r"[^0-9]", "", s)
-        if len(digits_only) in (12, 13):
-            return digits_only
-    return None
 
 
 # =============================================================================
@@ -2156,26 +2068,16 @@ def _parse_vts_pgc_info(
 # =============================================================================
 
 
-def _pgc_offset_table_base(
-    ifo_data: bytes, pgc_abs: int, control_offset: int
-) -> int | None:
-    if pgc_abs + control_offset + 2 > len(ifo_data):
-        return None
-    table_offset = _read_u16(ifo_data, pgc_abs + control_offset)
-    if not table_offset:
-        return None
-    return pgc_abs + table_offset
-
-
 @dataclass(frozen=True)
 class PgcStreamIds:
     """A title's streams: MPEG sub-stream ID -> its VTS attribute-table key.
 
     A PGC's stream-control tables map each *logical* stream (the index the
     VTS attribute tables, and so the languages, are kept by) to the
-    *physical* sub-stream in the VOBs. Keys are physical IDs (audio
-    0x80-0x87, subpicture 0x20-0x3F); values are the attribute keys (0x80 +
-    logical, 0x20 + logical), which usually but not always match.
+    *physical* sub-stream in the VOBs. Keys are physical IDs (audio by its
+    coding: AC-3 0x80-0x87, DTS 0x88-0x8F, LPCM 0xA0-0xA7, MPEG 0xC0-0xC7;
+    subpicture 0x20-0x3F); values are the attribute keys (0x80 + logical,
+    0x20 + logical), which usually but not always match.
     """
 
     audio: dict[int, int]
@@ -2290,91 +2192,6 @@ def pgc_stream_ids(ifo_data: bytes, pgc_number: int | None = None) -> PgcStreamI
     )
 
 
-def _pgc_control_language(ifo_data: bytes, offset: int) -> str | None:
-    if offset + 2 > len(ifo_data):
-        return None
-    raw = ifo_data[offset : offset + 2]
-    if raw == b"\x00\x00" or not all(
-        97 <= byte <= 122 or 65 <= byte <= 90 for byte in raw
-    ):
-        return None
-    return raw.decode("ascii", "ignore")
-
-
-def _pgc_audio_languages_offset_mode(ifo_data: bytes, pgc_abs: int) -> dict[int, str]:
-    asct_base = _pgc_offset_table_base(ifo_data, pgc_abs, _PGCOffset.AST_CTL)
-    if asct_base is None:
-        return {}
-
-    audio_languages: dict[int, str] = {}
-    audio_count = min(_read_vts_audio_count(ifo_data), _PGCOffset.NUM_AST_ENTRIES)
-    for index in range(audio_count):
-        offset = asct_base + index * _PGCOffset.AST_NORMAL_ENTRY_LEN
-        if offset + 6 > len(ifo_data):
-            break
-        stream_number = _read_u16(ifo_data, offset)
-        if stream_number == 0xFFFF or not (stream_number & 0x8000):
-            continue
-
-        actual_stream = stream_number & 0x7FFF
-        language = _pgc_control_language(ifo_data, offset + 2)
-        if language:
-            audio_languages[0x80 + actual_stream] = language
-    return audio_languages
-
-
-def _pgc_subpicture_languages_offset_mode(
-    ifo_data: bytes, pgc_abs: int
-) -> dict[int, str]:
-    spst_base = _pgc_offset_table_base(ifo_data, pgc_abs, _PGCOffset.SPST_CTL)
-    if spst_base is None:
-        return {}
-
-    subpicture_languages: dict[int, str] = {}
-    for index in range(_PGCOffset.NUM_SPST_ENTRIES):
-        entry_offset = spst_base + index * _PGCOffset.SPST_ENTRY_LEN
-        if entry_offset + 4 > len(ifo_data):
-            break
-        stream_number = _read_u16(ifo_data, entry_offset)
-        if stream_number == 0xFFFF or not (stream_number & 0x8000):
-            continue
-
-        actual_stream = stream_number & 0x7FFF
-        if actual_stream > 0x1F:
-            continue
-        language = _pgc_control_language(ifo_data, entry_offset + 2)
-        if language:
-            subpicture_languages[0x20 + actual_stream] = language
-    return subpicture_languages
-
-
-def _parse_pgc_stream_languages(
-    ifo_data: bytes,
-    pgc_number: int | None = None,
-) -> tuple[dict[int, str], dict[int, str]]:
-    """Extract per-PGC audio/subpicture language overrides, when present.
-
-    Offset-mode ASCT and SPSCT entries may carry two-letter language codes.
-    Inline-mode stream-control entries contain display-format assignments but
-    no languages, so callers use the VTS attribute-table languages instead.
-    """
-    if len(ifo_data) < 0x200 or ifo_data[0:12] != _VTS_IFO_IDENT:
-        return {}, {}
-    main = _find_main_pgc(ifo_data, pgc_number)
-    if main is None:
-        return {}, {}
-
-    pgc_abs = main[0]
-    pgc_category = _read_u16(ifo_data, pgc_abs)
-    if not pgc_category & 0x0002:
-        return {}, {}
-
-    return (
-        _pgc_audio_languages_offset_mode(ifo_data, pgc_abs),
-        _pgc_subpicture_languages_offset_mode(ifo_data, pgc_abs),
-    )
-
-
 # =============================================================================
 # VM command parsing (angle detection)
 # =============================================================================
@@ -2402,10 +2219,15 @@ def _pgc_command_table_base(ifo_data: bytes, pgc_abs: int) -> int | None:
     return command_base
 
 
+# A PGC holds at most 128 pre, post and cell commands in all (mpucoder
+# pgc.html).
+_MAX_PGC_COMMANDS = 128
+
+
 def _pgc_pre_command_count(ifo_data: bytes, command_base: int) -> int:
-    pre_count = _read_u16(ifo_data, command_base) & 0x3F
-    post_count = _read_u16(ifo_data, command_base + 2) & 0x3F
-    cell_count = _read_u16(ifo_data, command_base + 4) & 0x3F
+    pre_count = min(_read_u16(ifo_data, command_base), _MAX_PGC_COMMANDS)
+    post_count = _read_u16(ifo_data, command_base + 2)
+    cell_count = _read_u16(ifo_data, command_base + 4)
     log_debug(
         f"    _pgc_angle: nr_pre={pre_count} nr_post={post_count} nr_cell={cell_count}"
     )

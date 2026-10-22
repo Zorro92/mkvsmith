@@ -69,10 +69,13 @@ class Video:
     standard: int = 0
     aspect: int = 0
     cc_field_1: bool = False
+    letterboxed: bool = False  # byte 1 bit 2 (mpucoder, Linux DVB)
+    resolution: int = 0  # byte 1 bits 5-3: 0 720, 1 704, 2 352, 3 352 half
 
     def encode(self) -> bytes:
         b0 = self.mpeg << 6 | self.standard << 4 | self.aspect << 2
-        b1 = 0x80 if self.cc_field_1 else 0
+        b1 = (0x80 if self.cc_field_1 else 0) | self.resolution << 3
+        b1 |= 0x04 if self.letterboxed else 0
         return bytes([b0, b1])
 
 

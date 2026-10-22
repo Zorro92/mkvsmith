@@ -42,6 +42,7 @@ from mkvsmith.dvdifo import (
     _IFOVideoAttrs,
     _dvd_audio_stream_id,
     _iso_639_1,
+    read_ifo,
     _VTS_IFO_IDENT,
     _VTS_IFO_SUBP_COUNT,
     _VTS_IFO_SUBP_ATTR,
@@ -53,7 +54,6 @@ from mkvsmith.dvdifo import (
     _parse_vts_subp_attrs,
     _ifo_audio_title,
     pgc_stream_ids,
-    _parse_pgc_stream_languages,
     _parse_vts_pgc_info,
     _parse_vmg_ifo,
     _find_alternate_edition_pgcs,
@@ -164,7 +164,10 @@ def _dvd_vts_layouts(
     base: Path, vts_to_title_num: dict[int, int]
 ) -> list[_DvdVtsLayout]:
     layouts: list[_DvdVtsLayout] = []
-    for ifo_path in sorted(base.glob("VTS_*_0.IFO")):
+    # A title set whose IFO is missing still has its .BUP (read_ifo).
+    names = {path.stem for path in base.glob("VTS_*_0.IFO")}
+    names |= {path.stem for path in base.glob("VTS_*_0.BUP")}
+    for ifo_path in sorted(base / f"{name}.IFO" for name in names):
         match = re.search(r"VTS_(\d+)_0\.IFO", ifo_path.name)
         if not match or int(match.group(1)) == 0:
             continue
@@ -231,13 +234,11 @@ def _append_default_dvd_title(
 
 
 def _read_vts_ifo_bytes(layout: _DvdVtsLayout) -> bytes:
-    try:
-        return layout.ifo_path.read_bytes()
-    except OSError as exc:
-        log_debug(
-            f"Alternate-edition PGC scan skipped for {layout.ifo_path.name}: {exc}"
-        )
+    data = read_ifo(layout.ifo_path)
+    if data is None:
+        log_debug(f"Alternate-edition PGC scan skipped for {layout.ifo_path.name}")
         return b""
+    return data
 
 
 def _build_dvd_pgc_title(
@@ -723,11 +724,7 @@ def _build_dvd_video_stream(ifo_data: bytes) -> Stream:
 def _merged_dvd_stream_languages(
     ifo_data: bytes, pgc_number: int | None
 ) -> tuple[dict[int, str], dict[int, str]]:
-    audio_languages, subtitle_languages = _parse_vts_ifo_languages(ifo_data)
-    pgc_audio, pgc_subtitles = _parse_pgc_stream_languages(ifo_data, pgc_number)
-    audio_languages.update(pgc_audio)
-    subtitle_languages.update(pgc_subtitles)
-    return audio_languages, subtitle_languages
+    return _parse_vts_ifo_languages(ifo_data)
 
 
 def _build_dvd_audio_streams(
@@ -1108,10 +1105,9 @@ def _build_title_from_ifo(
     display filtering happens separately through the notable-title ranking.
     """
     name = title_name or f"Title {vts}"
-    try:
-        ifo_data = ifo_path.read_bytes()
-    except OSError as exc:
-        log_debug(f"IFO read failed for {ifo_path.name}: {exc}")
+    ifo_data = read_ifo(ifo_path)
+    if ifo_data is None:
+        log_debug(f"IFO read failed for {ifo_path.name} and its backup")
         return _create_title(titles, first_vob, name, config=config)
 
     if len(ifo_data) < 12 or ifo_data[:12] != _VTS_IFO_IDENT:
@@ -1172,14 +1168,6 @@ def _store_dvd_ifo_metadata(
     title: Title, ifo_data: bytes, pgc_number: int | None = None
 ) -> tuple[dict[int, str], dict[int, str]]:
     audio_languages, subtitle_languages = _parse_vts_ifo_languages(ifo_data)
-    pgc_audio, pgc_subtitles = _parse_pgc_stream_languages(ifo_data, pgc_number)
-    audio_languages.update(pgc_audio)
-    subtitle_languages.update(pgc_subtitles)
-    if pgc_audio or pgc_subtitles:
-        log_debug(
-            f"PGC stream control languages: audio={pgc_audio} sub={pgc_subtitles}"
-        )
-
     title.dvd_audio_lang = audio_languages
     title.dvd_sub_lang = subtitle_languages
     title.dvd_audio_attrs = _parse_vts_audio_attrs(ifo_data)
@@ -1244,10 +1232,9 @@ def _apply_dvd_pgc_info(title: Title, ifo_data: bytes, ifo_name: str) -> None:
 
 def _apply_dvd_ifo_languages(title: Title, ifo_path: Path) -> None:
     """Read authoritative stream languages, attributes, chapters, and runtime."""
-    try:
-        ifo_data = ifo_path.read_bytes()
-    except OSError as exc:
-        log_debug(f"IFO read failed for {ifo_path.name}: {exc}")
+    ifo_data = read_ifo(ifo_path)
+    if ifo_data is None:
+        log_debug(f"IFO read failed for {ifo_path.name} and its backup")
         return
 
     audio_languages, subtitle_languages = _store_dvd_ifo_metadata(title, ifo_data)

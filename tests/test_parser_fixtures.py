@@ -31,7 +31,6 @@ from mkvsmith.dvdifo import (
     _episode_part_labels,
     _find_alternate_edition_pgcs,
     _find_main_pgc,
-    _parse_pgc_stream_languages,
     _lookup_main_feature_range,
     _parse_vmg_ifo,
     _pgc_angle_from_commands,
@@ -200,7 +199,6 @@ def test_parse_vts_subp_attrs_and_pgc_stream_languages(
         ("es", False),
     ]
     assert all(attrs[sid].code_extension == 0 for sid in attrs)
-    assert _parse_pgc_stream_languages(data) == ({}, {})
 
 
 def test_parse_vts_c_adt_and_vobu_admap(fixtures_dir: Path) -> None:

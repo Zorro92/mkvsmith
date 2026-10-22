@@ -52,6 +52,7 @@ from mkvsmith.bluray import (
 )
 
 from mkvsmith.dvdifo import (
+    read_ifo,
     _EPISODE_DURATION_TOL,
     _EPISODE_DWARF_RATIO,
     DvdIfoError,
@@ -2241,7 +2242,9 @@ class Scanner:
         ifo_files = sorted(
             path
             for path in paths
-            if path.lower().endswith(".ifo") and path.upper().startswith("VIDEO_TS/")
+            # The .BUP backups too, for read_ifo to fall back on.
+            if path.lower().endswith((".ifo", ".bup"))
+            and path.upper().startswith("VIDEO_TS/")
         )
         if not vob_files or not ifo_files:
             log_debug(
@@ -2493,10 +2496,9 @@ class Scanner:
         play-all and "Extra" titles, everything else gets editions and plain
         PGCs.
         """
-        try:
-            ifo_bytes = ifo_path.read_bytes()
-        except OSError as exc:
-            log_debug(f"Alternate PGC scan skipped for {ifo_path.name}: {exc}")
+        ifo_bytes = read_ifo(ifo_path)
+        if ifo_bytes is None:
+            log_debug(f"Alternate PGC scan skipped for {ifo_path.name}")
             return
 
         plan = _plan_dvd_pgc_titles(ifo_bytes, self.config)

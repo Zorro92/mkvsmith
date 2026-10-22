@@ -247,14 +247,9 @@ def test_build_dvd_streams_uses_pgc_streams_and_pgc_languages(
         _data: bytes,
     ) -> tuple[dict[int, str], dict[int, str]]:
         return (
-            {0x80: "und", 0x81: "fra"},
-            {0x20: "und", 0x21: "eng"},
+            {0x80: "und", 0x81: "eng"},
+            {0x20: "und", 0x21: "fre"},
         )
-
-    def parse_pgc_stream_languages(
-        _data: bytes, _pgc_number: int | None
-    ) -> tuple[dict[int, str], dict[int, str]]:
-        return ({0x81: "eng"}, {0x21: "fre"})
 
     def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
         return {
@@ -287,9 +282,6 @@ def test_build_dvd_streams_uses_pgc_streams_and_pgc_languages(
     monkeypatch.setattr(dvdbuild, "pgc_stream_ids", get_pgc_stream_ids)
     monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
-    monkeypatch.setattr(
-        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
-    )
     monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", parse_vts_audio_attrs)
     monkeypatch.setattr(dvdbuild, "_ifo_audio_title", ifo_audio_title)
     monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", parse_vts_subp_attrs)
@@ -297,7 +289,7 @@ def test_build_dvd_streams_uses_pgc_streams_and_pgc_languages(
     streams = dvdbuild._build_dvd_streams_from_ifo(ifo_data, 100.0, 2)
 
     # The PGC's streams drive the listing; attributes and languages come
-    # from each stream's attribute slot, PGC control overriding languages.
+    # from each stream's attribute slot.
     assert [(stream.stream_type, stream.sub_id) for stream in streams] == [
         (StreamType.VIDEO, 0x1E0),
         (StreamType.AUDIO, 0x80),
@@ -358,17 +350,9 @@ def test_build_dvd_streams_fall_back_to_vts_language_ids(
             {0x21: "fre", 0x20: "und"},
         )
 
-    def parse_pgc_stream_languages(
-        _data: bytes, _pgc: int | None
-    ) -> tuple[dict[int, str], dict[int, str]]:
-        return ({}, {})
-
     monkeypatch.setattr(dvdbuild, "pgc_stream_ids", get_pgc_stream_ids)
     monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
-    monkeypatch.setattr(
-        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
-    )
 
     def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
         return {}
@@ -417,17 +401,9 @@ def test_build_dvd_streams_list_pgc_streams_without_attribute_tables(
     ) -> tuple[dict[int, str], dict[int, str]]:
         return ({}, {})
 
-    def parse_pgc_stream_languages(
-        _data: bytes, _pgc: int | None
-    ) -> tuple[dict[int, str], dict[int, str]]:
-        return ({}, {})
-
     monkeypatch.setattr(dvdbuild, "pgc_stream_ids", get_pgc_stream_ids)
     monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
-    monkeypatch.setattr(
-        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
-    )
 
     def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
         return {}
@@ -474,9 +450,6 @@ def test_build_dvd_streams_label_a_stream_from_its_attribute_slot(
         dvdbuild,
         "_parse_vts_ifo_languages",
         lambda _d: ({0x80: "fr", 0x84: "en"}, {0x20: "en", 0x23: "de"}),
-    )
-    monkeypatch.setattr(
-        dvdbuild, "_parse_pgc_stream_languages", lambda _d, _n: ({}, {})
     )
     monkeypatch.setattr(
         dvdbuild, "_parse_vts_audio_attrs", lambda _d: {0x84: english_51}
@@ -607,14 +580,9 @@ def test_apply_dvd_ifo_languages_updates_streams_and_timing(
         _data: bytes,
     ) -> tuple[dict[int, str], dict[int, str]]:
         return (
-            {0x80: "und", 0x81: "fra"},
-            {0x20: "und", 0x21: "eng"},
+            {0x80: "eng", 0x81: "fra"},
+            {0x20: "und", 0x21: "fre"},
         )
-
-    def parse_pgc_stream_languages(
-        _data: bytes, _pgc_number: int | None = None
-    ) -> tuple[dict[int, str], dict[int, str]]:
-        return ({0x80: "eng"}, {0x21: "fre"})
 
     def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
         return audio_attrs
@@ -631,9 +599,6 @@ def test_apply_dvd_ifo_languages_updates_streams_and_timing(
         return ([0.0, 10.0], 120.0)
 
     monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
-    monkeypatch.setattr(
-        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
-    )
     monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", parse_vts_audio_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", parse_vts_subp_attrs)
@@ -728,11 +693,6 @@ def _patch_successful_ifo_title(
     ) -> tuple[dict[int, str], dict[int, str]]:
         return ({0x80: "eng"}, {0x20: "und"})
 
-    def parse_pgc_stream_languages(
-        _data: bytes, _pgc_number: int | None
-    ) -> tuple[dict[int, str], dict[int, str]]:
-        return ({}, {})
-
     def parse_vts_audio_attrs(_data: bytes) -> dict[int, dvdifo._IFOAudioAttrs]:
         return {}
 
@@ -749,9 +709,6 @@ def _patch_successful_ifo_title(
         dvdbuild, "_build_dvd_streams_from_ifo", build_dvd_streams_from_ifo
     )
     monkeypatch.setattr(dvdbuild, "_parse_vts_ifo_languages", parse_vts_ifo_languages)
-    monkeypatch.setattr(
-        dvdbuild, "_parse_pgc_stream_languages", parse_pgc_stream_languages
-    )
     monkeypatch.setattr(dvdbuild, "_parse_vts_audio_attrs", parse_vts_audio_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_video_attrs", parse_vts_video_attrs)
     monkeypatch.setattr(dvdbuild, "_parse_vts_subp_attrs", parse_vts_subp_attrs)

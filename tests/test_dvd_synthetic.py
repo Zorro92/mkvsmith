@@ -615,3 +615,53 @@ def test_audio_for_the_visually_impaired_is_flagged() -> None:
 
     audio = [s for s in streams if s.stream_type.value == "audio"]
     assert [s.is_visual_impaired for s in audio] == [False, True]
+
+
+def test_video_attributes_letterbox_bit_and_resolution_codes() -> None:
+    # Letterboxed is byte 1 bit 2 (mpucoder, Linux DVB); resolution codes
+    # 4-7 are reserved, so they give no picture size.
+    letterboxed = vts_ifo([Pgc([Cell(600, 0, 999)])], video=Video(letterboxed=True))
+    reserved = vts_ifo([Pgc([Cell(600, 0, 999)])], video=Video(resolution=4))
+    narrow = vts_ifo([Pgc([Cell(600, 0, 999)])], video=Video(resolution=1))
+
+    attrs = dvdifo._parse_vts_video_attrs(letterboxed)
+    assert attrs is not None and attrs.letterboxed
+    assert attrs.resolution == (720, 480)
+    reserved_attrs = dvdifo._parse_vts_video_attrs(reserved)
+    assert reserved_attrs is not None and reserved_attrs.resolution is None
+    narrow_attrs = dvdifo._parse_vts_video_attrs(narrow)
+    assert narrow_attrs is not None and narrow_attrs.resolution == (704, 480)
+
+
+def test_more_than_63_pre_commands_are_all_counted() -> None:
+    # Command counts are 16-bit (at most 128 in all); they used to be
+    # masked to 6 bits.
+    table = (100).to_bytes(2, "big") + bytes(6)
+    assert dvdifo._pgc_pre_command_count(table, 0) == 100
+    too_many = (500).to_bytes(2, "big") + bytes(6)
+    assert dvdifo._pgc_pre_command_count(too_many, 0) == 128
+
+
+def test_an_unreadable_ifo_falls_back_to_its_backup(tmp_path: Path) -> None:
+    data = _one_title()
+    ifo, bup = tmp_path / "VTS_01_0.IFO", tmp_path / "VTS_01_0.BUP"
+    ifo.write_bytes(b"\x00" * 4096)  # damaged: no identifier
+    bup.write_bytes(data)
+
+    assert dvdifo.read_ifo(ifo) == data
+    ifo.unlink()
+    assert dvdifo.read_ifo(ifo) == data  # missing altogether
+    bup.unlink()
+    assert dvdifo.read_ifo(ifo) is None
+
+
+def test_a_title_set_with_only_its_backup_is_found(tmp_path: Path) -> None:
+    from mkvsmith import dvdbuild
+
+    (tmp_path / "VTS_01_0.BUP").write_bytes(_one_title())
+    (tmp_path / "VTS_01_1.VOB").write_bytes(b"")
+
+    layouts = dvdbuild._dvd_vts_layouts(tmp_path, {})
+
+    assert [layout.ifo_path.name for layout in layouts] == ["VTS_01_0.IFO"]
+    assert dvdbuild._read_vts_ifo_bytes(layouts[0]) == _one_title()

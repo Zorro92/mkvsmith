@@ -21,10 +21,8 @@ import pytest
 from mkvsmith.bluray import _parse_bdmv_disc_name, _parse_clpi, _parse_mpls
 from mkvsmith.dvdifo import (
     _parse_vts_ifo_languages,
-    _parse_pgc_stream_languages,
     _parse_vts_pgc_info,
     _parse_vts_vobu_admap,
-    _pgc_offset_table_base,
     _vts_pgc_absolute_offset,
     _vts_ptt_srpt_base,
     _vts_title_unit_base,
@@ -182,71 +180,6 @@ def test_pgc_stream_ids_add_audio_from_pgcs_sharing_cells(
 
 def test_pgc_stream_ids_are_empty_for_an_unreadable_ifo() -> None:
     assert dvdifo.pgc_stream_ids(b"NOT A VTS") == dvdifo.PgcStreamIds({}, {})
-
-
-def test_pgc_offset_table_base_rejects_missing_or_truncated_pointers() -> None:
-    valid = bytearray(0x210)
-    valid[0x20C:0x20E] = struct.pack(">H", 0x10)
-    assert _pgc_offset_table_base(bytes(valid), 0x200, 0x0C) == 0x210
-
-    zero_pointer = bytearray(valid)
-    zero_pointer[0x20C:0x20E] = b"\x00\x00"
-    assert _pgc_offset_table_base(bytes(zero_pointer), 0x200, 0x0C) is None
-    assert _pgc_offset_table_base(b"\x00" * 0x20D, 0x200, 0x0C) is None
-
-
-def test_parse_pgc_stream_languages_offset_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    data = bytearray(0x700)
-    data[:12] = b"DVDVIDEO-VTS"
-    data[0x202:0x204] = struct.pack(">H", 2)
-    pgc_abs = 0x300
-    data[pgc_abs : pgc_abs + 2] = struct.pack(">H", 0x0002)
-
-    asct_base = pgc_abs + 0x40
-    data[pgc_abs + 0x0C : pgc_abs + 0x0E] = struct.pack(">H", 0x40)
-    data[asct_base : asct_base + 24] = (
-        struct.pack(">H", 0x8001)
-        + b"en"
-        + b"\x00" * 4
-        + struct.pack(">H", 0x8002)
-        + b"fr"
-        + b"\x00" * 4
-        + struct.pack(">H", 0x0003)
-        + b"de"
-        + b"\x00" * 4
-    )
-
-    spst_base = pgc_abs + 0x80
-    data[pgc_abs + 0x1C : pgc_abs + 0x1E] = struct.pack(">H", 0x80)
-    data[spst_base : spst_base + 12] = (
-        struct.pack(">H", 0x8001)
-        + b"es"
-        + b"\x00" * 0
-        + struct.pack(">H", 0x0002)
-        + b"it"
-        + b"\x00" * 0
-        + struct.pack(">H", 0x8020)
-        + b"xx"
-        + b"\x00" * 0
-    )
-
-    def fake_find_main_pgc(
-        _data: bytes, _pgc_number: int | None
-    ) -> tuple[int, float, int]:
-        return (pgc_abs, 100.0, 1)
-
-    monkeypatch.setattr(
-        dvdifo,
-        "_find_main_pgc",
-        fake_find_main_pgc,
-    )
-
-    assert _parse_pgc_stream_languages(bytes(data)) == (
-        {0x81: "en", 0x82: "fr"},
-        {0x21: "es"},
-    )
 
 
 def test_find_main_pgc_falls_back_to_longest_then_most_cells(

@@ -262,28 +262,39 @@ Sources disagree on the volume label: `isofs.py` takes the logical volume
 identifier; LUR returns the UDF primary volume descriptor's identifier
 (byte 24).
 
+## How `isofs.py` reads a damaged or unusual volume
+
+- **Anchor:** the first sound anchor of sector 256, N−256 and N (by tag
+  checksum, CRC and location); if none checks out, any with the anchor's
+  identifier.
+- **Descriptor sequence:** the main sequence, else the reserve, following
+  volume descriptor pointers; of several copies of a descriptor, the highest
+  sequence number. Descriptors whose tags don't check out are skipped, and
+  if that leaves no volume, both sequences are read again without the check.
+- **Metadata partition:** the metadata file, or its mirror when the file's
+  entry won't read; a file entry the metadata file's block doesn't hold is
+  read from the mirror's. Unallocated spans of the metadata file stay gaps.
+- **Partition maps:** a sparable map reads in place (sparing only moves
+  defective packets); VAT and unknown maps are kept as placeholders, so only
+  entries addressed through them fail.
+- **Files:** indirect entries (strategy 4096) are followed; short, long and
+  extended allocation descriptors are read; an empty first descriptor is
+  skipped (LDR merge request !6); block numbers are checked against the
+  partition's length; symbolic links and stream directories aren't listed;
+  a file linked under two names is listed under both (only directories are
+  de-duplicated, against loops).
+- **Recognition:** an NSR descriptor anywhere from sector 16 to the first
+  blank sector.
+
+CRCs are checked on the volume structures only: a Python byte loop over every
+file entry would slow a scan. ✔ real disc: 9 retail disc images (DVD and
+Blu-ray) list the same files, sizes and extents as before these checks.
+
 ## Open parser mismatches
 
-- **Metadata mirror never read.** A "not allocated" extent in the metadata
-  file raises an error, though the spec allows one.
-- **No tag validation.** Checksum, version, CRC and tag location aren't
-  checked.
-- **Anchors and sequences.** Only the anchor at 256 and the main sequence
-  are read; volume descriptor pointers aren't followed; the last descriptor
-  seen wins, not the highest sequence number.
-- **Empty first descriptor.** LDR's workaround is missing.
-- **Indirect entries.** Strategy 4096 (tag 259) isn't followed.
-- **No bounds checks.** Block numbers aren't checked against the partition
-  length or the image size.
-- **Hard links.** De-duplication covers files as well as directories, so a
-  second path to a file is dropped.
-- **Map types.** VAT and sparable maps raise errors instead of being
-  skipped.
-- **Multi-block reads.** Reads in the metadata partition ignore extent
-  boundaries.
-- **Recognition.** Only sectors 16–31 are checked, and `BEA01` isn't
-  required.
-- **File types.** Symbolic links and other special types are listed as
-  files, and ext_ad raises an error.
 - **ISO 9660.** The extended attribute record, associated files and
   interleaving are ignored, and Joliet always wins over the primary tree.
+- **Mirror for directory data.** Only file entries fall back to the
+  metadata mirror; a directory's identifier data still reads from the
+  metadata file.
+- **`BEA01`** isn't required before the NSR descriptor (LUR requires it).

@@ -31,16 +31,19 @@ _MAX_ENTRIES = 1_000_000
 
 # ECMA-167 descriptor tag identifiers.
 _TAG_AVDP = 2
+_TAG_VDP = 3
 _TAG_PD = 5
 _TAG_LVD = 6
 _TAG_TD = 8
 _TAG_FSD = 256
 _TAG_FID = 257
 _TAG_AED = 258
+_TAG_IE = 259
 _TAG_FE = 261
 _TAG_EFE = 266
 
 _UDF_METADATA_PARTITION = b"*UDF Metadata Partition"
+_UDF_SPARABLE_PARTITION = b"*UDF Sparable Partition"
 
 
 class _Readable(Protocol):
@@ -231,6 +234,9 @@ class _UdfFile:
     # Data stored inside the file entry itself (allocation type 3).
     embedded: bytes | None
     embedded_offset: int | None
+    # ICB file type: 4 directory, 5 file, 12 symbolic link, 13 stream
+    # directory, ... (ECMA-167 4/14.6.6, UDF 2.50 2.3.5.2).
+    file_type: int = 5
 
 
 def _u16(buf: bytes, offset: int) -> int:
@@ -288,14 +294,69 @@ def _udf_timestamp(buf: bytes, offset: int) -> datetime | None:
         return None
 
 
+def _crc_itu(data: bytes) -> int:
+    """CRC-ITU-T (x^16 + x^12 + x^5 + 1, initial 0), as UDF descriptor tags use."""
+    crc = 0
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else crc << 1
+        crc &= 0xFFFF
+    return crc
+
+
+def _udf_tag_ok(
+    buf: bytes, ident: int, location: int | None = None, *, crc: bool = False
+) -> bool:
+    """Whether *buf* starts with a sound *ident* descriptor tag (ECMA-167 3/7.2).
+
+    The checksum covers the tag's other 15 bytes; *location* (when given) is
+    the block the tag says it is in; *crc* also checks the descriptor CRC,
+    kept for the volume structures since it costs a byte loop. These pick
+    between copies (anchor, sequence, metadata file); a reader still accepts
+    an unchecked descriptor when no copy passes, as libdvdread does.
+    """
+    if len(buf) < 16 or _udf_tag(buf) != ident:
+        return False
+    if (sum(buf[0:4]) + sum(buf[5:16])) & 0xFF != buf[4]:
+        return False
+    if location is not None and _u32(buf, 12) != location:
+        return False
+    if crc:
+        length = _u16(buf, 10)
+        if length and 16 + length <= len(buf):
+            if _crc_itu(buf[16 : 16 + length]) != _u16(buf, 8):
+                return False
+    return True
+
+
+@dataclass
+class _Partition:
+    start: int
+    length: int
+
+
+# A logical-volume partition map: what kind, and its partition number.
+_MAP_PHYSICAL, _MAP_METADATA, _MAP_UNSUPPORTED = "physical", "metadata", "unsupported"
+# Volume descriptor pointers followed at most this many times (loops).
+_MAX_VDS_EXTENTS = 16
+# Indirect entries followed at most this many times per file (loops).
+_MAX_INDIRECT = 16
+# Symbolic links and stream directories, which aren't files to list.
+_SPECIAL_FILE_TYPES = frozenset({12, 13})
+
+
 class _UdfReader:
     def __init__(self, f: _Readable) -> None:
         self._f = f
-        self._part_start: dict[int, int] = {}
-        # One entry per logical-volume partition map: (is_metadata, partition number).
-        self._maps: list[tuple[bool, int]] = []
-        # Physical (sector, length) runs of the metadata file, in order.
-        self._meta_runs: list[tuple[int, int]] = []
+        self._sectors = f.seek(0, 2) // SECTOR
+        self._partitions: dict[int, _Partition] = {}
+        # One entry per logical-volume partition map: (kind, partition number).
+        self._maps: list[tuple[str, int]] = []
+        # Runs of the metadata file and of its mirror, as (sector in the
+        # partition, or None for an unallocated span; bytes).
+        self._meta_runs: list[tuple[int | None, int]] = []
+        self._mirror_runs: list[tuple[int | None, int]] = []
         self.label = ""
         # Entries files() couldn't read, each with its reason.
         self.skipped: list[str] = []
@@ -303,54 +364,129 @@ class _UdfReader:
 
     # -- addressing ---------------------------------------------------------
 
-    def _sector_of(self, part: int, lb: int) -> int:
-        """Absolute image sector of logical block *lb* in partition ref *part*."""
+    def _sector_of(self, part: int, lb: int, *, mirror: bool = False) -> int:
+        """Absolute image sector of logical block *lb* in partition ref *part*.
+
+        *mirror* reads a metadata-partition block from the metadata mirror
+        file instead of the metadata file (UDF 2.50 2.2.13).
+        """
         if part >= len(self._maps):
             raise IsoImageError(f"partition reference {part} out of range")
-        is_meta, pnum = self._maps[part]
-        start = self._part_start.get(pnum)
-        if start is None:
+        kind, pnum = self._maps[part]
+        if kind == _MAP_UNSUPPORTED:
+            raise IsoImageError(f"partition reference {part} has an unsupported map")
+        partition = self._partitions.get(pnum)
+        if partition is None:
             raise IsoImageError(f"partition {pnum} has no descriptor")
-        if not is_meta:
-            return start + lb
+        if kind == _MAP_PHYSICAL:
+            if partition.length and lb >= partition.length:
+                raise IsoImageError(f"block {lb} outside partition {pnum}")
+            return partition.start + lb
         # Metadata-partition blocks are offsets into the metadata file.
         remaining = lb * SECTOR
-        for sector, length in self._meta_runs:
+        for sector, length in self._mirror_runs if mirror else self._meta_runs:
             if remaining < length:
-                return start + sector + remaining // SECTOR
+                if sector is None:
+                    raise IsoImageError(f"metadata block {lb} is unallocated")
+                return partition.start + sector + remaining // SECTOR
             remaining -= length
         raise IsoImageError(f"metadata block {lb} outside the metadata file")
 
     def _read_block(self, part: int, lb: int, count: int = 1) -> bytes:
+        if part < len(self._maps) and self._maps[part][0] == _MAP_METADATA:
+            # Consecutive metadata blocks needn't be adjacent on disc.
+            return b"".join(
+                _read_sectors(self._f, self._sector_of(part, lb + n))
+                for n in range(count)
+            )
         return _read_sectors(self._f, self._sector_of(part, lb), count)
 
     # -- volume structure -------------------------------------------------
 
+    def _find_anchor(self) -> bytes:
+        """The anchor volume descriptor pointer: at sector 256, N - 256 or N
+        (N the last sector; UDF 2.50 2.2.3), the first sound one."""
+        last = self._sectors - 1
+        candidates = [256, *(sector for sector in (last - 256, last) if sector > 256)]
+        found: list[bytes] = []
+        for sector in candidates:
+            try:
+                buf = _read_sectors(self._f, sector)
+            except IsoImageError:
+                continue
+            if _udf_tag_ok(buf, _TAG_AVDP, sector, crc=True):
+                return buf
+            if _udf_tag(buf) == _TAG_AVDP:
+                found.append(buf)
+        if found:
+            return found[0]
+        raise IsoImageError("no anchor volume descriptor at sector 256, N-256 or N")
+
+    def _read_vds(
+        self, length: int, location: int, *, strict: bool
+    ) -> tuple[dict[int, _Partition], bytes] | None:
+        """Partitions and the logical volume descriptor from one volume
+        descriptor sequence, following its pointers (tag 3) and keeping, of
+        several copies, the one with the highest sequence number (ECMA-167
+        3/8.4.3). *strict* skips descriptors whose tag doesn't check out.
+        None when the sequence has no partition or logical volume."""
+        partitions: dict[int, tuple[int, _Partition]] = {}
+        lvd: tuple[int, bytes] | None = None
+        extents = 0
+        while length and extents < _MAX_VDS_EXTENTS:
+            extents += 1
+            next_extent: tuple[int, int] | None = None
+            for sector in range(location, location + length // SECTOR):
+                try:
+                    desc = _read_sectors(self._f, sector)
+                except IsoImageError:
+                    break
+                tag = _udf_tag(desc)
+                if strict and not _udf_tag_ok(desc, tag, sector, crc=True):
+                    continue
+                sequence = _u32(desc, 16)
+                if tag == _TAG_PD:
+                    pnum = _u16(desc, 22)
+                    if pnum not in partitions or partitions[pnum][0] <= sequence:
+                        partition = _Partition(_u32(desc, 188), _u32(desc, 192))
+                        partitions[pnum] = (sequence, partition)
+                elif tag == _TAG_LVD:
+                    if lvd is None or lvd[0] <= sequence:
+                        lvd = (sequence, desc)
+                elif tag == _TAG_VDP:
+                    next_extent = (_u32(desc, 20), _u32(desc, 24))
+                    break
+                elif tag == _TAG_TD:
+                    break
+            if next_extent is None:
+                break
+            length, location = next_extent
+        if lvd is None or not partitions:
+            return None
+        return {pnum: entry[1] for pnum, entry in partitions.items()}, lvd[1]
+
     def _read_volume(self) -> tuple[int, int]:
         self._check_vrs()
-        avdp = _read_sectors(self._f, 256)
-        if _udf_tag(avdp) != _TAG_AVDP:
-            raise IsoImageError("no anchor volume descriptor at sector 256")
-        vds_len, vds_loc = _u32(avdp, 16), _u32(avdp, 20)
-        lvd: bytes | None = None
-        for i in range(vds_len // SECTOR):
-            desc = _read_sectors(self._f, vds_loc + i)
-            tag = _udf_tag(desc)
-            if tag == _TAG_PD:
-                pnum = _u16(desc, 22)
-                self._part_start[pnum] = _u32(desc, 188)
-            elif tag == _TAG_LVD:
-                lvd = desc
-            elif tag == _TAG_TD:
-                break
-        if lvd is None:
+        avdp = self._find_anchor()
+        main = (_u32(avdp, 16), _u32(avdp, 20))
+        reserve = (_u32(avdp, 24), _u32(avdp, 28))
+        # The main sequence, else the reserve copy (UDF 2.50 6.9.2.3); then
+        # either without the tag checks, for images that skip them.
+        volume = (
+            self._read_vds(*main, strict=True)
+            or self._read_vds(*reserve, strict=True)
+            or self._read_vds(*main, strict=False)
+            or self._read_vds(*reserve, strict=False)
+        )
+        if volume is None:
             raise IsoImageError("no logical volume descriptor")
+        self._partitions, lvd = volume
         block_size = _u32(lvd, 212)
         if block_size != SECTOR:
             raise IsoImageError(f"unsupported logical block size {block_size}")
         self.label = _udf_dstring(lvd[84:212])
 
-        meta_file_lb: int | None = None
+        metadata_map: tuple[int, int, int, int] | None = None
         nmaps = _u32(lvd, 268)
         offset = 440
         for _ in range(nmaps):
@@ -359,55 +495,100 @@ class _UdfReader:
             map_type, map_len = lvd[offset], lvd[offset + 1]
             if map_len == 0 or offset + map_len > len(lvd):
                 raise IsoImageError("invalid partition map length")
-            if map_type == 1:
-                if map_len < 6:
-                    raise IsoImageError("truncated type-1 partition map")
-                pnum = _u16(lvd, offset + 4)
-                self._maps.append((False, pnum))
-            elif map_type == 2:
-                if map_len < 44:
-                    raise IsoImageError("truncated type-2 partition map")
+            if map_type == 1 and map_len >= 6:
+                self._maps.append((_MAP_PHYSICAL, _u16(lvd, offset + 4)))
+            elif map_type == 2 and map_len >= 40:
                 ident = lvd[offset + 5 : offset + 28].rstrip(b"\0")
-                if ident != _UDF_METADATA_PARTITION:
-                    raise IsoImageError(f"unsupported partition map {ident!r}")
                 pnum = _u16(lvd, offset + 38)
-                meta_file_lb = _u32(lvd, offset + 40)
-                self._maps.append((True, pnum))
+                if ident == _UDF_METADATA_PARTITION and map_len >= 59:
+                    metadata_map = (
+                        pnum,
+                        _u32(lvd, offset + 40),
+                        _u32(lvd, offset + 44),
+                        lvd[offset + 58],
+                    )
+                    self._maps.append((_MAP_METADATA, pnum))
+                elif ident == _UDF_SPARABLE_PARTITION:
+                    # Sparing only relocates defective packets: read in place.
+                    self._maps.append((_MAP_PHYSICAL, pnum))
+                else:
+                    # A virtual (VAT) or unknown map: entries addressed
+                    # through it fail; the rest of the volume still reads.
+                    self._maps.append((_MAP_UNSUPPORTED, pnum))
             else:
-                raise IsoImageError(f"unknown partition map type {map_type}")
+                self._maps.append((_MAP_UNSUPPORTED, -1))
             offset += map_len
 
-        if meta_file_lb is not None:
-            pnum = next(p for is_meta, p in self._maps if is_meta)
-            part_start = self._part_start.get(pnum)
-            if part_start is None:
-                raise IsoImageError("UDF partition start not found")
-            fe_sector = part_start + meta_file_lb
-            fe = _read_sectors(self._f, fe_sector)
-            phys_ref = next(
-                (i for i, (m, p) in enumerate(self._maps) if not m and p == pnum), None
-            )
-            if phys_ref is None:
-                raise IsoImageError("metadata partition has no physical partition")
-            meta = self._parse_file_entry(
-                fe, phys_ref, "<metadata>", fe_sector * SECTOR
-            )
-            for run in meta.runs:
-                if run.offset is None:
-                    raise IsoImageError("sparse metadata file")
-                sector = run.offset // SECTOR - part_start
-                self._meta_runs.append((sector, run.length))
+        if metadata_map is not None:
+            self._map_metadata(*metadata_map)
 
         fsd_lb, fsd_part = _u32(lvd, 252), _u16(lvd, 256)
         fsd = self._read_block(fsd_part, fsd_lb)
+        if _udf_tag(fsd) != _TAG_FSD and self._mirror_runs:
+            fsd = _read_sectors(self._f, self._sector_of(fsd_part, fsd_lb, mirror=True))
         if _udf_tag(fsd) != _TAG_FSD:
             raise IsoImageError("bad file set descriptor")
         root_lb, root_part = _u32(fsd, 404), _u16(fsd, 408)
         return root_part, root_lb
 
+    def _map_metadata(
+        self, pnum: int, file_lb: int, mirror_lb: int, flags: int
+    ) -> None:
+        """Map the metadata partition onto its metadata file, or onto the
+        mirror when the metadata file's entry is unreadable (UDF 2.50
+        2.2.13; libudfread does the same). Unallocated spans are kept as
+        gaps, which the spec allows."""
+        partition = self._partitions.get(pnum)
+        if partition is None:
+            raise IsoImageError("UDF partition start not found")
+        phys_ref = next(
+            (
+                i
+                for i, (kind, p) in enumerate(self._maps)
+                if kind == _MAP_PHYSICAL and p == pnum
+            ),
+            None,
+        )
+        if phys_ref is None:
+            raise IsoImageError("metadata partition has no physical partition")
+        start = partition.start
+
+        def runs(lb: int) -> list[tuple[int | None, int]] | None:
+            sector = start + lb
+            try:
+                fe = _read_sectors(self._f, sector)
+                if _udf_tag(fe) not in (_TAG_FE, _TAG_EFE):
+                    return None
+                meta = self._parse_file_entry(
+                    fe, phys_ref, "<metadata>", sector * SECTOR
+                )
+            except IsoImageError:
+                return None
+            return [
+                (
+                    None if run.offset is None else run.offset // SECTOR - start,
+                    run.length,
+                )
+                for run in meta.runs
+            ]
+
+        main, mirror = runs(file_lb), runs(mirror_lb)
+        if main is None and mirror is None:
+            raise IsoImageError("metadata file and its mirror are unreadable")
+        if main is None:
+            self.skipped.append("<metadata>: metadata file unreadable; used its mirror")
+        self._meta_runs = main if main is not None else mirror or []
+        self._mirror_runs = mirror if main is not None and mirror else []
+        del flags  # either copy can be read whether or not it duplicates
+
     def _check_vrs(self) -> None:
-        for sector in range(16, 32):
-            ident = _read_sectors(self._f, sector)[1:6]
+        """An NSR descriptor in the volume recognition sequence, which runs
+        from sector 16 to the first blank sector (ECMA-167 2/8.3)."""
+        for sector in range(16, 256):
+            try:
+                ident = _read_sectors(self._f, sector)[1:6]
+            except IsoImageError:
+                break
             if ident in (b"NSR02", b"NSR03"):
                 return
             if ident == b"\0\0\0\0\0":
@@ -436,7 +617,9 @@ class _UdfReader:
         modified = _udf_timestamp(buf, mtime_off)
         is_dir = file_type == 4
         if alloc_type == 3:
-            return _UdfFile(is_dir, size, modified, (), ads[:size], fe_offset + start)
+            return _UdfFile(
+                is_dir, size, modified, (), ads[:size], fe_offset + start, file_type
+            )
         runs: list[IsoRun] = []
         for ext_part, lb, length, recorded in self._allocation_descriptors(
             ads, alloc_type, part, path
@@ -453,27 +636,42 @@ class _UdfReader:
             remaining -= run.length
         if remaining > 0:
             raise IsoImageError(f"{path}: allocation shorter than file size")
-        return _UdfFile(is_dir, size, modified, _merge_runs(trimmed), None, None)
+        return _UdfFile(
+            is_dir, size, modified, _merge_runs(trimmed), None, None, file_type
+        )
 
     def _allocation_descriptors(
         self, ads: bytes, alloc_type: int, part: int, path: str
     ) -> Iterator[tuple[int, int, int, bool]]:
+        # short_ad, long_ad, ext_ad (ECMA-167 4/14.14): length (top 2 bits
+        # the extent type), then the block, and the partition but in a
+        # short_ad; an ext_ad has recorded and information lengths between.
         if alloc_type == 0:
-            step = 8
+            step, lb_at, part_at = 8, 4, None
         elif alloc_type == 1:
-            step = 16
+            step, lb_at, part_at = 16, 4, 8
+        elif alloc_type == 2:
+            step, lb_at, part_at = 20, 12, 16
         else:
             raise IsoImageError(f"{path}: unsupported allocation type {alloc_type}")
+        first = True
         for _ in range(_MAX_ENTRIES):
             i = 0
             next_ads: bytes | None = None
             while i + step <= len(ads):
-                raw_len, lb = _u32(ads, i), _u32(ads, i + 4)
-                ext_part = part if step == 8 else _u16(ads, i + 8)
+                raw_len, lb = _u32(ads, i), _u32(ads, i + lb_at)
+                ext_part = part if part_at is None else _u16(ads, i + part_at)
                 length, ext_type = raw_len & 0x3FFFFFFF, raw_len >> 30
                 i += step
                 if length == 0:
+                    if first:
+                        # Copy protections add an empty first descriptor so
+                        # that readers find the file truncated; libdvdread
+                        # skips it (merge request !6).
+                        first = False
+                        continue
                     break
+                first = False
                 if ext_type == 3:
                     # Continuation: the rest of the descriptors live in an AED.
                     aed = self._read_block(ext_part, lb, -(-length // SECTOR))
@@ -489,9 +687,24 @@ class _UdfReader:
         raise IsoImageError(f"{path}: allocation extent chain too long")
 
     def _file_at(self, part: int, lb: int, path: str) -> _UdfFile:
-        sector = self._sector_of(part, lb)
-        buf = _read_sectors(self._f, sector)
-        return self._parse_file_entry(buf, part, path, sector * SECTOR)
+        """The file entry at block *lb*, following indirect entries (tag
+        259, ICB strategy 4096) and, in a metadata partition, reading the
+        metadata mirror when the metadata file's block holds no entry."""
+        for _ in range(_MAX_INDIRECT):
+            sector = self._sector_of(part, lb)
+            buf = _read_sectors(self._f, sector)
+            tag = _udf_tag(buf)
+            if tag not in (_TAG_FE, _TAG_EFE, _TAG_IE) and self._mirror_runs:
+                kind = self._maps[part][0] if part < len(self._maps) else ""
+                if kind == _MAP_METADATA:
+                    sector = self._sector_of(part, lb, mirror=True)
+                    buf = _read_sectors(self._f, sector)
+                    tag = _udf_tag(buf)
+            if tag != _TAG_IE:
+                return self._parse_file_entry(buf, part, path, sector * SECTOR)
+            # Indirect entry: the next ICB is the long_ad at byte 36.
+            lb, part = _u32(buf, 40), _u16(buf, 44)
+        raise IsoImageError(f"{path}: indirect entry chain too long")
 
     def _file_bytes(self, node: _UdfFile, path: str) -> bytes:
         if node.embedded is not None:
@@ -540,16 +753,16 @@ class _UdfReader:
         noted in ``skipped`` (with the reason), as libudfread does, rather
         than losing the whole tree; only an unreadable root is fatal."""
         entries: list[IsoEntry] = []
-        self.skipped = []
-        seen: set[tuple[int, int]] = set()
+        # Directories already walked, so a directory linked twice can't loop;
+        # a file linked under two names is listed under both.
+        seen_dirs: set[tuple[int, int]] = {self._root}
         stack: list[tuple[str, _UdfFile]] = [("", self._file_at(*self._root, ""))]
+        count = 0
         while stack:
             dir_path, node = stack.pop()
             for name, part, lb, child in self._readable_children(node, dir_path):
-                if (part, lb) in seen:
-                    continue
-                seen.add((part, lb))
-                _check_entry_count(len(seen))
+                count += 1
+                _check_entry_count(count)
                 path = f"{dir_path}/{name}" if dir_path else name
                 if child is None:
                     try:
@@ -558,7 +771,11 @@ class _UdfReader:
                         self.skipped.append(str(exc))
                         continue
                 if child.is_dir:
-                    stack.append((path, child))
+                    if (part, lb) not in seen_dirs:
+                        seen_dirs.add((part, lb))
+                        stack.append((path, child))
+                elif child.file_type in _SPECIAL_FILE_TYPES:
+                    continue
                 else:
                     runs = child.runs
                     if child.embedded_offset is not None and child.size:

@@ -595,6 +595,16 @@ class StreamType(Enum):
 
 
 @dataclass(frozen=True)
+class ClipSpan:
+    """The part of one appended clip a title plays, in seconds from the
+    clip's start, and the clip's whole length (what mkvmerge appends)."""
+
+    start: float
+    end: float
+    length: float
+
+
+@dataclass(frozen=True)
 class MasteringMetadata:
     """HDR10 static metadata (SMPTE ST 2086 plus MaxCLL/MaxFALL).
 
@@ -893,6 +903,10 @@ class Title:
     # (connection_condition 5/6). The muxer then trims each clip's trailing
     # audio frames so every track stays locked to the video across joins.
     seamless_connections: bool = False
+    # Per input clip, the part the playlist plays, when any clip is played
+    # only in part: the mux then keeps just those parts. Empty when every
+    # clip plays whole.
+    clip_spans: list[ClipSpan] = field(default_factory=list[ClipSpan])
     # MPLS playlist stem (e.g. "00800") this title was built from, for
     # edition labelling on seamless-branching discs. None for non-BD titles.
     playlist_name: str | None = None

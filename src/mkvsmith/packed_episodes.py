@@ -225,6 +225,7 @@ def split_packed_title(
                     if segment.start <= c < segment.end
                 ],
                 clip_durations=parent.clip_durations[first : last + 1],
+                clip_spans=parent.clip_spans[first : last + 1],
                 clip_sizes=sizes,
                 packed_segments=[],
                 packed_range=(segment.start - base, segment.end - base),

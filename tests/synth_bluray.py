@@ -309,8 +309,14 @@ class ClipStream:
         return struct.pack(">H", self.pid) + _block(body.ljust(5, b"\x00"))
 
 
-def clpi(streams: list[ClipStream]) -> bytes:
-    """A clip info file with one program holding *streams*."""
+def clpi(
+    streams: list[ClipStream], presentation: tuple[float, float] | None = None
+) -> bytes:
+    """A clip info file with one program holding *streams*.
+
+    *presentation* adds a SequenceInfo with one ATC and one STC sequence
+    (id 0) presented from start to end seconds (docs/formats/bluray.md).
+    """
     program_body = (
         bytes([0, 1])  # reserved, number of programs
         + struct.pack(">IHBB", 0, 0x0100, len(streams), 0)
@@ -318,8 +324,15 @@ def clpi(streams: list[ClipStream]) -> bytes:
     )
     program = struct.pack(">I", len(program_body)) + program_body
     program_pos = 40  # after the header and an empty ClipInfo
-    header = b"HDMV0200" + struct.pack(">IIIII", 0, program_pos, 0, 0, 0)
-    return header.ljust(program_pos, b"\x00") + program
+    sequence = b""
+    if presentation is not None:
+        start, end = (round(seconds * TICKS) for seconds in presentation)
+        sequence_body = bytes([0, 1]) + struct.pack(">IBB", 0, 1, 0)
+        sequence_body += struct.pack(">HIII", 0x1001, 0, start, end)
+        sequence = struct.pack(">I", len(sequence_body)) + sequence_body
+    sequence_pos = program_pos + len(program) if sequence else 0
+    header = b"HDMV0200" + struct.pack(">IIIII", sequence_pos, program_pos, 0, 0, 0)
+    return header.ljust(program_pos, b"\x00") + program + sequence
 
 
 def bdmt(name: str, lang: str = "eng") -> str:

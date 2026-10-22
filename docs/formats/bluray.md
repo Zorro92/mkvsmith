@@ -214,6 +214,48 @@ first source packet (4), number of STC sequences (1), STC id offset (1);
 per STC sequence: PCR PID (2), first source packet (4), presentation start
 and end time (4 each).
 
+A play item's in and out times count on its STC sequence's clock, so the
+part of the clip it plays is in − presentation start to out − presentation
+start (`bluray._parse_clpi_stc_spans`).
+
+### Clips played in part
+
+✔ real disc: on 7 retail Blu-rays, 4 had play items that play only part of
+a clip, mostly in menus and very short playlists. Two kinds reached titles
+mkvsmith lists:
+
+- **One clip in contiguous pieces:** a 7-minute playlist plays one clip
+  as 0–60 s, 60–120 s, … Appending a clip per play item muxed it once per
+  piece, 56 minutes in all. `scan._merge_contiguous_play_items` joins items
+  that continue the same clip (same STC id, next in time = last out time).
+- **Part of a long clip:** a 65-second extra plays 436.436–501.501 s of an
+  8.5-minute clip, then a 0.25-second clip. Appended whole, it came out
+  8.5 minutes.
+
+The reference behaviour joins contiguous pieces too (it lists that playlist
+at 7:00), but never cuts inside a clip: it lists the long clip itself, and
+gives a playlist that plays 1.6 minutes from two clips as their whole
+32:55. mkvsmith cuts, deliberately: `scan._clip_spans` records each
+clip's played part, and `mkv._clip_trim_plan` keeps only those with
+`--split parts:start-end,+start-end` over the appended clips (each clip
+at its whole length on mkvmerge's timeline). The title's chapters, on the
+playlist's timeline, are written afterwards with mkvpropedit: given to
+mkvmerge, they moved by −0.33 to +0.21 s across the joined parts.
+
+Two other ways were tried on the 65-second extra (✔ real disc):
+
+| | Length | Picture | Sync |
+|---|---|---|---|
+| playlist | 65.315 s | | |
+| `--split parts:` | 65.529 s | from the I-frame before the in time | in sync |
+| the `.mpls` given to mkvmerge | 65.323 s | about 1.3 s that doesn't decode, then late | badly out (heard) |
+
+Cuts inside a clip start on an I-frame with a recovery point SEI, not an
+IDR frame; that clip's IDR frames were 7.67 s before and 6.72 s after the in
+time (median gap 4 s, up to 62 s). Software decoders show the picture from
+the first frame; Android VLC and mpv with hardware decoding showed it only
+from the next IDR, 6 s in. mkvsmith's existing non-IDR start check warns.
+
 ### ProgramInfo (L `_parse_program`)
 
 From its start: length (4), reserved (1), number of programs (1); then per
@@ -366,10 +408,6 @@ ID and a 16-byte disc ID. `sound.bdmv` (`BCLK`) holds menu sound effects.
 
 ## Open parser mismatches
 
-- **PlayItem in/out times aren't honoured when muxing.** mkvmerge is given
-  whole clip files (`mkv.py`), so a PlayItem that uses part of a clip would
-  bring the rest along, and the chapters would drift. mkvmerge trims to
-  each PlayItem when given the playlist itself (KN 46.0, 48.0).
 - **Version `0240` is refused.** `_parse_clpi` accepts only versions
   `0100`, `0200` and `0300`, so a 3D disc's clip info merge does nothing.
   Its `HDBD` magic has no source.

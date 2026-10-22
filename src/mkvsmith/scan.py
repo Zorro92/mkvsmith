@@ -35,11 +35,13 @@ from dataclasses import dataclass, replace
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, final
+from collections.abc import Mapping, Sequence
 
 if TYPE_CHECKING:
     from mkvsmith.disc_reader import SourceType
 
 from mkvsmith.bluray import (
+    MplsPlayItem,
     MplsStreamInfo,
     _apply_stn_languages,
     _parse_bdmv_catalog_number,
@@ -88,6 +90,7 @@ from mkvsmith.models import (
     MKVMERGE_DOLBY_VISION_VERSION,
     mkvmerge_at_least,
     EditionAtom,
+    ClipSpan,
     EditionSpec,
     MasteringMetadata,
     StreamType,
@@ -878,6 +881,8 @@ def _build_combined_edition_title(
     combined.disc_name = first.disc_name
     combined.playlist_name = first.playlist_name
     combined.clip_durations = clip_union.durations
+    # Editions are cut by their own chapters over whole clips.
+    combined.clip_spans = []
     combined.clip_sizes = clip_union.sizes
     combined.estimated_size_bytes = sum(clip_union.sizes)
     combined.editions = editions
@@ -987,6 +992,7 @@ def _build_bluray_title_from_mpls(
     title.disc_name = disc_name
     title.playlist_name = mpls.stem
     title.clip_durations = [play_item["duration"] for play_item in info["play_items"]]
+    title.clip_spans = _clip_spans(info["play_items"])
     title.seamless_connections = has_seamless_connections(info["play_items"])
     try:
         title.clip_sizes = [clip_path.stat().st_size for clip_path in clip_paths]
@@ -1071,8 +1077,67 @@ def _compute_aacs_disc_id(source: Path) -> str | None:
         return None
 
 
+# Within this much (seconds) of a clip's ends, a play item counts as using
+# it from the start or to the end: about a frame, against rounding.
+_CLIP_EDGE_TOLERANCE = 0.05
+
+
+def _merge_contiguous_play_items(
+    play_items: list[MplsPlayItem],
+) -> list[MplsPlayItem]:
+    """Join play items that continue the same clip where the last one ended.
+
+    Some playlists play one clip as a run of pieces (0-60 s, 60-120 s, ...).
+    Appended per item, the whole clip would be muxed once per piece; joined,
+    it is muxed once, as the disc plays it (and as the reference behaviour
+    lists it).
+    """
+    merged: list[MplsPlayItem] = []
+    for item in play_items:
+        previous = merged[-1] if merged else None
+        if (
+            previous is not None
+            and previous["clip"] == item["clip"]
+            and previous.get("stc_id") == item.get("stc_id")
+            and abs(item["in_time"] - previous["out_time"]) <= 1
+        ):
+            joined: MplsPlayItem = {
+                **previous,
+                "out_time": item["out_time"],
+                "duration": previous["duration"] + item["duration"],
+            }
+            merged[-1] = joined
+        else:
+            merged.append(item)
+    return merged
+
+
+def _clip_spans(play_items: list[MplsPlayItem]) -> list[ClipSpan]:
+    """The part of each item's clip played, when any is only partly played.
+
+    Empty when every clip plays whole, or when a clip's presentation span
+    (from its CLPI) isn't known, so nothing is trimmed on a guess.
+    """
+    spans: list[ClipSpan] = []
+    partial = False
+    for item in play_items:
+        clip_span = item.get("clip_span")
+        if clip_span is None:
+            return []
+        clip_start, clip_end = clip_span
+        start = (item["in_time"] - clip_start) / 45000
+        end = (item["out_time"] - clip_start) / 45000
+        length = (clip_end - clip_start) / 45000
+        if start < 0 or end > length + _CLIP_EDGE_TOLERANCE or end <= start:
+            return []
+        if start > _CLIP_EDGE_TOLERANCE or end < length - _CLIP_EDGE_TOLERANCE:
+            partial = True
+        spans.append(ClipSpan(start, min(end, length), length))
+    return spans if partial else []
+
+
 def _playlist_clip_paths(
-    play_items: list[dict[str, Any]], stream_dir: Path
+    play_items: Sequence[Mapping[str, Any]], stream_dir: Path
 ) -> list[Path] | None:
     clip_paths: list[Path] = []
     for play_item in play_items:
@@ -1097,7 +1162,8 @@ def _scan_playlist_titles(
         if not playlist_info:
             continue
 
-        play_items = playlist_info["play_items"]
+        play_items = _merge_contiguous_play_items(playlist_info["play_items"])
+        playlist_info["play_items"] = play_items
         total_duration = sum(play_item["duration"] for play_item in play_items)
         if total_duration < minimum_duration:
             continue
@@ -1404,7 +1470,7 @@ def _first_iso_playlist_clpi(
 
 
 def _iso_clip_internals(
-    play_items: list[dict[str, Any]], m2ts_by_clip: dict[str, str]
+    play_items: Sequence[Mapping[str, Any]], m2ts_by_clip: dict[str, str]
 ) -> list[str]:
     clip_internals: list[str] = []
     for play_item in play_items:
@@ -1438,7 +1504,7 @@ def _build_iso_bluray_playlist_title(
         log_debug(f"MPLS parse failed for {playlist_path.name}")
         return None
 
-    play_items = playlist_info["play_items"]
+    play_items = _merge_contiguous_play_items(playlist_info["play_items"])
     total_duration = sum(play_item["duration"] for play_item in play_items)
     if total_duration < minimum_duration:
         return None
@@ -1471,6 +1537,8 @@ def _build_iso_bluray_playlist_title(
     )
     title.playlist_name = playlist_path.stem
     title.clip_durations = [play_item["duration"] for play_item in play_items]
+    if len(clip_internals) == len(play_items):
+        title.clip_spans = _clip_spans(play_items)
     title.clip_sizes = [sizes.get(internal_path, 0) for internal_path in clip_internals]
     title.seamless_connections = has_seamless_connections(play_items)
     return title

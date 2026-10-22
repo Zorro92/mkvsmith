@@ -1536,6 +1536,10 @@ def _prepare_seamless_append(
     """
     if not title.seamless_connections or len(inputs) < 2:
         return None
+    if title.clip_spans:
+        # Clips cut in part are joined by the split's own cuts, not at their
+        # tails.
+        return None
     if not _is_bluray_clip_append(inputs):
         return None
     pids = _seamless_audio_pids(mapped)
@@ -1767,6 +1771,7 @@ def _build_mkvmerge_command(
     verbose: bool = False,
     track_append: bool = False,
     preferred_languages: Sequence[str] = (),
+    trim: _ClipTrimPlan | None = None,
 ) -> list[str]:
     cmd: list[str] = (
         ["mkvmerge"]
@@ -1788,12 +1793,23 @@ def _build_mkvmerge_command(
         # clip; the real edition chapters are written after the mux (see
         # _apply_retimed_edition_chapters).
         cmd += ["--generate-chapters", "when-appending"]
-    else:
+    elif trim is None:
         chapters_file = _create_chapters_file(title, cleanup, temp_files)
         if chapters_file is not None:
             cmd += ["--chapters", str(chapters_file)]
 
-    if title.packed_range is not None:
+    if trim is not None:
+        # Clips played in part: keep only the played parts, joined. Each cut
+        # starts at the keyframe before it (docs/formats/bluray.md).
+        cmd += [
+            "--split",
+            "parts:"
+            + ",+".join(
+                f"{_mkvmerge_timestamp(start)}-{_mkvmerge_timestamp(end)}"
+                for start, end in trim.ranges
+            ),
+        ]
+    elif title.packed_range is not None:
         # One episode out of a packed playlist: keep just its time range of
         # the (appended) input clips. A single range writes to the -o name.
         start, end = title.packed_range
@@ -2112,6 +2128,87 @@ def _create_chapters_file(
 # shows black. The mux therefore records the true append offsets as
 # placeholder chapters, and the edition atoms are remapped onto them.
 _RETIME_EPS = 1e-6
+
+
+@dataclass(frozen=True)
+class _ClipTrimPlan:
+    """What to keep of a title's appended clips when some are played in part.
+
+    *ranges* are on mkvmerge's appended timeline (each clip's whole length
+    after the previous one), for ``--split parts:``; *chapters* are on the
+    output's timeline, written after the mux (mkvmerge shifts chapters
+    unevenly across joined parts).
+    """
+
+    ranges: list[tuple[float, float]]
+    chapters: list[float]
+
+
+def _clip_trim_plan(title: Title, dropped: Sequence[int] = ()) -> _ClipTrimPlan | None:
+    """The parts of the clips to keep, or None when every clip plays whole.
+
+    The title's own timeline (its chapters, a packed episode's range) is the
+    playlist's: each clip contributes only its played part. *dropped* clips
+    (left out of the append) contribute nothing.
+    """
+    spans = title.clip_spans
+    if not spans:
+        return None
+    played = sum(span.end - span.start for span in spans)
+    window_start, window_end = title.packed_range or (0.0, played)
+    skipped = set(dropped)
+    ranges: list[tuple[float, float]] = []
+    # (title start, title end, output start) of each kept part, to place
+    # the chapters.
+    parts: list[tuple[float, float, float]] = []
+    title_time = appended = output = 0.0
+    for index, span in enumerate(spans):
+        length = span.end - span.start
+        if index not in skipped:
+            begin = max(window_start, title_time)
+            end = min(window_end, title_time + length)
+            if end > begin:
+                source = appended + span.start - title_time
+                if ranges and abs(ranges[-1][1] - (source + begin)) < _RETIME_EPS:
+                    ranges[-1] = (ranges[-1][0], source + end)
+                else:
+                    ranges.append((source + begin, source + end))
+                parts.append((begin, end, output))
+                output += end - begin
+            appended += span.length
+        title_time += length
+    chapters = [
+        output_start + chapter - begin
+        for chapter in title.chapters
+        for begin, end, output_start in parts
+        if begin <= chapter < end
+    ]
+    if chapters and chapters[-1] >= output - 0.5:
+        chapters = chapters[:-1]  # an end-of-title chapter
+    return _ClipTrimPlan(ranges, chapters)
+
+
+def _apply_trimmed_chapters(
+    out_file: Path, title: Title, chapters: list[float], temp_files: list[Path]
+) -> None:
+    """Write a trimmed title's chapters onto its output's timeline."""
+    if not chapters:
+        return
+    chapters_file = Path(tempfile.NamedTemporaryFile(suffix=".xml", delete=False).name)
+    temp_files.append(chapters_file)
+    _write_chapters_xml(chapters, chapters_file)
+    try:
+        proc = _run_mkvtoolnix(
+            ["mkvpropedit", str(out_file), "--chapters", str(chapters_file)]
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise RipError(message=f"mkvpropedit failed: {exc}", title=title) from exc
+    if proc.returncode not in (0, 1):
+        raise RipError(
+            message=f"mkvpropedit failed ({proc.returncode})",
+            stderr=(proc.stdout or "") + (proc.stderr or ""),
+            title=title,
+        )
 
 
 def _uses_retimed_edition_chapters(title: Title, inputs: list[Path]) -> bool:
@@ -2757,6 +2854,7 @@ class MKVCreator:
         metadata: MovieMetadata | None,
         art_attachments: list[ArtAttachment],
         retime_dropped_inputs: list[int] | None = None,
+        trimmed_chapters: list[float] | None = None,
         fix_source_id_statistics: bool = False,
     ) -> Path:
         """Run the mux and finalise the output.
@@ -2796,6 +2894,10 @@ class MKVCreator:
         if retime_dropped_inputs is not None:
             _apply_retimed_edition_chapters(
                 out_file, title, retime_dropped_inputs, self.cleanup.temp_files
+            )
+        elif trimmed_chapters is not None:
+            _apply_trimmed_chapters(
+                out_file, title, trimmed_chapters, self.cleanup.temp_files
             )
         if fix_source_id_statistics:
             _apply_source_id_statistics_fix(out_file, self.cleanup.temp_files)
@@ -2846,6 +2948,7 @@ class MKVCreator:
             )
             if seamless_inputs is not None:
                 kept_inputs = seamless_inputs
+            trim = _clip_trim_plan(title, dropped_inputs)
             command = _build_mkvmerge_command(
                 title,
                 out_file,
@@ -2863,6 +2966,7 @@ class MKVCreator:
                 verbose=self.config.debug,
                 track_append=seamless_inputs is not None,
                 preferred_languages=self.config.preferred_languages,
+                trim=trim,
             )
             return self._execute_mux(
                 title,
@@ -2876,6 +2980,7 @@ class MKVCreator:
                     if _uses_retimed_edition_chapters(title, kept_inputs)
                     else None
                 ),
+                trimmed_chapters=trim.chapters if trim is not None else None,
                 fix_source_id_statistics="--tags" in command
                 or any(
                     _source_id_for_stream(stream, title) is not None

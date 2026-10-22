@@ -389,3 +389,70 @@ def test_the_dolby_vision_layer_is_part_of_the_base_video(tmp_path: Path) -> Non
     assert videos[0].mastering == info["static_hdr"]
     assert videos[0].dynamic_range_display == "Dolby Vision"
     assert "Dolby Vision" in _video_stream_line(videos[0])
+
+
+# --- clips played in part ---------------------------------------------------------
+
+
+def _bdmv(tmp_path: Path, items: list[PlayItem], clips: dict[str, float]) -> Path:
+    """A BDMV playlist plus CLPIs presenting each clip from 0 to its length."""
+    clipinf = tmp_path / "CLIPINF"
+    clipinf.mkdir()
+    for name, length in clips.items():
+        (clipinf / f"{name}.clpi").write_bytes(
+            clpi([ClipStream(0x1011, H264)], presentation=(0.0, length))
+        )
+    return _write(tmp_path, "00100.mpls", mpls(items, chapters=[]))
+
+
+def test_play_items_carry_their_clips_presentation_span(tmp_path: Path) -> None:
+    playlist = _bdmv(tmp_path, [PlayItem("00001", 10, 70)], {"00001": 600})
+
+    info = _parse_mpls(playlist, clpi_dir=tmp_path / "CLIPINF")
+
+    assert info is not None
+    item = info["play_items"][0]
+    assert item.get("stc_id") == 0
+    assert item.get("clip_span") == (0, 600 * 45000)
+
+
+def test_a_clip_played_in_contiguous_pieces_is_muxed_once(tmp_path: Path) -> None:
+    from mkvsmith.scan import _clip_spans, _merge_contiguous_play_items
+
+    pieces = [PlayItem("00001", start, start + 60) for start in range(0, 420, 60)]
+    playlist = _bdmv(tmp_path, pieces, {"00001": 420})
+    info = _parse_mpls(playlist, clpi_dir=tmp_path / "CLIPINF")
+    assert info is not None
+
+    merged = _merge_contiguous_play_items(info["play_items"])
+
+    assert [(item["clip"], item["duration"]) for item in merged] == [("00001", 420.0)]
+    assert _clip_spans(merged) == []  # played whole: nothing to trim
+
+
+def test_a_clip_played_in_part_gets_a_span(tmp_path: Path) -> None:
+    from mkvsmith.scan import _clip_spans, _merge_contiguous_play_items
+
+    items = [PlayItem("00001", 436.436, 501.501), PlayItem("00002", 0, 0.25)]
+    playlist = _bdmv(tmp_path, items, {"00001": 509.842667, "00002": 0.25})
+    info = _parse_mpls(playlist, clpi_dir=tmp_path / "CLIPINF")
+    assert info is not None
+
+    spans = _clip_spans(_merge_contiguous_play_items(info["play_items"]))
+
+    assert [
+        (round(x.start, 3), round(x.end, 3), round(x.length, 3)) for x in spans
+    ] == [
+        (436.436, 501.501, 509.843),
+        (0.0, 0.25, 0.25),
+    ]
+
+
+def test_without_clip_info_nothing_is_trimmed(tmp_path: Path) -> None:
+    from mkvsmith.scan import _clip_spans
+
+    info = _parse_mpls(
+        _write(tmp_path, "00100.mpls", mpls([PlayItem("00001", 10, 70)], chapters=[]))
+    )
+    assert info is not None
+    assert _clip_spans(info["play_items"]) == []

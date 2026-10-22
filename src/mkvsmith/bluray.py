@@ -363,6 +363,54 @@ def _parse_clpi(data: bytes) -> dict[int, dict[str, Any]]:
     return result
 
 
+def _parse_clpi_stc_spans(data: bytes) -> dict[int, tuple[int, int]]:
+    """Presentation (start, end) of each STC sequence, 45 kHz, by STC id.
+
+    CLPI SequenceInfo (libbluray ``_parse_sequence``; docs/formats/bluray.md):
+    length (4), reserved (1), number of ATC sequences (1); per ATC sequence
+    its first source packet (4), STC count (1) and first STC id (1); per STC
+    sequence its PCR PID (2), first source packet (4), presentation start
+    and end (4 each). Empty when unreadable.
+    """
+    spans: dict[int, tuple[int, int]] = {}
+    if len(data) < 12 or data[:4] != b"HDMV":
+        return spans
+    position = _read_u32(data, 8)
+    if position + 6 > len(data):
+        return spans
+    atc_count = data[position + 5]
+    position += 6
+    for _ in range(atc_count):
+        if position + 6 > len(data):
+            break
+        stc_count, stc_id = data[position + 4], data[position + 5]
+        position += 6
+        for _ in range(stc_count):
+            if position + 14 > len(data):
+                return spans
+            spans[stc_id] = (
+                _read_u32(data, position + 6),
+                _read_u32(data, position + 10),
+            )
+            stc_id += 1
+            position += 14
+    return spans
+
+
+def _clip_stc_spans(
+    clpi_dir: Path, clip: str, cache: dict[str, dict[int, tuple[int, int]]]
+) -> dict[int, tuple[int, int]]:
+    if clip not in cache:
+        cache[clip] = {}
+        for path in (clpi_dir / f"{clip}.clpi", clpi_dir / f"{clip}.CLPI"):
+            try:
+                cache[clip] = _parse_clpi_stc_spans(path.read_bytes())
+                break
+            except OSError:
+                continue
+    return cache[clip]
+
+
 def _parse_clpi_file(clpi_path: Path) -> dict[int, dict[str, Any]]:
     """Read and parse a .clpi file on disk.  Returns PID->info dict."""
     try:
@@ -572,6 +620,12 @@ class MplsPlayItem(TypedDict):
     # ``connection_condition``): 1 = non-seamless, 5 = seamless with an
     # ATC/STC discontinuity, 6 = seamless on a continuous STC.
     connection_condition: int
+    # The STC sequence of the clip that in/out times count on.
+    stc_id: NotRequired[int]
+    # That sequence's presentation start and end (45 kHz), from the clip's
+    # CLPI SequenceInfo, when it was readable: the whole clip plays from
+    # start to end, so in/out times inside it mean only part is used.
+    clip_span: NotRequired[tuple[int, int]]
 
 
 class MplsSubPlayItem(TypedDict):
@@ -933,6 +987,7 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
         num_playitems = _read_u16(data, playlist_start + 6)
         pos = playlist_start + 10
         play_items: list[MplsPlayItem] = []
+        stc_cache: dict[str, dict[int, tuple[int, int]]] = {}
         audio_langs: list[str] = []
         subtitle_langs: list[str] = []
         stn_data = b""
@@ -959,15 +1014,19 @@ def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | No
             stn_off = 32
             if is_multi_angle:
                 stn_off = 32 + 2 + max(0, item[32] - 1) * 10
-            play_items.append(
-                {
-                    "clip": clip_name,
-                    "duration": duration,
-                    "in_time": in_time,
-                    "out_time": out_time,
-                    "connection_condition": connection_condition,
-                }
-            )
+            play_item: MplsPlayItem = {
+                "clip": clip_name,
+                "duration": duration,
+                "in_time": in_time,
+                "out_time": out_time,
+                "connection_condition": connection_condition,
+                "stc_id": item[11],
+            }
+            if clpi_dir is not None:
+                span = _clip_stc_spans(clpi_dir, clip_name, stc_cache).get(item[11])
+                if span is not None:
+                    play_item["clip_span"] = span
+            play_items.append(play_item)
             signature = _stn_signature(item[stn_off:])
             if i == 0:
                 stn_data = item[stn_off:]

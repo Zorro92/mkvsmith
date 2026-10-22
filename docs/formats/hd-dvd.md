@@ -233,17 +233,35 @@ must be sorted, and mkvmerge hands them out by its own frame order, so
 the wrong frames get them (a frame two places late, the timer stepping
 back). mkvsmith therefore rewrites the finished MKV's VC-1 block times
 in place (`vc1time.py`, `mkvtimes.py`). VC-1 in Matroska is VfW mode,
-where block times rise in file order and the decoder adds the reorder
-delay, so the sorted times go to the blocks in file order. Each EVO's
-times are lined up with its run of blocks by the median offset from
-mkvmerge's times: right on all but a few frames, though mkvmerge's
-cadence is often a field (16.7 ms) out of phase with the decoder's. ✔
-real discs: on two features (two EVOs each, 156,382 and 166,621 frames)
-every step between block times becomes 33–34 or 50–51 ms, from 110
-duplicates and 37 holes on one and 1,708 bad steps (some backwards) on
-the other; keyframes keep mkvmerge's times except where it had stored
-times out of order, every cue still matches its block, and the stutter
-is gone.
+where block times rise in file order and a decoder shows each frame at
+the time of the block after it (✔ the decoder's output stamps are the
+next block's time), so block *i* gets the presentation time of frame
+*i* − 1 and the first block repeats the first. mkvmerge times Blu-ray
+VC-1 that way (✔ real disc: an M2TS that stamps every frame comes out
+`0, 0, 42, 83, …` ms, each frame on its PTS). On HD DVD it puts an
+EVO's first frame on its PTS (✔ real disc, with the audio at 0), but
+every later frame shows 150–167 ms late, and its cadence is often a
+field (16.7 ms) out of phase. Read as one stream at a seamless join, the
+second EVO's first PTS goes to the block before its first frame (✔ real
+disc: the time is right to the millisecond, one block early). So the
+first EVO's times start at mkvmerge's time for its first block, and an
+EVO that carries on the previous one's clock (its first PTS within
+0.5 s after the previous EVO's last frame) starts where the PTSs put it;
+any other EVO starts at its first block. The median offset from
+mkvmerge's times only checks that the cadence agrees.
+
+An EVO can end on a skipped frame, 5 bytes with nothing after it (✔ real
+disc), so the frame count includes a last frame shorter than a full
+header.
+
+✔ real discs, measured against the disc clock (each frame shown at the
+next block's time, against its PTS-derived time): on three features (two
+EVOs each, 156,382, 166,621 and 189,337 frames) every frame lands on the
+clock to the millisecond and every step between block times becomes
+33–34 or 50–51 ms, from 110 duplicates and 37 holes on one, 1,708 bad
+steps (some backwards) on another and 33 on the third. Every cue still
+matches its block, and the stutter is gone. The audio's first block
+lands within 10 ms of where the stream start times put it.
 
 ### Sources disagree
 
@@ -294,8 +312,9 @@ DTS-HD, 7 DD+. DVD has LPCM at 4.
   3313.143 s). A clip after a missing one is appended as before.
 - **VC-1 frame times:** rewritten after the mux when the EVOs' frame
   count matches the MKV's VC-1 blocks and at least 90% of the frames lie
-  within 20 ms of mkvmerge's times; otherwise mkvmerge's times stay, with
-  a warning. Not done for a cut (`--split`) mux.
+  within 20 ms of mkvmerge's times (after the median offset), and each
+  EVO's first block lies within 0.5 s of that offset; otherwise
+  mkvmerge's times stay, with a warning. Not done for a cut (`--split`) mux.
 - **Track matching:** audio of a codec outside DD+, MLP and DTS-HD, and
   video, are matched to mkvmerge's tracks by position within each type.
 - **Unused fields:** chapter `displayName` and `selectable` aren't read.

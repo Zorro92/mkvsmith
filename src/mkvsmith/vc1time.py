@@ -12,8 +12,11 @@ So the times are rebuilt here from the frame headers (SMPTE 421M advanced
 profile: frame type, RFF / RPTFRM) and written over the finished MKV's
 block timestamps in place (``mkvtimes``). VC-1 in Matroska uses the VfW
 mode, where block timestamps rise in storage order (the decoder adds the
-reorder delay), so the sorted presentation times are assigned to the
-blocks in file order. See docs/formats/hd-dvd.md.
+reorder delay): a decoder shows each frame at the time of the block
+after it, so block *i* gets the presentation time of frame *i - 1* and
+the first block repeats the first, as mkvmerge times Blu-ray VC-1. Each
+EVO's times hang off mkvmerge's time for its first frame, which carries
+the EVO's first PTS. See docs/formats/hd-dvd.md.
 """
 
 from __future__ import annotations
@@ -52,10 +55,25 @@ _MAX_MISSES = 0.01
 # the decoder's, while a frame out of line is 33 ms or more off.
 _AGREE_MS = 20.0
 _MIN_AGREEMENT = 0.9
+# mkvmerge's time for an EVO's first frame anchors the EVO; its other
+# frames run a few frames late (~150 ms), so a first frame further than
+# this from that run means the anchor isn't the frame it should be.
+_MAX_ANCHOR_MS = 500.0
+# An EVO whose first PTS lands this close after the previous EVO's last
+# frame carries on its clock (a seamless join, read as one stream).
+_CLOCK_JOIN_MS = 500.0
 
 
 class FrameTimingError(ValueError):
     """The EVO frames can't be lined up with the MKV's; nothing was changed."""
+
+
+@dataclass(frozen=True, slots=True)
+class EvoFrameTimes:
+    """An EVO's first PTS and its frames' sorted times from it (90 kHz)."""
+
+    first_pts: int
+    times: list[float]
 
 
 @dataclass(slots=True)
@@ -214,6 +232,11 @@ class _FrameParser:
         self._buffer += payload
         self._parse()
 
+    def finish(self) -> None:
+        """Read the last frame, which can be shorter than a full header."""
+        self._buffer += bytes(_HEADER_BYTES)
+        self._parse()
+
     def _parse(self) -> None:
         buffer = self._buffer
         cursor = 0
@@ -281,6 +304,7 @@ def _scan_frames(path: Path) -> tuple[list[_Frame], _Sequence | None]:
                 pack = following
             else:
                 pack = data.find(_PACK_START, pack + 4)
+    parser.finish()
     return parser.frames, parser.sequence
 
 
@@ -300,7 +324,7 @@ def _presentation_order(frames: Sequence[_Frame]) -> list[_Frame]:
     return shown
 
 
-def evo_frame_times(path: Path) -> list[float] | None:
+def evo_frame_times(path: Path) -> EvoFrameTimes | None:
     """Sorted presentation times (90 kHz ticks) of an EVO's VC-1 frames.
 
     Times count from the file's first PTS, which is where mkvmerge starts
@@ -334,31 +358,33 @@ def evo_frame_times(path: Path) -> list[float] | None:
     )
     if misses > _MAX_MISSES * stamped:
         return None
-    return sorted(times)
+    return EvoFrameTimes(first, sorted(times))
 
 
 def correct_vc1_frame_times(mkv_path: Path, evo_paths: Sequence[Path]) -> int | None:
     """Rewrite *mkv_path*'s VC-1 block times from its source EVOs.
 
-    *evo_paths* are the files muxed, in order. Each file's frames are
-    lined up with its run of blocks by the median offset from mkvmerge's
-    own times, which are right for all but a few frames. Returns the
-    number of blocks changed, ``None`` when there is no VC-1 track, and
-    raises ``FrameTimingError`` (leaving the file alone) when the frames
-    don't line up.
+    *evo_paths* are the files muxed, in order. Each file's frames start at
+    mkvmerge's time for its first block (the frame with its first PTS),
+    or where its PTSs put it when it carries on the previous file's
+    clock, after checking that their cadence matches mkvmerge's own times, which
+    are right for most frames but run late. Returns the number of blocks
+    changed, ``None`` when there is no VC-1 track, and raises
+    ``FrameTimingError`` (leaving the file alone) when the frames don't
+    line up.
     """
     track = read_track_times(mkv_path, is_vc1_track)
     if track is None:
         return None
-    per_file: list[list[float]] = []
+    per_file: list[EvoFrameTimes] = []
     for path in evo_paths:
-        times = evo_frame_times(path)
-        if times is None:
+        evo = evo_frame_times(path)
+        if evo is None:
             raise FrameTimingError(
                 tr("could not read the frame cadence of {name}", name=path.name)
             )
-        per_file.append(times)
-    total = sum(len(times) for times in per_file)
+        per_file.append(evo)
+    total = sum(len(evo.times) for evo in per_file)
     if total != len(track.blocks):
         raise FrameTimingError(
             tr(
@@ -367,14 +393,17 @@ def correct_vc1_frame_times(mkv_path: Path, evo_paths: Sequence[Path]) -> int | 
                 blocks=len(track.blocks),
             )
         )
-    units_per_tick = 1e9 / _TICKS_PER_SECOND / track.timestamp_scale
-    agree = _AGREE_MS * 1e6 / track.timestamp_scale
-    corrected: list[int] = []
+    units_per_ms = 1e6 / track.timestamp_scale
+    units_per_tick = 1000 * units_per_ms / _TICKS_PER_SECOND
+    agree = _AGREE_MS * units_per_ms
+    shown: list[float] = []
     start = 0
-    for times in per_file:
-        muxed = sorted(block.time for block in track.blocks[start : start + len(times)])
-        start += len(times)
-        ours = [tick * units_per_tick for tick in times]
+    previous: tuple[EvoFrameTimes, float] | None = None  # with its anchor
+    for path, evo in zip(evo_paths, per_file):
+        run = track.blocks[start : start + len(evo.times)]
+        start += len(evo.times)
+        muxed = sorted(block.time for block in run)
+        ours = [tick * units_per_tick for tick in evo.times]
         offsets = sorted(mine - theirs for mine, theirs in zip(muxed, ours))
         offset = offsets[len(offsets) // 2]
         agreeing = sum(
@@ -388,6 +417,28 @@ def correct_vc1_frame_times(mkv_path: Path, evo_paths: Sequence[Path]) -> int | 
                     frames=len(ours),
                 )
             )
-        corrected.extend(round(theirs + offset) for theirs in ours)
-    corrected.sort()
+        anchor = float(run[0].time)
+        if previous is not None:
+            # On a shared clock the PTSs place the EVO exactly; mkvmerge's
+            # frame at the join can be a block off.
+            before, before_anchor = previous
+            on_clock = (
+                before_anchor
+                + (evo.first_pts - before.first_pts) % _PTS_MODULO * units_per_tick
+            )
+            if 0 <= on_clock - shown[-1] <= _CLOCK_JOIN_MS * units_per_ms:
+                anchor = on_clock
+        if abs(offset - anchor) > _MAX_ANCHOR_MS * units_per_ms:
+            raise FrameTimingError(
+                tr(
+                    "mkvmerge starts the frames of {name} {ms} ms away from the rest",
+                    name=path.name,
+                    ms=round((anchor - offset) / units_per_ms),
+                )
+            )
+        shown.extend(anchor + time for time in ours)
+        previous = evo, anchor
+    shown.sort()
+    # Each block carries the time of the frame shown before it.
+    corrected = [round(time) for time in shown[:1] + shown[:-1]]
     return write_block_times(mkv_path, track, corrected)

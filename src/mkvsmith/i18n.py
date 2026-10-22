@@ -61,6 +61,9 @@ _ES: dict[str, str] = {
     "only {agreeing} of {frames} frame times agree with mkvmerge's": (
         "solo {agreeing} de {frames} tiempos de fotograma coinciden con los de mkvmerge"
     ),
+    "mkvmerge starts the frames of {name} {ms} ms away from the rest": (
+        "mkvmerge empieza los fotogramas de {name} a {ms} ms del resto"
+    ),
     "This disc has Dolby Vision, which needs mkvmerge {minimum} or newer to mux as one video track; update MKVToolNix": "Este disco tiene Dolby Vision, que necesita mkvmerge {minimum} o posterior para multiplexarse como una sola pista de vídeo; actualiza MKVToolNix",
     "A source path is required": "Se requiere una ruta de origen",
     "Run with -h to see usage, e.g. script.py /path/to/media": "Ejecuta con -h para ver el uso, p. ej. script.py /ruta/al/medio",

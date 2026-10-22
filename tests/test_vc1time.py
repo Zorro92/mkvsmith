@@ -160,7 +160,20 @@ def test_evo_frame_times_follow_the_cadence(tmp_path: Path) -> None:
     expected = _write_evo(evo, gops=4)
     times = evo_frame_times(evo)
     assert times is not None
-    assert times == pytest.approx(expected, abs=1)
+    assert times.first_pts == 900_000
+    assert times.times == pytest.approx(expected, abs=1)
+
+
+def test_evo_frame_times_count_a_short_last_frame(tmp_path: Path) -> None:
+    evo = tmp_path / "a.evo"
+    expected = _write_evo(evo, gops=2)
+    # A skipped frame is 5 bytes; at the end of the EVO nothing follows it.
+    skipped = b"\x00\x00\x01\x0d" + _frame_header("S", 0)[:1]
+    with evo.open("ab") as handle:
+        handle.write(_pack(_pes(skipped, None)))
+    times = evo_frame_times(evo)
+    assert times is not None
+    assert len(times.times) == len(expected) + 1
 
 
 def test_evo_frame_times_refuse_a_cadence_off_the_pts(tmp_path: Path) -> None:
@@ -281,9 +294,10 @@ def test_correct_vc1_frame_times_fixes_mkvmerges_chapter_glitch(
     evo = tmp_path / "a.evo"
     expected = _write_evo(evo, gops=6)
     right = [round(tick / 90) for tick in expected]
-    # mkvmerge's times: 40 ms after the EVO's zero, with two frames after
-    # a GOP start given the time before them (duplicates, then a hole).
-    muxed = [time + 40 for time in right]
+    # mkvmerge's times: the first frame at its PTS (40 ms in), the rest
+    # 150 ms late, and two frames after a GOP start given the time before
+    # them (duplicates, then a hole).
+    muxed = [40] + [time + 190 for time in right[1:]]
     muxed[8] = muxed[7]
     muxed[9] = muxed[8]
     path = tmp_path / "a.mkv"
@@ -291,10 +305,10 @@ def test_correct_vc1_frame_times_fixes_mkvmerges_chapter_glitch(
     assert correct_vc1_frame_times(path, [evo]) is not None
     after = read_track_times(path, is_vc1_track)
     assert after is not None
-    # Within the millisecond rounding of the fractional median offset.
-    assert [block.time for block in after.blocks] == pytest.approx(
-        [time + 40 for time in right], abs=1
-    )
+    # Each block carries the time of the frame shown before it.
+    assert [block.time for block in after.blocks] == [
+        time + 40 for time in right[:1] + right[:-1]
+    ]
 
 
 def test_correct_vc1_frame_times_lines_up_appended_files(tmp_path: Path) -> None:
@@ -308,7 +322,46 @@ def test_correct_vc1_frame_times_lines_up_appended_files(tmp_path: Path) -> None
     correct_vc1_frame_times(path, [first, second])
     after = read_track_times(path, is_vc1_track)
     assert after is not None
-    assert [block.time for block in after.blocks] == muxed
+    assert [block.time for block in after.blocks] == muxed[:1] + muxed[:-1]
+
+
+def test_correct_vc1_frame_times_puts_a_clock_join_on_the_clock(
+    tmp_path: Path,
+) -> None:
+    first, second = tmp_path / "a.evo", tmp_path / "b.evo"
+    times_a = [round(t / 90) for t in _write_evo(first, gops=3)]
+    # The second EVO carries on the first's clock, 3 GOPs of 17 fields on.
+    end = round(3 * sum(2 + rff for _kind, rff in _GOP) * _FIELD)
+    times_b = [
+        round((end + t) / 90)
+        for t in _write_evo(second, gops=3, first_pts=900_000 + end)
+    ]
+    # mkvmerge runs late and gives the join's frame time to the block
+    # before it.
+    muxed = [0] + [time + 40 for time in times_a[1:-1]] + times_b[:1]
+    muxed += [time + 40 for time in times_b]
+    path = tmp_path / "a.mkv"
+    _write_mkv(path, muxed)
+    correct_vc1_frame_times(path, [first, second])
+    after = read_track_times(path, is_vc1_track)
+    assert after is not None
+    right = times_a + times_b
+    assert [block.time for block in after.blocks] == right[:1] + right[:-1]
+
+
+def test_correct_vc1_frame_times_refuses_a_first_frame_off_the_rest(
+    tmp_path: Path,
+) -> None:
+    evo = tmp_path / "a.evo"
+    right = [round(t / 90) for t in _write_evo(evo, gops=3)]
+    # The first block 2 s before every other frame: not the EVO's first.
+    muxed = [0] + [time + 2000 for time in right[1:]]
+    path = tmp_path / "a.mkv"
+    _write_mkv(path, muxed)
+    before = path.read_bytes()
+    with pytest.raises(FrameTimingError):
+        correct_vc1_frame_times(path, [evo])
+    assert path.read_bytes() == before
 
 
 def test_correct_vc1_frame_times_refuses_a_frame_count_mismatch(

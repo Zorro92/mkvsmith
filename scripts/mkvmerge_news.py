@@ -2,12 +2,13 @@
 
 Run from the project root:
 
-    uv run python scripts/mkvmerge_news.py [--news NEWS.md] [--since vN.M] [--all]
+    uv run python scripts/mkvmerge_news.py [--git] [--news NEWS.md] [--since vN.M] [--all]
 
 Reads the version docs/formats/mkvmerge.md was last reviewed against (its
-"Changelog reviewed through: vN.M" line), fetches MKVToolNix's NEWS.md (or
-reads a local copy with --news), and prints every mkvmerge entry of each
-newer release. Entries that touch something mkvsmith depends on or works
+"Changelog reviewed through: vN.M" line), fetches MKVToolNix's NEWS.md
+from mkvtoolnix.download (with --git, from the main branch on Codeberg,
+which also has the changes merged for the next release; or a local copy
+with --news), and prints every mkvmerge entry of each newer release. Entries that touch something mkvsmith depends on or works
 around are marked with *, the rest are listed for completeness; --all also
 shows the entries for the other MKVToolNix programs. Afterwards, check the
 marked entries against docs/formats/mkvmerge.md, run
@@ -25,10 +26,13 @@ import sys
 import urllib.request
 from pathlib import Path
 
-NEWS_URL = "https://www.bunkus.org/videotools/mkvtoolnix/doc/NEWS.md"
+NEWS_URL = "https://mkvtoolnix.download/doc/NEWS.md"
+GIT_NEWS_URL = "https://codeberg.org/mbunkus/mkvtoolnix/raw/branch/main/NEWS.md"
+# The main branch heads its unreleased changes "# Version ?".
+_UNRELEASED = (1 << 30, 0)
 _DOC = Path(__file__).resolve().parent.parent / "docs" / "formats" / "mkvmerge.md"
 _REVIEWED = re.compile(r"Changelog reviewed through: v(\d+)\.(\d+)")
-_RELEASE = re.compile(r"^# Version (\d+)\.(\d+)(?:\.\d+)?\b(.*)$")
+_RELEASE = re.compile(r"^# Version (?:(\d+)\.(\d+)(?:\.\d+)?\b|\?)(.*)$")
 # What mkvsmith feeds mkvmerge, reads back from it, or works around
 # (docs/formats/mkvmerge.md).
 _WATCHED = re.compile(
@@ -58,10 +62,12 @@ def _installed_version() -> str:
     return result.stdout.strip() or "unknown"
 
 
-def _news_text(path: Path | None) -> str:
+def _news_text(path: Path | None, git: bool) -> str:
     if path is not None:
         return path.read_text(encoding="utf-8")
-    with urllib.request.urlopen(NEWS_URL, timeout=30) as response:
+    with urllib.request.urlopen(
+        GIT_NEWS_URL if git else NEWS_URL, timeout=30
+    ) as response:
         data = response.read()
     assert isinstance(data, bytes)
     return data.decode("utf-8")
@@ -83,8 +89,12 @@ def _releases(text: str) -> list[tuple[tuple[int, int], str, list[str]]]:
     for line in text.splitlines():
         match = _RELEASE.match(line)
         if match:
-            version = (int(match.group(1)), int(match.group(2)))
-            releases.append((version, match.group(3).strip(), []))
+            if match.group(1) is None:
+                version, name = _UNRELEASED, "(unreleased, main branch)"
+            else:
+                version = (int(match.group(1)), int(match.group(2)))
+                name = match.group(3).strip()
+            releases.append((version, name, []))
         elif releases:
             releases[-1][2].append(line)
     return releases
@@ -92,6 +102,11 @@ def _releases(text: str) -> list[tuple[tuple[int, int], str, list[str]]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--git",
+        action="store_true",
+        help="read NEWS.md from the main branch on Codeberg",
+    )
     parser.add_argument("--news", type=Path, help="a local copy of NEWS.md")
     parser.add_argument(
         "--since", help="list releases after this one (vN.M) instead of the doc's"
@@ -110,13 +125,14 @@ def main() -> None:
         reviewed = _reviewed_version()
     print(f"Reviewed through: v{reviewed[0]}.{reviewed[1]}")
     print(f"Installed: {_installed_version()}")
-    newer = [r for r in _releases(_news_text(args.news)) if r[0] > reviewed]
+    newer = [r for r in _releases(_news_text(args.news, args.git)) if r[0] > reviewed]
     if not newer:
         print("No newer releases.")
         return
     watched = 0
     for (major, minor), name, lines in sorted(newer):
-        print(f"\nv{major}.{minor} {name}")
+        label = "next release" if (major, minor) == _UNRELEASED else f"v{major}.{minor}"
+        print(f"\n{label} {name}")
         for entry in _entries(lines):
             ours = entry.startswith(("mkvmerge", "all"))
             if not ours and not args.all:

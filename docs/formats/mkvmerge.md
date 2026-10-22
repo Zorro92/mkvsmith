@@ -6,17 +6,23 @@ and how each is checked, so a new MKVToolNix release can be checked
 against them before it breaks a rip.
 
 Changelog reviewed through: v103.0 (2026-10-18), on 2026-10-22.
-Tested with: v96.0 (rips of real discs); CI also runs the tests with
-Ubuntu's packaged mkvtoolnix and the latest Homebrew and Chocolatey
-releases.
+Tested with: v96.0 (rips of real discs). The contract tests pass with
+v54.0, 81.0, 82.0, 92.0, 96.0 and 103.0, and the whole suite with v54.0,
+82.0, 96.0 and 103.0 (`scripts/mkvmerge_versions.py`, 2026-10-22). CI
+runs the tests with Ubuntu's packaged mkvtoolnix and the latest Homebrew
+and Chocolatey releases.
 
 ## Sources
 
 | Key | Source | Where |
 |---|---|---|
-| NEWS | MKVToolNix changelog | https://www.bunkus.org/videotools/mkvtoolnix/doc/NEWS.md |
-| SRC | MKVToolNix source | https://www.bunkus.org/videotools/mkvtoolnix/source.html |
+| NEWS | MKVToolNix changelog, per release | https://mkvtoolnix.download/doc/NEWS.md |
+| GIT | MKVToolNix source; its `NEWS.md` on `main` heads the unreleased changes `# Version ?` | https://codeberg.org/mbunkus/mkvtoolnix |
+| AI | AppImages of every release since 25.0.0 (Linux x86_64) | https://mkvtoolnix.download/appimage/ |
 | MAN | mkvmerge manual | https://mkvtoolnix.download/doc/mkvmerge.html |
+
+The old site, bunkus.org, still serves the same changelog and source
+archives but isn't kept up; mkvtoolnix.download is.
 
 **✔ contract test** marks a check in `tests/test_mkvmerge_contract.py`,
 which muxes a synthetic stream with the installed mkvmerge; **✔ real
@@ -82,13 +88,18 @@ that need a newer mkvmerge are gated on it (details in
 
 1. `uv run python scripts/mkvmerge_news.py` lists the mkvmerge entries
    newer than the "reviewed through" line above, marking those that touch
-   what's listed here.
+   what's listed here; `--git` adds the changes merged on `main` for the
+   next release.
 2. Check each marked entry against the tables. A fix to a behaviour
    mkvsmith works around can make the workaround wrong, not only
    unneeded (the VC-1 `--sync` would put clips a frame late).
-3. Install the release and run `uv run pytest tests/test_mkvmerge_contract.py`
-   and the full suite. A failing canary (`…still_mistimes…`,
-   `…a_frame_early`) says which workaround to revisit.
+3. Run the tests with the release:
+   `uv run python scripts/mkvmerge_versions.py latest --all-tests` takes
+   its AppImage (unpacked without FUSE into `~/.cache/mkvsmith/mkvtoolnix`,
+   about 150 MB a version) and puts it first on PATH; any other versions
+   can be listed alongside, such as the minimums above. A failing canary
+   (`…still_mistimes…`, `…a_frame_early`) says which workaround to
+   revisit.
 4. For a behaviour checked only on real discs, rip one such disc.
 5. Add the release to the review log and move the "reviewed through"
    line on.

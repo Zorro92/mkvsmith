@@ -3,7 +3,8 @@
 Each test muxes a small synthetic stream with the real mkvmerge. A failure
 after an MKVToolNix update means mkvmerge changed something mkvsmith
 depends on or works around: see docs/formats/mkvmerge.md for what each
-check guards and what to revisit.
+check guards and what to revisit. scripts/mkvmerge_versions.py runs them
+with other releases.
 """
 
 from __future__ import annotations

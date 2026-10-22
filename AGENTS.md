@@ -96,7 +96,8 @@ you add a workaround or start relying on a new behaviour, add it there,
 with a test in `tests/test_mkvmerge_contract.py` (a synthetic stream muxed
 by the real mkvmerge) when one can show it. For a new MKVToolNix release,
 follow that page's review steps (`scripts/mkvmerge_news.py` lists what
-changed).
+changed, `scripts/mkvmerge_versions.py` runs the tests with any release's
+AppImage).
 
 ## Reference implementations & specs (read, don't depend on)
 

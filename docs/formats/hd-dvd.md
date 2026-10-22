@@ -189,7 +189,9 @@ render. F decodes an HD variant of the SPU with 4-byte offsets and an 8-bit
 palette (see [subpictures.md](subpictures.md)). ✔ real discs: the
 subpictures of two retail discs are that variant, starting `00 00`, then a
 4-byte size and a 4-byte control offset, so the DVD decoder can't read
-them.
+them. Decoded with F's 8-bit run codes, they render as clean anti-aliased
+text, each unit carrying its own 256-entry palette (details in
+[subpictures.md](subpictures.md#hd-dvd-subpictures)).
 
 ### Sources disagree
 

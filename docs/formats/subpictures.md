@@ -17,7 +17,8 @@ PGS is summarised at the end.
 | X | MPC-HC `src/Subtitles/VobSubFile.cpp` (the VSFilter code; GPL) | https://github.com/clsid2/mpc-hc/blob/develop/src/Subtitles/VobSubFile.cpp |
 | K | MKVToolNix `src/input/r_vobsub.cpp`, `src/common/spu.cpp` (GPL-2.0-only) | https://codeberg.org/mbunkus/mkvtoolnix |
 | MK | Matroska codec mappings, `S_VOBSUB` | https://www.matroska.org/technical/codec_specs.html |
-| FP | FFmpeg `libavcodec/pgssubdec.c` (LGPL-2.1+) | https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/pgssubdec.c |
+| FP | FFmpeg `libavcodec/pgssubdec.c` (LGPL-2.1+) | [sources/ffmpeg-pgssubdec.c.md](sources/ffmpeg-pgssubdec.c.md) |
+| B | BDSup2Sub `SupBDWriter.java`, `SupBDParser.java` (Apache-2.0) | [sources/bdsup2sub-SupBDWriter.java.md](sources/bdsup2sub-SupBDWriter.java.md), [sources/bdsup2sub-SupBDParser.java.md](sources/bdsup2sub-SupBDParser.java.md) |
 
 ## Carriage in the program stream
 
@@ -119,6 +120,31 @@ F recognises a variant used in EVO files: SPDSZ = 0 means 4-byte offsets
 `0x83` (768-byte palette), `0x84` (256-byte contrast), `0x85` and `0x86`
 (8-bit pixel area and 32-bit field offsets). See [hd-dvd.md](hd-dvd.md).
 
+| Command | Data | Meaning (F) |
+|---|---|---|
+| `0x83` | 768 bytes | 256 palette entries, 3 bytes each, ordered `Y, Cr, Cb` |
+| `0x84` | 256 bytes | one contrast byte per entry; alpha = `0xFF` − value |
+| `0x85` | 6 bytes | as `0x05` (12-bit x1, x2, y1, y2), and switches to 8-bit pixels |
+| `0x86` | 8 bytes | 32-bit offsets of the top-field and bottom-field pixel data |
+
+In the control sequence the offset of the next sequence is 4 bytes, after
+the 2-byte delay. 8-bit pixel data is a run code per pixel group: 1 bit
+"has run", 1 bit "8-bit colour" (else 2-bit), the colour, then for a run
+either `0` + 3 bits (length + 2) or `1` + 7 bits (length + 9; 0 = to the
+end of the line). A single pixel has no length field. Lines are byte-aligned
+and the fields interleave as on DVD. (F `decode_run_8bit`)
+
+✔ real discs: seven subpicture units from two retail discs' EVOs, on four
+sub-streams, all decode this way into clean anti-aliased text. Each unit
+has two control sequences: the first carries `0x01`, `0x83`, `0x84`,
+`0x85`, `0x86`, the second only `0x02` (delays of about 2 s and 5 s). The
+pixel data starts at byte 10, right after the header. Every unit carries
+its own palette; entry 0 is a fully transparent key colour, and the text
+uses only grey entries (`Cr` = `Cb` = 128), so the samples can't confirm
+the `Cr, Cb` order or the colour matrix. PGS stores palette entries as
+`Y, Cr, Cb, alpha` (FP, B), so a conversion can copy the entries without
+choosing a matrix.
+
 ## The palette
 
 Each PGC holds a 16-entry colour lookup table at PGC+`0xA4`, 4 bytes per
@@ -200,4 +226,5 @@ PGS stream is forced. mkvmerge passes PGS through as `S_HDMV/PGS`. (FP, MK)
   backwards (relying on a visited set); F rejects them.
 - FSTA_DSP, STA_DSP and STP_DSP aren't read, so there's no per-SPU forced
   detection or start delay.
-- EVO subpictures in the 4-byte-offset layout would be misparsed.
+- EVO subpictures in the 4-byte-offset layout would be misparsed; mkvsmith
+  doesn't decode them or convert them to PGS yet.

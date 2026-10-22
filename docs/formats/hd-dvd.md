@@ -47,6 +47,10 @@ A player "finds an appropriate playlist and loads it" (MS), but no public
 source says how it picks among several `VPLST*.XPL`. Real discs don't all
 keep the feature in `VPLST000.XPL`: H's sample output shows it in
 `VPLST001.XPL` on one disc. Nothing found says what `APLST*.XPL` files are.
+`hddvd.py` reads every `VPLSTnnn.XPL` directly in `ADV_OBJ`, in any case,
+and keeps the one with the longest title, the lowest number on a tie;
+`APLST*.XPL` and backups are never read. ✔ real discs: both have only
+`VPLST000.XPL`.
 
 ## The playlist (XPL)
 
@@ -109,7 +113,14 @@ A feature is often two clips joined seamlessly (`seamless="true"` on the
 second), contiguous on the title timeline, and every feature clip repeats the
 same track list. A posted retail title also ends with a third, short clip (a
 warning card) that has only a `Video` child; the title's `titleDuration`
-covers it. (D9)
+covers it. (D9) ✔ real disc: a bonus documentary ends with a 2-minute
+credits clip whose XPL lists only `Video`, yet its EVO carries the same
+MPEG-2 video and AC-3 audio as the clip before, and mkvmerge appends it
+cleanly. A video-only track list doesn't mean a clip is silent or isn't
+part of the programme, so every clip is kept. When a clip's EVO is
+missing, the title's timeline closes up: the duration becomes the
+remaining clips' total, the missing clip's chapters go and later ones move
+back.
 
 ### Tracks
 
@@ -212,18 +223,13 @@ DTS-HD, 7 DD+. DVD has LPCM at 4.
 - **Subtitles:** XPL subtitles are declared `dvd_subtitle` and muxed
   through the DVD VobSub path, which can't decode the HD SPUs retail
   discs carry.
-- **Playlist choice:** a folder uses the first `VPLST*.XPL` in name order;
-  an ISO the first `.xpl` in its listing, with no `VPLST` filter.
-- **Clips:** every clip of a title is appended, including a trailing
-  warning card with a different track list. When a clip is missing, the
-  chapters and the duration stay on the full timeline.
 - **Track matching:** audio of a codec outside DD+, MLP and DTS-HD, and
   video, are matched to mkvmerge's tracks by position within each type.
 - **Unused fields:** chapter `displayName` and `selectable` aren't read.
   The description fallback knows English words only.
-- **Picture-in-picture:** secondary video and audio are muxed as unlabelled
-  tracks.
+- **Picture-in-picture:** secondary video (any video after the first) and
+  audio (a sub-stream no primary track has) are muxed, named from the
+  XPL's `SubVideo`/`SubAudio` description or "Picture-in-picture", never
+  default. No real disc with them was available to confirm the IDs.
 - **Standard Content:** discs without an XPL get one title per EVO.
-- **SOURCE_ID:** the tags assume `0xC0` + n for audio and only `0xE0`–`0xEF`
-  for video.
 - **Detection order:** `VIDEO_TS` is checked before `HVDVD_TS`.

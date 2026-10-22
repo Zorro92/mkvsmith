@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # HD DVD playlist namespace (DVD Forum). Elements are matched by local name
@@ -128,6 +129,35 @@ class HddvdTitle:
     def streams(self) -> list[HddvdStream]:
         """Track list of the first clip (clips repeat the same layout)."""
         return self.clips[0].streams if self.clips else []
+
+
+def keep_clips(title: HddvdTitle, kept: Sequence[HddvdClip]) -> HddvdTitle:
+    """*title* playing only the *kept* clips, its timeline closed up.
+
+    The duration becomes the kept clips' total, and each chapter moves with
+    its clip: those in a dropped clip go, those after one move back. With
+    every clip kept the title is returned as is, ``titleDuration`` and all.
+    """
+    if len(kept) == len(title.clips):
+        return title
+    kept_ids = {id(clip) for clip in kept}
+    chapters: list[float] = []
+    offset = 0.0
+    for clip in title.clips:
+        if id(clip) not in kept_ids:
+            continue
+        chapters.extend(
+            offset + chapter - clip.begin_seconds
+            for chapter in title.chapters
+            if clip.begin_seconds <= chapter < clip.end_seconds
+        )
+        offset += max(clip.end_seconds - clip.begin_seconds, 0.0)
+    return replace(
+        title,
+        clips=list(kept),
+        duration_seconds=offset,
+        chapters=sorted(set(chapters)),
+    )
 
 
 @dataclass
@@ -433,10 +463,46 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
     return disc
 
 
-def find_playlist(adv_obj: Path) -> Path | None:
-    """First ``VPLST*.XPL`` playlist (``*.BAK`` backups never match)."""
-    candidates = sorted(adv_obj.glob("VPLST*.XPL"))
-    return candidates[0] if candidates else None
+# A playlist is ADV_OBJ/VPLSTnnn.XPL (AS); backups (``*.BAK``) and other
+# XML never match.
+_PLAYLIST_NAME = re.compile(r"VPLST\d{3}\.XPL", re.IGNORECASE)
+
+
+def is_playlist_name(name: str) -> bool:
+    """Whether *name* is a ``VPLSTnnn.XPL`` playlist, in any case."""
+    return _PLAYLIST_NAME.fullmatch(name) is not None
+
+
+def find_playlists(adv_obj: Path) -> list[Path]:
+    """The ``VPLSTnnn.XPL`` playlists in *adv_obj*, lowest-numbered first."""
+    try:
+        candidates = [
+            path
+            for path in adv_obj.iterdir()
+            if is_playlist_name(path.name) and path.is_file()
+        ]
+    except OSError:
+        return []
+    return sorted(candidates, key=lambda path: path.name.upper())
+
+
+def choose_playlist(
+    playlists: Sequence[Path], hvdvd_ts: Path
+) -> tuple[Path, HddvdDisc] | None:
+    """The playlist holding the longest title, and its parse.
+
+    No public source says how a player picks among several playlists, and
+    real discs don't all keep the feature in ``VPLST000.XPL``
+    (docs/formats/hd-dvd.md), so the one with the most content wins; a tie
+    goes to the lowest number.
+    """
+    best: tuple[float, Path, HddvdDisc] | None = None
+    for path in sorted(playlists, key=lambda path: path.name.upper()):
+        disc = parse_xpl(path, hvdvd_ts)
+        longest = max((title.duration_seconds for title in disc.titles), default=0.0)
+        if disc.titles and (best is None or longest > best[0]):
+            best = (longest, path, disc)
+    return (best[1], best[2]) if best is not None else None
 
 
 def parse_discid(discid_path: Path) -> str | None:

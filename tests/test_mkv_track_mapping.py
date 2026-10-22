@@ -1812,6 +1812,25 @@ def test_source_id_for_stream_hddvd_ignores_probed_numbers() -> None:
     assert mkv._source_id_for_stream(audio, title) == "01C0BD"
 
 
+def test_source_id_for_stream_hddvd_uses_the_probed_sub_stream() -> None:
+    """The sub-stream comes from mkvmerge's number, not the track's order:
+    a TrueHD track first in the EVO is 0xB0, the DD+ after it 0xC1."""
+    title = _source_id_title("FEATURE_1.EVO", hddvd_title_number=3)
+    truehd, eac3 = (
+        Stream(
+            index=n,
+            stream_type=StreamType.AUDIO,
+            sub_id=sub << 32 | 0xBD,
+            type_index=n,
+        )
+        for n, sub in enumerate((0xB0, 0xC1))
+    )
+    sub = Stream(index=3, stream_type=StreamType.SUBTITLE, sub_id=0x22, type_index=0)
+    assert mkv._source_id_for_stream(truehd, title) == "01B0BD"
+    assert mkv._source_id_for_stream(eac3, title) == "01C1BD"
+    assert mkv._source_id_for_stream(sub, title) == "0122BD"
+
+
 def test_append_track_options_adds_source_id_tags(tmp_path: Path) -> None:
     title = _source_id_title("00001.m2ts")
     mapped: list[MappedStream] = [

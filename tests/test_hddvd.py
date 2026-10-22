@@ -7,9 +7,13 @@ from pathlib import Path
 import pytest
 
 from mkvsmith.hddvd import (
+    HddvdClip,
+    HddvdStream,
     HddvdTitle,
     describe_language,
-    find_playlist,
+    choose_playlist,
+    find_playlists,
+    keep_clips,
     parse_discid,
     parse_xpl,
     parse_xpl_time,
@@ -162,13 +166,43 @@ def test_clip_path_uses_on_disc_casing(tmp_path: Path) -> None:
     assert [c.evo_path.name for c in main.clips] == ["Mixed.Evo", "FEATURE_2.EVO"]
 
 
-def test_find_playlist_skips_backups(tmp_path: Path) -> None:
+def test_find_playlists_takes_only_numbered_playlists(tmp_path: Path) -> None:
     adv_obj, _ = _write_disc(tmp_path)
     (adv_obj / "VPLST001.BAK").write_text("backup")
-    found = find_playlist(adv_obj)
-    assert found is not None
-    assert found.name == "VPLST000.XPL"
-    assert find_playlist(tmp_path) is None
+    (adv_obj / "APLST000.XPL").write_text("not a video playlist")
+    (adv_obj / "vplst002.xpl").write_text(XPL)
+
+    assert [p.name for p in find_playlists(adv_obj)] == [
+        "VPLST000.XPL",
+        "vplst002.xpl",
+    ]
+    assert find_playlists(tmp_path / "missing") == []
+
+
+def test_choose_playlist_keeps_the_one_with_the_longest_title(
+    tmp_path: Path,
+) -> None:
+    adv_obj, hvdt = _write_disc(tmp_path)
+    # A first playlist holding only the warning card, the feature in the next.
+    short = (
+        XPL[: XPL.index('        <Title titleNumber="3"')]
+        + XPL[XPL.index('        <Title titleNumber="8"') :]
+    )
+    (adv_obj / "VPLST000.XPL").write_text(short)
+    (adv_obj / "VPLST001.XPL").write_text(XPL)
+
+    chosen = choose_playlist(find_playlists(adv_obj), hvdt)
+
+    assert chosen is not None
+    path, disc = chosen
+    assert path.name == "VPLST001.XPL"
+    assert [t.number for t in disc.titles] == [3, 8, 10, 11]
+    # A tie goes to the lowest number.
+    (adv_obj / "VPLST000.XPL").write_text(XPL)
+    tie = choose_playlist(find_playlists(adv_obj), hvdt)
+    assert tie is not None
+    assert tie[0].name == "VPLST000.XPL"
+    assert choose_playlist([], hvdt) is None
 
 
 def test_parse_discid_provider(tmp_path: Path) -> None:
@@ -286,3 +320,69 @@ def test_probed_audio_is_matched_by_sub_stream_not_position(tmp_path: Path) -> N
         ("eng", False),
         ("eng", True),
     ]
+
+
+def test_keeping_some_clips_closes_up_the_timeline() -> None:
+    first = HddvdClip(Path("A.EVO"), 0.0, 100.0)
+    second = HddvdClip(Path("B.EVO"), 100.0, 250.0)
+    third = HddvdClip(Path("C.EVO"), 250.0, 300.0)
+    title = HddvdTitle(
+        number=1,
+        name="Feature",
+        duration_seconds=300.0,
+        clips=[first, second, third],
+        chapters=[0.0, 50.0, 100.0, 180.0, 250.0, 275.0],
+    )
+
+    without_middle = keep_clips(title, [first, third])
+
+    assert without_middle.duration_seconds == pytest.approx(150.0)
+    # The middle clip's chapters go; the last clip's move back 150 s.
+    assert without_middle.chapters == pytest.approx([0.0, 50.0, 100.0, 125.0])
+    assert keep_clips(title, title.clips) is title
+
+
+def test_picture_in_picture_tracks_are_labelled_and_never_default() -> None:
+    xpl_title = HddvdTitle(
+        number=3,
+        name="Feature",
+        clips=[
+            HddvdClip(
+                Path("FEATURE_1.EVO"),
+                streams=[
+                    HddvdStream("video", 1, 1, "eng"),
+                    HddvdStream("audio", 1, 1, "eng", codec="DD+", sub_id=0xC0),
+                    HddvdStream("subvideo", 1, 1, "eng", "Director's picture"),
+                    HddvdStream("subaudio", 1, 1, "eng", "Director", codec="DD+"),
+                ],
+            )
+        ],
+    )
+    video, pip_video = (
+        Stream(index=n, stream_type=StreamType.VIDEO, type_index=n, is_default=True)
+        for n in range(2)
+    )
+    audio, pip_audio = (
+        Stream(
+            index=2 + n,
+            stream_type=StreamType.AUDIO,
+            sub_id=sub << 32 | 0xBD,
+            type_index=n,
+            is_default=True,
+        )
+        for n, sub in enumerate((0xC0, 0xC8))
+    )
+    scanned = Title(
+        index=0,
+        source_file=Path("FEATURE_1.EVO"),
+        name="Feature",
+        duration_seconds=3600.0,
+        streams=[video, pip_video, audio, pip_audio],
+    )
+
+    _apply_hddvd_languages(scanned, xpl_title)
+
+    assert (video.title, video.is_default) == ("", True)
+    assert (pip_video.title, pip_video.is_default) == ("Director's picture", False)
+    assert (audio.language, audio.title, audio.is_default) == ("eng", "", True)
+    assert (pip_audio.title, pip_audio.is_default) == ("Director", False)

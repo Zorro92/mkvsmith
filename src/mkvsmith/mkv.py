@@ -944,19 +944,27 @@ def _source_id_for_stream(
     AC-3, ``0120BD`` subpicture 0), decoded from a reference
     DVD-sourced rip. HD DVD shares the DVD shape (``0100E2`` video,
     ``01C0BD`` DD+, decoded from a reference HD DVD rip): the ``01`` prefix
-    is the first-file index, audio/subs use XPL order (0xC0+/0x20+), and
-    the video pack id comes from an EVO packet scan since it is not always
-    0xE0. Raw files and anything else yield None (no tag).
+    is the first-file index, audio and subpictures carry their sub-stream
+    (falling back to XPL order, 0xC0+/0x20+), and the video pack id comes
+    from an EVO packet scan since it is not always 0xE0. Raw files and
+    anything else yield None (no tag).
     """
     if title.hddvd_title_number is not None:
-        # Checked before pid: probed EVO streams carry mkvmerge's internal
-        # track numbers in pid/sub_id, which are not source medium ids.
+        # Checked before pid: probed EVO streams carry mkvmerge's track
+        # numbers in pid/sub_id, (sub-stream << 32) | 0xBD for private
+        # stream 1, not the sub-stream itself.
         if stream.stream_type == StreamType.VIDEO:
             if hddvd_video_id is None:
                 return None
             return f"0100{hddvd_video_id:02X}"
+        number = stream.sub_id
         if stream.stream_type == StreamType.AUDIO:
-            sub_id = 0xC0 + stream.type_index
+            if number is not None and number & 0xFFFFFFFF == 0xBD:
+                sub_id = number >> 32
+            else:
+                sub_id = 0xC0 + stream.type_index
+        elif number is not None and 0x20 <= number <= 0x3F:
+            sub_id = number
         else:
             sub_id = 0x20 + stream.type_index
         return f"01{sub_id:02X}BD"

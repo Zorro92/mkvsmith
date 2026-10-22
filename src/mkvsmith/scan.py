@@ -77,9 +77,11 @@ from mkvsmith.dvdbuild import (
 from mkvsmith.hddvd import (
     HddvdStream,
     HddvdTitle,
-    find_playlist,
+    choose_playlist,
+    find_playlists,
+    is_playlist_name,
+    keep_clips,
     parse_discid,
-    parse_xpl,
 )
 from mkvsmith.i18n import tr
 from mkvsmith.matrix256 import fingerprint as matrix256_fingerprint
@@ -1260,26 +1262,41 @@ def _apply_hddvd_languages(title: Title, ht: HddvdTitle) -> None:
     ``(sub-stream << 32) | 0xBD`` and the XPL gives each track's codec and
     stream number (docs/formats/hd-dvd.md). Anything else, and audio of a
     codec without a known sub-stream, falls back to per-type order — the
-    same positional assumption as the Blu-ray STN fallback. Secondary PiP
-    tracks (SubVideo/SubAudio) are not muxed.
+    same positional assumption as the Blu-ray STN fallback.
+
+    Picture-in-picture tracks (SubVideo/SubAudio) are labelled as such: a
+    video track after the first, and audio whose sub-stream no primary
+    track has, matched to the XPL's in order. They are never default.
     """
-    wanted: dict[str, list[HddvdStream]] = {"video": [], "audio": [], "subtitle": []}
-    pip = False
+    wanted: dict[str, list[HddvdStream]] = {
+        "video": [],
+        "audio": [],
+        "subtitle": [],
+        "subvideo": [],
+        "subaudio": [],
+    }
     for hs in ht.streams:
-        if hs.kind in ("subvideo", "subaudio"):
-            pip = True
-        elif hs.kind in wanted:
+        if hs.kind in wanted:
             wanted[hs.kind].append(hs)
-    if pip:
-        log_debug(f"  Title {ht.number}: skipping secondary PiP tracks")
+    secondary = {
+        StreamType.VIDEO: iter(wanted["subvideo"]),
+        StreamType.AUDIO: iter(wanted["subaudio"]),
+    }
+    primary = {
+        StreamType.VIDEO: wanted["video"],
+        StreamType.AUDIO: wanted["audio"],
+        StreamType.SUBTITLE: wanted["subtitle"],
+    }
     for stream in title.streams:
-        if stream.stream_type == StreamType.VIDEO:
-            candidates = wanted["video"]
-        elif stream.stream_type == StreamType.AUDIO:
-            candidates = wanted["audio"]
-        elif stream.stream_type == StreamType.SUBTITLE:
-            candidates = wanted["subtitle"]
-        else:
+        candidates = primary.get(stream.stream_type)
+        if candidates is None:
+            continue
+        if _is_hddvd_secondary(stream, candidates):
+            pip = next(secondary[stream.stream_type], None)
+            stream.title = (pip.description if pip else "") or tr("Picture-in-picture")
+            stream.is_default = False
+            if pip is not None:
+                stream.language = pip.language
             continue
         hs = _hddvd_stream_for(stream, candidates)
         if hs is None:
@@ -1292,14 +1309,39 @@ def _apply_hddvd_languages(title: Title, ht: HddvdTitle) -> None:
         )
 
 
+def _hddvd_sub_stream(stream: Stream) -> int | None:
+    """A probed EVO private stream 1 track's sub-stream, from its number."""
+    number = stream.sub_id
+    if number is not None and number & 0xFFFFFFFF == 0xBD:
+        return number >> 32
+    return None
+
+
+def _is_hddvd_secondary(stream: Stream, candidates: list[HddvdStream]) -> bool:
+    """Whether a probed EVO track is a picture-in-picture one.
+
+    The primary video is the EVO's first (mkvmerge lists the secondary,
+    ``0x75`` VC-1 or ``0xE3`` H.264, after it); audio is secondary when its
+    sub-stream is known and none of the primary tracks, each with a known
+    sub-stream, has it.
+    """
+    if stream.stream_type == StreamType.VIDEO:
+        return stream.type_index > 0
+    if stream.stream_type != StreamType.AUDIO:
+        return False
+    sub = _hddvd_sub_stream(stream)
+    known = [hs.sub_id for hs in candidates]
+    return sub is not None and bool(known) and None not in known and sub not in known
+
+
 def _hddvd_stream_for(
     stream: Stream, candidates: list[HddvdStream]
 ) -> HddvdStream | None:
     """The XPL track for a probed *stream*: by sub-stream, else by position."""
-    number = stream.sub_id
-    if number is not None and number & 0xFFFFFFFF == 0xBD:
+    sub = _hddvd_sub_stream(stream)
+    if sub is not None:
         for hs in candidates:
-            if hs.sub_id is not None and hs.sub_id == number >> 32:
+            if hs.sub_id == sub:
                 return hs
     if stream.type_index < len(candidates):
         return candidates[stream.type_index]
@@ -1412,14 +1454,14 @@ def _scan_hddvd_source(
         metadata = replace(metadata, provider_id=provider)
         log_debug(f"HD DVD provider: {provider}")
     titles: list[Title] = []
-    xpl = find_playlist(adv_obj)
-    if xpl is None:
+    chosen = choose_playlist(find_playlists(adv_obj), hvdvd_ts)
+    if chosen is None:
         log_debug("No XPL playlist; scanning raw EVO files")
         for evo in sorted(hvdvd_ts.glob("*.EVO")) + sorted(hvdvd_ts.glob("*.evo")):
             if t := _create_title(titles, evo, evo.stem, config=config):
                 titles.append(t)
         return titles, metadata
-    disc = parse_xpl(xpl, hvdvd_ts)
+    xpl, disc = chosen
     log_info(
         tr("HD DVD playlist: {name} ({n} title(s))", name=xpl.name, n=len(disc.titles))
     )
@@ -1430,7 +1472,7 @@ def _scan_hddvd_source(
             continue
         if len(kept) < len(ht.clips):
             log_debug(f"  Title {ht.number}: some clips missing; using {len(kept)}")
-            ht = replace(ht, clips=kept)
+            ht = keep_clips(ht, kept)
         clips = [clip.evo_path for clip in kept]
         if title := _build_hddvd_title(
             titles, ht, clips, clips, clips[0], None, config
@@ -2001,11 +2043,18 @@ class Scanner:
             for p in media_paths
             if p.lower().endswith(".mpls") and _is_primary_bdmv_path(p)
         ]
-        xpl_files = [
-            p
-            for p in media_paths
-            if p.lower().endswith(".xpl") and _is_primary_hddvd_path(p)
-        ]
+        # The disc's playlists, lowest-numbered first, as find_playlist
+        # picks them from a folder.
+        xpl_files = sorted(
+            (
+                p
+                for p in media_paths
+                if len(Path(p).parts) == 2
+                and _is_primary_hddvd_path(p)
+                and is_playlist_name(Path(p).name)
+            ),
+            key=lambda p: Path(p).name.upper(),
+        )
         m2ts_files = [
             p
             for p in media_paths
@@ -2030,19 +2079,19 @@ class Scanner:
     ) -> None:
         """Scan an HD DVD ISO via its XPL playlist."""
         from mkvsmith.disc_reader import _extract_iso_prefix, _extract_iso_files
-        from mkvsmith.hddvd import parse_xpl
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="mkv_scan_"))
         self.cleanup.register_temp_dir(tmp_dir)
-        extracted = _extract_iso_files(self.source, [xpl_files[0]], tmp_dir)
-        if not extracted:
+        extracted = _extract_iso_files(self.source, xpl_files, tmp_dir)
+        chosen = choose_playlist(extracted, tmp_dir)
+        if chosen is None:
             return
+        xpl, disc = chosen
         evo_by_stem = {
             Path(path).stem.upper(): path
             for path in media_paths
             if path.lower().endswith(".evo")
         }
-        disc = parse_xpl(extracted[0], tmp_dir)
         # Clips resolve against ISO internal paths, not the filesystem.
         for ht in disc.titles:
             for clip in ht.clips:
@@ -2052,7 +2101,7 @@ class Scanner:
         log_info(
             tr(
                 "HD DVD playlist: {name} ({n} title(s))",
-                name=Path(xpl_files[0]).name,
+                name=xpl.name,
                 n=len(disc.titles),
             )
         )
@@ -2066,7 +2115,7 @@ class Scanner:
                 continue
             kept = [clip for clip in ht.clips if str(clip.evo_path) in internal]
             if len(kept) < len(ht.clips):
-                ht = replace(ht, clips=kept)
+                ht = keep_clips(ht, kept)
             probes: list[Path] = []
             for path in internal:
                 tmp = _extract_iso_prefix(

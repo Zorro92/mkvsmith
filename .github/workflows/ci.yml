@@ -12,11 +12,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-24.04-arm: native ARM64 Linux (Raspberry Pi / ARM NAS class),
+        # free for public repositories.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
         python-version: ["3.12", "3.13"]
         exclude:
-          # Full Python matrix on Linux; one Python per non-Linux OS to keep
+          # Full Python matrix on x86 Linux; one Python per other OS to keep
           # runner usage (macOS/Windows bill at higher multipliers) low.
+          - { os: ubuntu-24.04-arm, python-version: "3.12" }
           - { os: macos-latest, python-version: "3.12" }
           - { os: windows-latest, python-version: "3.12" }
     steps:
@@ -57,31 +60,32 @@ jobs:
       - name: Type check
         run: uv run ty check --config-file ty.toml .
 
-  test-linux-arm64:
-    # Experimental: QEMU-emulated ARM64 Linux (Raspberry Pi / ARM NAS class).
-    # ~5-10x slower than native and not required for merge while marked
-    # continue-on-error; delete this job if it proves too flaky.
-    name: test (linux-arm64, qemu)
+  mkvmerge-versions:
+    # The mkvmerge contract tests (docs/formats/mkvmerge.md) with the oldest
+    # versions mkvsmith's features need and the newest release, each from
+    # its AppImage (scripts/mkvmerge_versions.py). The other jobs cover the
+    # packaged versions.
+    name: mkvmerge versions (54, 81, latest)
     runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - name: Cache unpacked MKVToolNix AppImages
+        uses: actions/cache@v4
         with:
-          platforms: arm64
+          path: ~/.cache/mkvsmith/mkvtoolnix
+          # Versions already unpacked are reused; a newer "latest" is
+          # downloaded (about 60 MB) until the key changes.
+          key: mkvtoolnix-appimages-v1
 
-      # Plain pip inside the container: uv.lock is per-platform, and the
-      # suite only needs the project itself (so subprocess tests can import
-      # it) and pytest.
-      - name: Run tests under emulation
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v "$PWD:/src" -w /src \
-            python:3.12-slim \
-            bash -lc 'apt-get update && \
-                      apt-get install -y --no-install-recommends mkvtoolnix && \
-                      pip install --no-cache-dir -e . pytest && \
-                      python -m pytest -ra'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --python 3.13
+
+      - name: Run the contract tests with each version
+        run: uv run python scripts/mkvmerge_versions.py 54 81 latest

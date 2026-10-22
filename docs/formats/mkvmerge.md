@@ -9,8 +9,9 @@ Changelog reviewed through: v103.0 (2026-10-18), on 2026-10-22.
 Tested with: v96.0 (rips of real discs). The contract tests pass with
 v54.0, 81.0, 82.0, 92.0, 96.0 and 103.0, and the whole suite with v54.0,
 82.0, 96.0 and 103.0 (`scripts/mkvmerge_versions.py`, 2026-10-22). CI
-runs the tests with Ubuntu's packaged mkvtoolnix and the latest Homebrew
-and Chocolatey releases.
+runs the tests with Ubuntu's packaged mkvtoolnix (x86 and ARM64) and the
+latest Homebrew and Chocolatey releases, and the contract tests with the
+v54.0, v81.0 and newest AppImages (the `mkvmerge-versions` job).
 
 ## Sources
 

@@ -177,12 +177,12 @@ def test_null_packets_from_drops_only_the_cut_pid(
 # --- muxer staging ------------------------------------------------------------
 
 
-def _mapped(pids: list[int]) -> list[MappedStream]:
+def _mapped(pids: list[int], video: str = "h264") -> list[MappedStream]:
     entries: list[MappedStream] = [
         {
             "input_id": 0,
             "type": "video",
-            "stream": Stream(0, StreamType.VIDEO, "h264", "und", pid=0x1011),
+            "stream": Stream(0, StreamType.VIDEO, video, "und", pid=0x1011),
             "ident_channels": None,
         }
     ]
@@ -233,11 +233,11 @@ def test_prepare_seamless_append_copies_unowned_clips(
     )
 
     assert result is not None
-    assert result[0] == clips[0] and result[2] == clips[2]  # untrimmed
-    assert result[1] != clips[1] and result[1].parent == temp_dirs[0]
-    assert cleanup == [result[1]]
+    assert result.inputs[0] == clips[0] and result.inputs[2] == clips[2]  # untrimmed
+    assert result.inputs[1] != clips[1] and result.inputs[1].parent == temp_dirs[0]
+    assert cleanup == [result.inputs[1]]
     assert [_digest(p) for p in clips] == digests  # sources untouched
-    assert _digest(result[1]) != digests[1]
+    assert _digest(result.inputs[1]) != digests[1]
 
 
 @needs_fixtures
@@ -255,7 +255,7 @@ def test_prepare_seamless_append_trims_owned_clips_in_place(
         title, clips, _mapped([0x1101]), set(clips), cleanup, temp_dirs
     )
 
-    assert result == clips
+    assert result is not None and result.inputs == clips
     assert cleanup == [] and temp_dirs == []
     assert _digest(clips[1]) != before
 
@@ -274,6 +274,48 @@ def test_prepare_seamless_append_skips_non_seamless_and_shared_pids(
     # TrueHD + its AC-3 core both muxed from PID 0x1100: not trimmable.
     shared = _mapped([0x1100, 0x1100])
     assert mkv._prepare_seamless_append(title, clips, shared, set(), [], []) is None
+
+
+def test_append_input_files_delays_each_appended_vc1_clip_a_frame() -> None:
+    cmd: list[str] = ["mkvmerge"]
+    clips = [Path("a.m2ts"), Path("b.m2ts"), Path("c.m2ts")]
+    mkv._append_input_files(
+        cmd, clips, ["-d", "0"], track_mode=True, vc1_sync=(0, 1001 / 24)
+    )
+    assert cmd == [
+        "mkvmerge",
+        "--append-mode",
+        "track",
+        "a.m2ts",
+        "+",
+        "-d",
+        "0",
+        "--sync",
+        "0:42",
+        "b.m2ts",
+        "+",
+        "-d",
+        "0",
+        "--sync",
+        "0:41",
+        "c.m2ts",
+    ]
+
+
+def test_prepare_seamless_append_syncs_vc1_video_only(tmp_path: Path) -> None:
+    title = Title(0, tmp_path, "T", 10.0)
+    title.seamless_connections = True
+    vc1_clips = _synthetic_clips(tmp_path / "vc1")
+    vc1 = mkv._prepare_seamless_append(
+        title, vc1_clips, _mapped([0x1101], "vc1"), set(vc1_clips), [], []
+    )
+    assert vc1 is not None
+    assert vc1.vc1_sync == (0, synth_m2ts.FILM_FRAME / 90)
+    avc_clips = _synthetic_clips(tmp_path / "avc")
+    avc = mkv._prepare_seamless_append(
+        title, avc_clips, _mapped([0x1101]), set(avc_clips), [], []
+    )
+    assert avc is not None and avc.vc1_sync is None
 
 
 def test_append_input_files_track_mode_for_trimmed_bluray_clips() -> None:
@@ -357,6 +399,7 @@ def test_scan_clip_tail_on_a_synthetic_clip(tmp_path: Path) -> None:
     tail = scan_clip_tail(clip, AUDIO_PIDS)
 
     assert tail.video_end == _VIDEO_END
+    assert tail.video_step == synth_m2ts.FILM_FRAME
     truehd = tail.audio[0x1100]
     # The TrueHD access units, not the embedded AC-3 core (another
     # stream_id_extension on the same PID): no core frame is among them.
@@ -437,15 +480,15 @@ def test_prepare_seamless_append_on_synthetic_clips(
         title, clips, _mapped([0x1100, 0x1101]), set(), cleanup, temp_dirs
     )
     assert result is not None
-    assert result[0] == clips[0] and result[2] == clips[2]
-    assert result[1] != clips[1] and result[1].parent == temp_dirs[0]
-    assert cleanup == [result[1]]
+    assert result.inputs[0] == clips[0] and result.inputs[2] == clips[2]
+    assert result.inputs[1] != clips[1] and result.inputs[1].parent == temp_dirs[0]
+    assert cleanup == [result.inputs[1]]
     assert [_digest(p) for p in clips] == digests
-    assert _digest(result[1]) != digests[1]
+    assert _digest(result.inputs[1]) != digests[1]
 
     # Clips we own (extracted to temp) are trimmed in place.
     owned = mkv._prepare_seamless_append(
         title, clips, _mapped([0x1101]), set(clips), [], []
     )
-    assert owned == clips
+    assert owned is not None and owned.inputs == clips
     assert _digest(clips[1]) != digests[1]

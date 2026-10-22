@@ -14,6 +14,7 @@ from mkvsmith.vc1time import (
     _parse_sequence_header,
     _presentation_order,
     correct_vc1_frame_times,
+    retime_vc1_join_frames,
     evo_frame_times,
 )
 
@@ -385,6 +386,29 @@ def test_correct_vc1_frame_times_skips_a_file_without_vc1(tmp_path: Path) -> Non
     assert correct_vc1_frame_times(path, [tmp_path / "missing.evo"]) is None
 
 
+def test_retime_vc1_join_frames_shows_the_frame_before_a_join(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "a.mkv"
+    # Each file starts with two blocks at one time; at the join the first
+    # carries the previous clip's last frame, so the frame before is held.
+    _write_mkv(path, [0, 0, 42, 83, 125, 208, 208, 250, 292])
+    assert retime_vc1_join_frames(path) == 1
+    after = read_track_times(path, is_vc1_track)
+    assert after is not None
+    assert [block.time for block in after.blocks] == [
+        0,
+        0,
+        42,
+        83,
+        125,
+        166,
+        208,
+        250,
+        292,
+    ]
+
+
 def test_mux_failure_to_correct_only_warns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -396,4 +420,18 @@ def test_mux_failure_to_correct_only_warns(
 
     monkeypatch.setattr(mkv, "correct_vc1_frame_times", fail)
     mkv._correct_vc1_frame_times(tmp_path / "a.mkv", [tmp_path / "a.evo"])
+    assert warnings and "VC-1" in warnings[0]
+
+
+def test_mux_failure_to_retime_joins_only_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(mkv, "log_warn", warnings.append)
+
+    def fail(_path: Path) -> int:
+        raise ValueError("block time outside its cluster's range")
+
+    monkeypatch.setattr(mkv, "retime_vc1_join_frames", fail)
+    mkv._retime_vc1_join_frames(tmp_path / "a.mkv")
     assert warnings and "VC-1" in warnings[0]

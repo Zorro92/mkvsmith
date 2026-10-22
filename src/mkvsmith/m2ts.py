@@ -71,6 +71,7 @@ class AudioTail:
 @dataclass
 class ClipTail:
     video_end: int | None  # max video PTS + frame duration (90 kHz)
+    video_step: int = 0  # the video's frame duration (90 kHz)
     audio: dict[int, AudioTail] = field(default_factory=dict[int, AudioTail])
 
 
@@ -242,7 +243,10 @@ def _scan_clip_window(path: Path, audio_pids: set[int], window: int) -> ClipTail
     starts = _scan_pes_starts(data, start, {PRIMARY_VIDEO_PID, *audio_pids})
     video_pts = [s.pts for s in starts if s.pid == PRIMARY_VIDEO_PID]
     video_step = _median_step(video_pts)
-    tail = ClipTail(video_end=max(video_pts) + video_step if video_step > 0 else None)
+    tail = ClipTail(
+        video_end=max(video_pts) + video_step if video_step > 0 else None,
+        video_step=video_step,
+    )
     for pid in audio_pids:
         audio = _audio_tail([s for s in starts if s.pid == pid])
         if audio is not None:

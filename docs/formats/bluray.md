@@ -356,6 +356,32 @@ same M2TS, with stream type `24` and the HDMV registration descriptor,
 not Dolby's TS signalling (F `detect_bdmv_dovi_group`). mkvmerge 81.0 and
 later merge the two layers into one track (KN).
 
+### VC-1 across seamless joins
+
+VC-1 in Matroska is VfW mode: a block carries the time of the frame
+before it, and a file's first two blocks share its first frame's time
+(✔ real disc: an M2TS that stamps every frame comes out `0, 0, 42, 83,
+…` ms). mkvmerge therefore ends a clip's VC-1 track where its last frame
+starts, and in `track` append mode puts the next clip there, a frame
+(41.7 ms) early, while each audio track follows its own end. ✔ real disc:
+a feature of 29 seamless clips came out with its video 1.2 s ahead of the
+audio by the end, a frame per join, and its last frame before each join
+shown for no time; plain mkvmerge does the same with two clips. Every
+clip's video ends at its play item's out time (to the 90 kHz tick), so
+mkvmerge drops no frame.
+
+So mkvsmith delays each appended VC-1 clip by a frame (`--sync`,
+rounded so the running total stays on the frame clock), and after the
+mux gives each join's first block, which carries the previous clip's
+last frame, the time a frame before the next block. ✔ real disc: every
+one of the 28 joins then lands within 1 ms of the playlist's time, the
+video and all four audio tracks end at the playlist's length, the audio
+trims are unchanged, and every frame step is 40–42 ms.
+
+Counting a clip's frames with ffprobe gives one more packet than the clip
+has frames (✔ real disc, every clip tried), which reads as a dropped
+frame; the clip's last video PTS shows there is none.
+
 ## Other BDMV files
 
 ### `index.bdmv` (L `index_parse.c`)

@@ -58,7 +58,7 @@ from mkvsmith.vobsub import (
     _vobsub_pts_offset,
 )
 from mkvsmith.hdspu import scan_evo_subpictures, write_sup
-from mkvsmith.vc1time import correct_vc1_frame_times
+from mkvsmith.vc1time import correct_vc1_frame_times, retime_vc1_join_frames
 from mkvsmith.cc608 import (
     CC608_CODECS,
     extract_cc608_captions,
@@ -90,6 +90,7 @@ from mkvsmith.models import (
     UserPrompts,
 )
 from mkvsmith.m2ts import (
+    PTS_HZ,
     is_bluray_audio_pid,
     null_packets_from,
     plan_seamless_trim,
@@ -1530,6 +1531,32 @@ def _clone_or_copy(src: Path, dst: Path) -> None:
     shutil.copyfile(src, dst)
 
 
+@dataclass(frozen=True, slots=True)
+class _SeamlessAppend:
+    """Clips to append in track mode, with how to place their VC-1 video."""
+
+    inputs: list[Path]
+    # A VC-1 block carries the time of the frame before it (VfW mode), so
+    # mkvmerge ends a clip's track where its last frame starts and appends
+    # the next clip a frame early: each appended clip is delayed a frame
+    # (see _append_input_files).
+    vc1_sync: tuple[int, float] | None = None  # (track ID, frame ms)
+
+
+def _muxed_vc1_track(mapped: list[MappedStream]) -> int | None:
+    """mkvmerge's track ID of the muxed video when it is VC-1."""
+    return next(
+        (
+            entry["input_id"]
+            for entry in mapped
+            if entry["type"] == "video"
+            and entry["input_id"] >= 0
+            and entry["stream"].codec == "vc1"
+        ),
+        None,
+    )
+
+
 def _prepare_seamless_append(
     title: Title,
     inputs: list[Path],
@@ -1538,7 +1565,7 @@ def _prepare_seamless_append(
     cleanup: list[Path],
     temp_dirs: list[Path],
     config: Config | None = None,
-) -> list[Path] | None:
+) -> _SeamlessAppend | None:
     """Trim clip tails so a seamless title can be appended in track mode.
 
     Returns the inputs to mux (trimmed private copies substituted where a
@@ -1608,7 +1635,13 @@ def _prepare_seamless_append(
         f"Seamless append: trimmed {trimmed}/{len(inputs)} clip tails "
         f"({nulled} audio packets nulled, {len(pids)} track(s)); track mode"
     )
-    return result
+    vc1_track = _muxed_vc1_track(mapped)
+    steps = sorted(tail.video_step for tail in tails if tail.video_step > 0)
+    step = steps[len(steps) // 2] if steps else 0
+    vc1_sync = (
+        (vc1_track, step * 1000 / PTS_HZ) if vc1_track is not None and step else None
+    )
+    return _SeamlessAppend(result, vc1_sync)
 
 
 def _kept_clock_joins(
@@ -1636,6 +1669,7 @@ def _append_input_files(
     track_filter_opts: list[str],
     track_mode: bool = False,
     clock_joins: Sequence[bool] = (),
+    vc1_sync: tuple[int, float] | None = None,
 ) -> None:
     # Blu-ray clips use mkvmerge's default ``file`` append mode: each appended
     # clip is offset by the previous file's end, so audio and video stay
@@ -1651,6 +1685,10 @@ def _append_input_files(
     # A clip that carries on the previous clip's clock (*clock_joins*, HD DVD
     # seamless clips) is read with it as one stream, ( a b ): appended, a
     # VC-1 track lands ~0.3 s behind its audio (docs/formats/hd-dvd.md).
+    # *vc1_sync* (track ID, frame ms) delays each appended clip's VC-1 video
+    # by a frame: mkvmerge appends it a frame early. Each clip follows the
+    # previous one's end, delay included, so the delays add up; they're
+    # rounded so their running total stays on the frame clock.
     groups: list[list[Path]] = [[inputs[0]]]
     for index, clip in enumerate(inputs[1:], start=1):
         if index < len(clock_joins) and clock_joins[index]:
@@ -1663,6 +1701,10 @@ def _append_input_files(
         if index:
             cmd += ["+"]
             cmd += track_filter_opts
+            if vc1_sync is not None:
+                track, frame_ms = vc1_sync
+                delay = round(index * frame_ms) - round((index - 1) * frame_ms)
+                cmd += ["--sync", f"{track}:{delay}"]
         if len(group) > 1:
             cmd += ["(", *(str(path) for path in group), ")"]
         else:
@@ -1820,6 +1862,7 @@ def _build_mkvmerge_command(
     trim: _ClipTrimPlan | None = None,
     pgs_subtitles: Sequence[tuple[Stream, Path]] = (),
     clock_joins: Sequence[bool] = (),
+    vc1_sync: tuple[int, float] | None = None,
 ) -> list[str]:
     cmd: list[str] = (
         ["mkvmerge"]
@@ -1904,6 +1947,7 @@ def _build_mkvmerge_command(
         track_filter_opts,
         track_mode=track_append,
         clock_joins=clock_joins,
+        vc1_sync=vc1_sync if track_append else None,
     )
 
     if subtitle_fallback is not None and fallback_tracks:
@@ -2110,6 +2154,23 @@ def _correct_vc1_frame_times(out_file: Path, inputs: Sequence[Path]) -> None:
         return
     if changed:
         log_info(tr("Corrected the timing of {count} VC-1 frame(s)", count=changed))
+
+
+def _retime_vc1_join_frames(out_file: Path) -> None:
+    """Give the VC-1 frame before each appended clip its own time.
+
+    mkvmerge shows it for no time and holds the frame before (see
+    vc1time). A failure leaves the file as mkvmerge wrote it.
+    """
+    try:
+        changed = retime_vc1_join_frames(out_file)
+    except (ValueError, OSError) as exc:
+        log_warn(
+            tr("Could not retime the VC-1 frames at the clip joins: {err}", err=exc)
+        )
+        return
+    if changed:
+        log_debug(f"Retimed {changed} VC-1 frame(s) at clip joins")
 
 
 def _extract_hddvd_pgs_subtitles(
@@ -3023,6 +3084,7 @@ class MKVCreator:
         trimmed_chapters: list[float] | None = None,
         fix_source_id_statistics: bool = False,
         vc1_inputs: Sequence[Path] = (),
+        vc1_joins: bool = False,
     ) -> Path:
         """Run the mux and finalise the output.
 
@@ -3033,7 +3095,9 @@ class MKVCreator:
         lists each track's SOURCE_ID in its _STATISTICS_TAGS afterwards so
         players surface it (see _apply_source_id_statistics_fix).
         *vc1_inputs* are HD DVD EVOs whose VC-1 frame times replace
-        mkvmerge's (see _correct_vc1_frame_times).
+        mkvmerge's (see _correct_vc1_frame_times). *vc1_joins* retimes the
+        VC-1 frame before each appended Blu-ray clip (see
+        _retime_vc1_join_frames).
         """
         self._stop_if_cancelled(title)
         log_info(tr("Muxing: {name}...", name=out_file.name))
@@ -3062,6 +3126,8 @@ class MKVCreator:
             raise
         if vc1_inputs:
             _correct_vc1_frame_times(out_file, vc1_inputs)
+        if vc1_joins:
+            _retime_vc1_join_frames(out_file)
         if retime_dropped_inputs is not None:
             _apply_retimed_edition_chapters(
                 out_file, title, retime_dropped_inputs, self.cleanup.temp_files
@@ -3108,7 +3174,7 @@ class MKVCreator:
                 prepared_tracks.mapped,
                 prepared_tracks.ident_tracks,
             )
-            seamless_inputs = _prepare_seamless_append(
+            seamless = _prepare_seamless_append(
                 title,
                 kept_inputs,
                 prepared_tracks.mapped,
@@ -3117,8 +3183,8 @@ class MKVCreator:
                 temp_dirs=self.cleanup.temp_dirs,
                 config=self.config,
             )
-            if seamless_inputs is not None:
-                kept_inputs = seamless_inputs
+            if seamless is not None:
+                kept_inputs = seamless.inputs
             trim = _clip_trim_plan(title, dropped_inputs)
             command = _build_mkvmerge_command(
                 title,
@@ -3135,17 +3201,18 @@ class MKVCreator:
                 input_plan.cleanup,
                 self.cleanup.temp_files,
                 verbose=self.config.debug,
-                track_append=seamless_inputs is not None,
+                track_append=seamless is not None,
                 preferred_languages=self.config.preferred_languages,
                 trim=trim,
                 pgs_subtitles=prepared_tracks.pgs_subtitles,
                 clock_joins=(
                     []
-                    if seamless_inputs is not None
+                    if seamless is not None
                     else _kept_clock_joins(
                         title, len(input_plan.inputs), dropped_inputs
                     )
                 ),
+                vc1_sync=seamless.vc1_sync if seamless is not None else None,
             )
             return self._execute_mux(
                 title,
@@ -3171,6 +3238,9 @@ class MKVCreator:
                     if title.hddvd_title_number is not None and "--split" not in command
                     else ()
                 ),
+                vc1_joins=len(kept_inputs) > 1
+                and _is_bluray_clip_append(kept_inputs)
+                and _muxed_vc1_track(prepared_tracks.mapped) is not None,
             )
         finally:
             self.active_processes.unregister_output(out_file)

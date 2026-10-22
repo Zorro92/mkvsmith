@@ -61,6 +61,9 @@ _ES: dict[str, str] = {
     "only {agreeing} of {frames} frame times agree with mkvmerge's": (
         "solo {agreeing} de {frames} tiempos de fotograma coinciden con los de mkvmerge"
     ),
+    "Could not retime the VC-1 frames at the clip joins: {err}": (
+        "No se pudieron reajustar los fotogramas VC-1 en las uniones de clips: {err}"
+    ),
     "mkvmerge starts the frames of {name} {ms} ms away from the rest": (
         "mkvmerge empieza los fotogramas de {name} a {ms} ms del resto"
     ),

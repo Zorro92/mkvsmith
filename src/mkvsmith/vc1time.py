@@ -442,3 +442,29 @@ def correct_vc1_frame_times(mkv_path: Path, evo_paths: Sequence[Path]) -> int | 
     # Each block carries the time of the frame shown before it.
     corrected = [round(time) for time in shown[:1] + shown[:-1]]
     return write_block_times(mkv_path, track, corrected)
+
+
+def retime_vc1_join_frames(mkv_path: Path) -> int | None:
+    """Show the frame before each appended clip for its own time.
+
+    mkvmerge starts each appended VC-1 file with two blocks at one time:
+    in VfW mode a block carries the time of the frame before it, and the
+    first repeats the file's first. At a join that first block carries
+    the previous clip's last frame, which so shows for no time while the
+    frame before it is held. It gets the time one frame before the next
+    block. Returns the blocks changed, ``None`` with no VC-1 track.
+    """
+    track = read_track_times(mkv_path, is_vc1_track)
+    if track is None:
+        return None
+    times = [block.time for block in track.blocks]
+    if len(times) < 3 or times[-1] <= times[1]:
+        return 0
+    # The mean step: a frame of 41.708 ms, not the millisecond steps.
+    frame = (times[-1] - times[1]) / (len(times) - 2)
+    retimed = list(times)
+    for index in range(1, len(times) - 1):
+        earlier = round(times[index + 1] - frame)
+        if times[index] == times[index + 1] and earlier > times[index - 1]:
+            retimed[index] = earlier
+    return write_block_times(mkv_path, track, retimed)

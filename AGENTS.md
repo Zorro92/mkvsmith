@@ -88,6 +88,16 @@ before changing a parser or writing a test builder, and record anything
 new you settle there, with its evidence. Copies of sources that can't be
 published live in `.agents/specs/` (gitignored, local only).
 
+## mkvmerge behaviour: list it, test it
+
+`docs/formats/mkvmerge.md` lists what mkvsmith reads from mkvmerge and
+every mkvmerge behaviour it works around, with how each is checked. When
+you add a workaround or start relying on a new behaviour, add it there,
+with a test in `tests/test_mkvmerge_contract.py` (a synthetic stream muxed
+by the real mkvmerge) when one can show it. For a new MKVToolNix release,
+follow that page's review steps (`scripts/mkvmerge_news.py` lists what
+changed).
+
 ## Reference implementations & specs (read, don't depend on)
 
 When extending a parser (a new CLPI/IFO/MPLS field, a codec's channel layout,

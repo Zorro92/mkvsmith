@@ -29,6 +29,9 @@ builder or test, and add to it whenever research settles something.
   - [matroska-output.md](matroska-output.md): the track flags, languages,
     chapters, editions and tags mkvsmith writes, and the mkvmerge versions
     they need.
+  - [mkvmerge.md](mkvmerge.md): what mkvsmith reads from mkvmerge, the
+    mkvmerge behaviours it works around and how each is checked, and the
+    review of each MKVToolNix release.
 - **Sources** ([sources/](sources/)): copies of reference material whose
   licence allows it, unchanged, each headed with its URL, exact commit,
   fetch date and licence.

@@ -17,101 +17,14 @@ from mkvsmith.vc1time import (
     retime_vc1_join_frames,
     evo_frame_times,
 )
-
-_FIELD = 90000 / (2 * 30000 / 1001)  # ticks per field at 29.97 frames/s
-
-
-class _BitWriter:
-    def __init__(self) -> None:
-        self._bits: list[int] = []
-
-    def put(self, value: int, count: int) -> _BitWriter:
-        self._bits += [(value >> (count - 1 - i)) & 1 for i in range(count)]
-        return self
-
-    def to_bytes(self, size: int) -> bytes:
-        bits = (self._bits + [0] * (size * 8))[: size * 8]
-        return bytes(
-            int("".join(map(str, bits[i : i + 8])), 2) for i in range(0, len(bits), 8)
-        )
-
-
-def _sequence_header(
-    interlace: int = 1, pulldown: int = 1, frame_rate: bool = True
-) -> bytes:
-    bits = _BitWriter().put(3, 2).put(3, 3).put(1, 2).put(0, 3 + 5 + 1)
-    bits.put(959, 12).put(539, 12)  # (1920 / 2 - 1, 1080 / 2 - 1)
-    bits.put(pulldown, 1).put(interlace, 1).put(0, 1).put(0, 1).put(0, 1).put(0, 1)
-    bits.put(1, 1).put(1919, 14).put(1079, 14).put(0, 1)  # DISPLAY_EXT, no aspect
-    if frame_rate:
-        bits.put(1, 1).put(0, 1).put(3, 8).put(2, 4)  # 30000 / 1001
-    else:
-        bits.put(0, 1)
-    return bits.to_bytes(16)
-
-
-# PTYPE codes: P 0, B 10, I 110, BI 1110, skipped 1111.
-_PTYPE = {"P": (0, 1), "B": (2, 2), "I": (6, 3), "BI": (14, 4), "S": (15, 4)}
-
-
-def _frame_header(kind: str, rff: int) -> bytes:
-    code, length = _PTYPE[kind]
-    return _BitWriter().put(0, 1).put(code, length).put(0, 1).put(rff, 1).to_bytes(16)
-
-
-def _pes(payload: bytes, pts: int | None) -> bytes:
-    """A VC-1 PES (0xFD, stream_id_extension 0x55 in PES_extension_2)."""
-    fields = b""
-    flags = 0x01
-    if pts is not None:
-        flags |= 0x80
-        fields = bytes(
-            [
-                0x21 | ((pts >> 29) & 0x0E),
-                (pts >> 22) & 0xFF,
-                ((pts >> 14) & 0xFE) | 1,
-                (pts >> 7) & 0xFF,
-                ((pts << 1) & 0xFE) | 1,
-            ]
-        )
-    fields += b"\x01\x81\x55"  # PES_extension_flag_2, length 1, extension 0x55
-    body = bytes([0x81, flags, len(fields)]) + fields + payload
-    return b"\x00\x00\x01\xfd" + len(body).to_bytes(2, "big") + body
-
-
-def _pack(pes: bytes) -> bytes:
-    pack = b"\x00\x00\x01\xba" + bytes([0x44, 0, 4, 0, 4, 1, 0, 0, 3, 0xF8]) + pes
-    assert len(pack) <= 2048
-    return pack + bytes(2048 - len(pack))
-
-
-# Decode order of one GOP, with RFF flags: the 3:2 cadence alternates
-# 2- and 3-field frames in display order (I B B P B B P ...).
-_GOP = [("I", 0), ("P", 1), ("B", 1), ("B", 0), ("P", 0), ("B", 0), ("B", 1)]
-
-
-def _write_evo(path: Path, gops: int, first_pts: int = 900_000) -> list[float]:
-    """An EVO of *gops* GOPs; returns the expected sorted frame times."""
-    packs: list[bytes] = []
-    pts = first_pts
-    expected: list[float] = []
-    clock = 0.0
-    for gop in range(gops):
-        for index, (kind, rff) in enumerate(_GOP):
-            unit = b""
-            if index == 0:
-                unit += b"\x00\x00\x01\x0f" + _sequence_header()
-                unit += b"\x00\x00\x01\x0e" + bytes(8)
-            unit += b"\x00\x00\x01\x0d" + _frame_header(kind, rff) + b"\x55" * 64
-            packs.append(_pack(_pes(unit, pts if index == 0 else None)))
-        # Display order I B B P B B P: durations by each frame's RFF.
-        shown = [_GOP[0], _GOP[2], _GOP[3], _GOP[1], _GOP[5], _GOP[6], _GOP[4]]
-        for _kind, rff in shown:
-            expected.append(clock)
-            clock += (2 + rff) * _FIELD
-        pts = first_pts + round(clock)
-    path.write_bytes(b"".join(packs))
-    return expected
+from tests.synth_vc1 import FIELD as _FIELD
+from tests.synth_vc1 import GOP as _GOP
+from tests.synth_vc1 import BitWriter as _BitWriter
+from tests.synth_vc1 import frame_header as _frame_header
+from tests.synth_vc1 import pack as _pack
+from tests.synth_vc1 import pes as _pes
+from tests.synth_vc1 import sequence_header as _sequence_header
+from tests.synth_vc1 import write_evo as _write_evo
 
 
 def test_sequence_header_frame_rate_and_flags() -> None:

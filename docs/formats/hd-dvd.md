@@ -93,7 +93,10 @@ Chapter times are relative to the title.
 | `SubpictureAttributeItem` | `8bitRLC` | on every posted retail disc |
 
 Tracks point at an item through `mediaAttr`. The list may be empty on
-simple content (MS).
+simple content (MS). ✔ real discs: two retail discs list the same five
+items, VC-1 and MPEG-2 video, DD+ 6 ch, MLP 6 ch and DD+ 2 ch audio, and
+`8bitRLC`; `hddvd.py` reads the audio codec to find each track's
+sub-stream (below).
 
 ### Clips
 
@@ -114,12 +117,25 @@ covers it. (D9)
 EVO. `description` is free text in the authoring language: seen are
 "English 5.1", "English SDH", "Espanol", "Francais", "Forced Espanol". (D9)
 
+`streamNumber` counts across codecs, not within one: on a real disc the
+MLP track is stream 1 and the two DD+ tracks streams 2 and 3, and the EVO
+carries them at `0xB0`, `0xC1` and `0xC2`. So a track's sub-stream is its
+codec's first ID (below) + `streamNumber` − 1. ✔ real discs (DD+, MLP);
+DTS-HD at `0x88` follows the same rule unconfirmed.
+
 `langcode` is an ISO 639-1 code with a two-digit suffix: `en:01`, `en:05`,
 and `ja:00`–`ja:03` on four subtitle tracks of one disc. `selectable="false"`
-appears on the track described "Forced Espanol". (D9) We read the suffix as
-the HD DVD form of DVD's language code extension (`05` captions, `09`
-forced), and `selectable="false"` as a forced track; no source confirms
-either.
+appears on the track described "Forced Espanol". (D9) The suffix is the HD
+DVD form of DVD's language code extension: ✔ real disc, `en:03` on the
+audio described "Commentary" and `en:05` on the subtitles described
+"English for the Hearing Impaired", with `00` (unspecified) and `01`
+(normal) on the rest. `hddvd.py` reads audio `03`–`04` as commentary and
+subtitle `05`–`07` as captions, `09` as forced and `13`–`15` as
+commentary, as on DVD. `SubtitleTrack` also carries `forced="true"` or
+`"false"` (✔ real disc, `false` on every track seen), read as forced.
+`selectable="false"` isn't read; no source says what it means beyond the
+one disc. The navigation entry's `description` repeats the clip track's,
+and stands in when the clip track has none.
 
 ## EVO streams
 
@@ -159,8 +175,10 @@ layout.
 Retail XPLs declare `8bitRLC` subpictures, and users of another ripping
 tool report its HD DVD subtitles come out as an "extended VobSub" few players
 render. F decodes an HD variant of the SPU with 4-byte offsets and an 8-bit
-palette (see [subpictures.md](subpictures.md)); whether retail discs use it
-is unconfirmed.
+palette (see [subpictures.md](subpictures.md)). ✔ real discs: the
+subpictures of two retail discs are that variant, starting `00 00`, then a
+4-byte size and a 4-byte control offset, so the DVD decoder can't read
+them.
 
 ### Sources disagree
 
@@ -192,18 +210,17 @@ DTS-HD, 7 DD+. DVD has LPCM at 4.
 ## Open parser mismatches
 
 - **Subtitles:** XPL subtitles are declared `dvd_subtitle` and muxed
-  through the DVD VobSub path, which may not decode `8bitRLC`.
+  through the DVD VobSub path, which can't decode the HD SPUs retail
+  discs carry.
 - **Playlist choice:** a folder uses the first `VPLST*.XPL` in name order;
   an ISO the first `.xpl` in its listing, with no `VPLST` filter.
 - **Clips:** every clip of a title is appended, including a trailing
   warning card with a different track list. When a clip is missing, the
   chapters and the duration stay on the full timeline.
-- **Track matching:** tracks are matched to mkvmerge's by position within
-  each type, not by `streamNumber` and ID range, so with mixed codecs a
-  language can land on the wrong track.
-- **Unused fields:** `MediaAttributeList`, chapter `displayName`, the
-  `langcode` suffix and `selectable` aren't read. The description fallback
-  knows English words only.
+- **Track matching:** audio of a codec outside DD+, MLP and DTS-HD, and
+  video, are matched to mkvmerge's tracks by position within each type.
+- **Unused fields:** chapter `displayName` and `selectable` aren't read.
+  The description fallback knows English words only.
 - **Picture-in-picture:** secondary video and audio are muxed as unlabelled
   tracks.
 - **Standard Content:** discs without an XPL get one title per EVO.

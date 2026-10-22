@@ -7,12 +7,15 @@ from pathlib import Path
 import pytest
 
 from mkvsmith.hddvd import (
+    HddvdTitle,
     describe_language,
     find_playlist,
     parse_discid,
     parse_xpl,
     parse_xpl_time,
 )
+from mkvsmith.models import Stream, StreamType, Title
+from mkvsmith.scan import _apply_hddvd_languages
 
 XPL = """<?xml version="1.0" encoding="UTF-8"?>
 <Playlist majorVersion="1" minorVersion="0"
@@ -94,6 +97,12 @@ def test_describe_language_flags() -> None:
         False,
     )
     assert describe_language("English SDH") == ("eng", False, False, True)
+    assert describe_language("English for the Hearing Impaired") == (
+        "eng",
+        False,
+        False,
+        True,
+    )
     assert describe_language("Brazilian Portuguese") == ("por", False, False, False)
     assert describe_language("") == ("und", False, False, False)
 
@@ -172,3 +181,108 @@ def test_parse_discid_provider(tmp_path: Path) -> None:
     bad = tmp_path / "bad.DAT"
     bad.write_bytes(b"not a disc id file" + bytes(64))
     assert parse_discid(bad) is None
+
+
+# Shaped like a real Advanced Content disc: an MLP track first in the menu
+# but stream 1 of the EVO, DD+ after it, the navigation list's code
+# extensions and ``forced`` attribute, and the MediaAttributeList codecs.
+XPL_FLAGS = """<?xml version="1.0" encoding="UTF-8"?>
+<Playlist majorVersion="1" minorVersion="0"
+    xmlns="http://www.dvdforum.org/2005/HDDVDVideo/Playlist">
+    <MediaAttributeList>
+        <VideoAttributeItem index="1" codec="VC-1" />
+        <AudioAttributeItem index="1" codec="DD+" channels="6" />
+        <AudioAttributeItem index="2" codec="MLP" channels="6" />
+        <AudioAttributeItem index="3" codec="DD+" channels="2" />
+        <SubpictureAttributeItem index="1" codec="8bitRLC" />
+    </MediaAttributeList>
+    <TitleSet timeBase="60fps" defaultLanguage="en">
+        <Title titleNumber="2" titleDuration="01:00:00:00" id="Feature">
+            <PrimaryAudioVideoClip titleTimeBegin="00:00:00:00" titleTimeEnd="01:00:00:00" src="file:///dvddisc/HVDVD_TS/FEATURE_1.MAP" dataSource="Disc">
+                <Video track="1" mediaAttr="1" />
+                <Audio track="1" streamNumber="2" mediaAttr="1" />
+                <Audio track="2" streamNumber="1" mediaAttr="2" />
+                <Audio track="3" streamNumber="3" mediaAttr="3" />
+                <Subtitle track="1" streamNumber="1" mediaAttr="1" />
+                <Subtitle track="2" streamNumber="2" mediaAttr="1" />
+                <Subtitle track="3" streamNumber="3" mediaAttr="1" />
+            </PrimaryAudioVideoClip>
+            <TrackNavigationList>
+                <AudioTrack track="1" langcode="en:00" description="English 5.1" />
+                <AudioTrack track="2" langcode="fr:01" description="French" />
+                <AudioTrack track="3" langcode="en:03" description="Director" />
+                <SubtitleTrack track="1" langcode="en:05" forced="false" description="English" />
+                <SubtitleTrack track="2" langcode="es:00" forced="true" description="Spanish" />
+                <SubtitleTrack track="3" langcode="fr:09" description="French" />
+            </TrackNavigationList>
+        </Title>
+    </TitleSet>
+</Playlist>
+"""
+
+
+def _flags_title(tmp_path: Path) -> HddvdTitle:
+    adv_obj = tmp_path / "ADV_OBJ"
+    hvdt = tmp_path / "HVDVD_TS"
+    adv_obj.mkdir()
+    hvdt.mkdir()
+    (adv_obj / "VPLST000.XPL").write_text(XPL_FLAGS)
+    (hvdt / "FEATURE_1.EVO").write_bytes(b"evo")
+    (title,) = parse_xpl(adv_obj / "VPLST000.XPL", hvdt).titles
+    return title
+
+
+def test_navigation_code_extensions_and_forced_set_flags(tmp_path: Path) -> None:
+    title = _flags_title(tmp_path)
+    audio = [s for s in title.streams if s.kind == "audio"]
+    subs = [s for s in title.streams if s.kind == "subtitle"]
+
+    assert [(s.language, s.is_commentary) for s in audio] == [
+        ("eng", False),
+        ("fra", False),
+        ("eng", True),  # en:03
+    ]
+    # The navigation description stands in for the clip's missing one.
+    assert audio[0].description == "English 5.1"
+    assert [(s.language, s.is_hearing_impaired, s.is_forced) for s in subs] == [
+        ("eng", True, False),  # en:05
+        ("spa", False, True),  # forced="true"
+        ("fra", False, True),  # fr:09
+    ]
+
+
+def test_audio_sub_streams_come_from_codec_and_stream_number(tmp_path: Path) -> None:
+    title = _flags_title(tmp_path)
+    audio = [s for s in title.streams if s.kind == "audio"]
+
+    assert [(s.codec, s.sub_id) for s in audio] == [
+        ("DD+", 0xC1),
+        ("MLP", 0xB0),
+        ("DD+", 0xC2),
+    ]
+
+
+def test_probed_audio_is_matched_by_sub_stream_not_position(tmp_path: Path) -> None:
+    title = _flags_title(tmp_path)
+    # mkvmerge lists the MLP track (0xB0) first; the XPL lists it second.
+    probed = [
+        Stream(index=i, stream_type=StreamType.AUDIO, codec=codec, type_index=i)
+        for i, codec in enumerate(("truehd", "eac3", "eac3"))
+    ]
+    for stream, sub in zip(probed, (0xB0, 0xC1, 0xC2), strict=True):
+        stream.sub_id = sub << 32 | 0xBD
+    scanned = Title(
+        index=0,
+        source_file=Path("FEATURE_1.EVO"),
+        name="Feature",
+        duration_seconds=3600.0,
+        streams=probed,
+    )
+
+    _apply_hddvd_languages(scanned, title)
+
+    assert [(s.language, s.is_commentary) for s in probed] == [
+        ("fra", False),
+        ("eng", False),
+        ("eng", True),
+    ]

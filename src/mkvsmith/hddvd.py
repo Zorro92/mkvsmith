@@ -91,6 +91,11 @@ class HddvdStream:
     is_forced: bool = False
     is_commentary: bool = False
     is_hearing_impaired: bool = False
+    # The MediaAttributeList codec ("DD+", "MLP", ...) and, for audio whose
+    # codec has a known first sub-stream, the private stream 1 sub-stream
+    # it rides in the EVO: that codec's first ID + streamNumber - 1.
+    codec: str = ""
+    sub_id: int | None = None
 
 
 @dataclass
@@ -187,10 +192,37 @@ def _default_language_from_titleset(root: ET.Element) -> str:
     return "und"
 
 
-def _nav_langs(title_el: ET.Element) -> tuple[dict[int, str], dict[int, str]]:
-    """TrackNavigationList langcodes per XPL track number (audio, subtitle)."""
-    audio: dict[int, str] = {}
-    subs: dict[int, str] = {}
+@dataclass(frozen=True)
+class _NavTrack:
+    """One TrackNavigationList entry: ``langcode="en:05"`` is a language and
+    a DVD-style code extension (docs/formats/hd-dvd.md), plus a ``forced``
+    attribute and a description."""
+
+    language: str | None
+    extension: int | None
+    forced: bool
+    description: str
+
+
+# Code extensions, as on DVD (SPRM 17 audio, 19 subpicture; dvd-video.md):
+# ✔ real disc, "en:03" marks a commentary and "en:05" captions for the
+# hearing impaired.
+_AUDIO_COMMENTARY_EXTENSIONS = frozenset({3, 4})
+_SUBTITLE_CAPTION_EXTENSIONS = frozenset({5, 6, 7})
+_SUBTITLE_FORCED_EXTENSIONS = frozenset({9})
+_SUBTITLE_COMMENTARY_EXTENSIONS = frozenset({13, 14, 15})
+
+# First private stream 1 sub-stream of each MediaAttributeList audio codec
+# (FFmpeg mpeg.c, MKVToolNix r_mpeg_ps.cpp; ✔ real disc for DD+ and MLP).
+_AUDIO_SUB_STREAM_BASE = {"DD+": 0xC0, "MLP": 0xB0, "DTS-HD": 0x88}
+
+
+def _nav_tracks(
+    title_el: ET.Element,
+) -> tuple[dict[int, _NavTrack], dict[int, _NavTrack]]:
+    """TrackNavigationList entries per XPL track number (audio, subtitle)."""
+    audio: dict[int, _NavTrack] = {}
+    subs: dict[int, _NavTrack] = {}
     for nav in title_el.iter():
         if _local(nav.tag) != "TrackNavigationList":
             continue
@@ -200,15 +232,43 @@ def _nav_langs(title_el: ET.Element) -> tuple[dict[int, str], dict[int, str]]:
                 track = int(entry.get("track", "0"))
             except ValueError:
                 continue
-            code = (entry.get("langcode") or "").split(":")[0].lower()
-            lang = _LANG_2_TO_3.get(code)
-            if not lang:
-                continue
+            code, _, suffix = (entry.get("langcode") or "").partition(":")
+            nav_track = _NavTrack(
+                language=_LANG_2_TO_3.get(code.lower()),
+                extension=int(suffix) if suffix.isdigit() else None,
+                forced=(entry.get("forced") or "").lower() == "true",
+                description=entry.get("description") or "",
+            )
             if kind == "AudioTrack":
-                audio[track] = lang
+                audio[track] = nav_track
             elif kind == "SubtitleTrack":
-                subs[track] = lang
+                subs[track] = nav_track
     return audio, subs
+
+
+def _nav_langs(title_el: ET.Element) -> tuple[dict[int, str], dict[int, str]]:
+    """TrackNavigationList langcodes per XPL track number (audio, subtitle)."""
+    audio, subs = _nav_tracks(title_el)
+    return (
+        {track: nav.language for track, nav in audio.items() if nav.language},
+        {track: nav.language for track, nav in subs.items() if nav.language},
+    )
+
+
+def _media_attributes(root: ET.Element) -> dict[tuple[str, int], str]:
+    """MediaAttributeList codecs by (kind, index): ("audio", 1) -> "DD+"."""
+    kinds = {
+        "VideoAttributeItem": "video",
+        "AudioAttributeItem": "audio",
+        "SubpictureAttributeItem": "subtitle",
+    }
+    attributes: dict[tuple[str, int], str] = {}
+    for element in root.iter():
+        kind = kinds.get(_local(element.tag))
+        index = element.get("index") or ""
+        if kind and index.isdigit():
+            attributes[(kind, int(index))] = element.get("codec") or ""
+    return attributes
 
 
 def describe_language(description: str) -> tuple[str, bool, bool, bool]:
@@ -223,21 +283,33 @@ def describe_language(description: str) -> tuple[str, bool, bool, bool]:
         code,
         "forced" in lowered,
         "commentary" in lowered,
-        "sdh" in lowered or "hard of hearing" in lowered,
+        "sdh" in lowered
+        or "hard of hearing" in lowered
+        or "hearing impaired" in lowered,
     )
 
 
 def _parse_stream(
     element: ET.Element,
     kind: str,
-    nav_lang: str | None = None,
+    nav: _NavTrack | None = None,
     default: str = "und",
+    codec: str = "",
 ) -> HddvdStream:
-    description = element.get("description", "")
+    description = element.get("description") or (nav.description if nav else "")
     desc_code, forced, commentary, sdh = describe_language(description)
+    if nav is not None:
+        extension = nav.extension
+        forced = forced or nav.forced
+        if kind == "audio" and extension in _AUDIO_COMMENTARY_EXTENSIONS:
+            commentary = True
+        if kind == "subtitle":
+            sdh = sdh or extension in _SUBTITLE_CAPTION_EXTENSIONS
+            forced = forced or extension in _SUBTITLE_FORCED_EXTENSIONS
+            commentary = commentary or extension in _SUBTITLE_COMMENTARY_EXTENSIONS
     # TrackNavigationList langcodes are authoritative; description text is
     # the fallback; video falls back to the disc default language.
-    code = nav_lang or desc_code
+    code = (nav.language if nav else None) or desc_code
     if code == "und" and kind == "video":
         code = default
     try:
@@ -248,6 +320,7 @@ def _parse_stream(
         stream_number = int(element.get("streamNumber", str(track)))
     except ValueError:
         stream_number = track
+    base = _AUDIO_SUB_STREAM_BASE.get(codec) if kind == "audio" else None
     return HddvdStream(
         kind=kind,
         track=track,
@@ -257,6 +330,8 @@ def _parse_stream(
         is_forced=forced,
         is_commentary=commentary,
         is_hearing_impaired=sdh,
+        codec=codec,
+        sub_id=base + stream_number - 1 if base is not None else None,
     )
 
 
@@ -289,6 +364,7 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
         return disc
     fps = _fps_from_titleset(root)
     disc.default_language = _default_language_from_titleset(root)
+    media = _media_attributes(root)
     for element in root.iter():
         if _local(element.tag) != "Title":
             continue
@@ -303,9 +379,8 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
             duration_seconds=parse_xpl_time(element.get("titleDuration"), fps),
             id=element.get("id") or "",
         )
-        audio_nav, sub_nav = _nav_langs(element)
-        title.audio_nav_langs = audio_nav
-        title.subtitle_nav_langs = sub_nav
+        audio_nav, sub_nav = _nav_tracks(element)
+        title.audio_nav_langs, title.subtitle_nav_langs = _nav_langs(element)
         for child in element:
             local = _local(child.tag)
             if local == "PrimaryAudioVideoClip":
@@ -325,14 +400,23 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
                         except ValueError:
                             track_no = 1
                         if kind == "audio":
-                            nav_lang: str | None = audio_nav.get(track_no)
+                            nav: _NavTrack | None = audio_nav.get(track_no)
                         elif kind == "subtitle":
-                            nav_lang = sub_nav.get(track_no)
+                            nav = sub_nav.get(track_no)
                         else:
-                            nav_lang = None
+                            nav = None
+                        attr = track_el.get("mediaAttr") or ""
+                        media_kind = {"subaudio": "audio", "subvideo": "video"}.get(
+                            kind, kind
+                        )
+                        codec = (
+                            media.get((media_kind, int(attr)), "")
+                            if attr.isdigit()
+                            else ""
+                        )
                         clip.streams.append(
                             _parse_stream(
-                                track_el, kind, nav_lang, disc.default_language
+                                track_el, kind, nav, disc.default_language, codec
                             )
                         )
                 title.clips.append(clip)

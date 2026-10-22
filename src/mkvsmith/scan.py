@@ -75,6 +75,7 @@ from mkvsmith.dvdbuild import (
     _scan_dvd_source,
 )
 from mkvsmith.hddvd import (
+    HddvdStream,
     HddvdTitle,
     find_playlist,
     parse_discid,
@@ -1251,14 +1252,18 @@ def _scan_m2ts_dir(sd: Path, titles: list[Title]) -> None:
 
 
 def _apply_hddvd_languages(title: Title, ht: HddvdTitle) -> None:
-    """Overlay XPL languages/flags onto probed streams, positionally by type.
+    """Overlay XPL languages/flags onto probed streams.
 
     mkvmerge reports no languages for EVO tracks, so the XPL track lists
-    (first clip; clips repeat the layout) are matched by per-type order —
-    the same positional assumption as the Blu-ray STN fallback. Secondary
-    PiP tracks (SubVideo/SubAudio) are not muxed.
+    (first clip; clips repeat the layout) supply them. Audio is matched by
+    sub-stream: mkvmerge numbers an EVO private stream 1 track
+    ``(sub-stream << 32) | 0xBD`` and the XPL gives each track's codec and
+    stream number (docs/formats/hd-dvd.md). Anything else, and audio of a
+    codec without a known sub-stream, falls back to per-type order — the
+    same positional assumption as the Blu-ray STN fallback. Secondary PiP
+    tracks (SubVideo/SubAudio) are not muxed.
     """
-    wanted: dict[str, list[Any]] = {"video": [], "audio": [], "subtitle": []}
+    wanted: dict[str, list[HddvdStream]] = {"video": [], "audio": [], "subtitle": []}
     pip = False
     for hs in ht.streams:
         if hs.kind in ("subvideo", "subaudio"):
@@ -1276,15 +1281,29 @@ def _apply_hddvd_languages(title: Title, ht: HddvdTitle) -> None:
             candidates = wanted["subtitle"]
         else:
             continue
-        if stream.type_index >= len(candidates):
+        hs = _hddvd_stream_for(stream, candidates)
+        if hs is None:
             continue
-        hs = candidates[stream.type_index]
         stream.language = hs.language
         stream.is_forced = stream.is_forced or hs.is_forced
         stream.is_commentary = stream.is_commentary or hs.is_commentary
         stream.is_hearing_impaired = (
             stream.is_hearing_impaired or hs.is_hearing_impaired
         )
+
+
+def _hddvd_stream_for(
+    stream: Stream, candidates: list[HddvdStream]
+) -> HddvdStream | None:
+    """The XPL track for a probed *stream*: by sub-stream, else by position."""
+    number = stream.sub_id
+    if number is not None and number & 0xFFFFFFFF == 0xBD:
+        for hs in candidates:
+            if hs.sub_id is not None and hs.sub_id == number >> 32:
+                return hs
+    if stream.type_index < len(candidates):
+        return candidates[stream.type_index]
+    return None
 
 
 def _build_hddvd_title(

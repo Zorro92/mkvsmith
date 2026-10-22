@@ -52,9 +52,11 @@ _MAX_MISSES = 0.01
 # Within this of mkvmerge's own time a frame counts as agreeing; most
 # frames must agree, or the frames aren't the ones mkvmerge muxed. Over a
 # field (16.7 ms): mkvmerge's cadence is often a field out of phase with
-# the decoder's, while a frame out of line is 33 ms or more off.
+# the decoder's, while a frame out of line is 33 ms or more off. Where a
+# stream drops its B frames mkvmerge runs frames off for long stretches
+# (89% agreeing on one feature), so the bar is below that.
 _AGREE_MS = 20.0
-_MIN_AGREEMENT = 0.9
+_MIN_AGREEMENT = 0.8
 # mkvmerge's time for an EVO's first frame anchors the EVO; its other
 # frames run a few frames late (~150 ms), so a first frame further than
 # this from that run means the anchor isn't the frame it should be.

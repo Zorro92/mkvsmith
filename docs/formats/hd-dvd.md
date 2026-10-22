@@ -255,13 +255,20 @@ disc), so the frame count includes a last frame shorter than a full
 header.
 
 ✔ real discs, measured against the disc clock (each frame shown at the
-next block's time, against its PTS-derived time): on three features (two
-EVOs each, 156,382, 166,621 and 189,337 frames) every frame lands on the
-clock to the millisecond and every step between block times becomes
-33–34 or 50–51 ms, from 110 duplicates and 37 holes on one, 1,708 bad
-steps (some backwards) on another and 33 on the third. Every cue still
-matches its block, and the stutter is gone. The audio's first block
-lands within 10 ms of where the stream start times put it.
+next block's time, against its PTS-derived time): on five features (two
+EVOs each, 132,552 to 198,893 frames, all interlaced with pulldown)
+every frame lands on the clock to the millisecond and every step between
+block times becomes 33–34 or 50–51 ms, from 110 duplicates and 37 holes
+on one, 1,708 bad steps (some backwards) on another and 33 on a third.
+Every cue still matches its block, and the stutter is gone. The audio's
+first block lands within 10 ms of where the stream start times put it.
+
+Where a stream drops its B frames (✔ real disc: I and P frames only for
+1,373 frames), mkvmerge steps back 34 ms and then runs two frames early
+for the whole stretch; 11% of that feature's frames lie more than 20 ms
+from its times, while every one of its 9,601 GOP PTSs lies on the
+cadence. A decoder shows the stretch on the cadence once the times are
+rewritten.
 
 ### Sources disagree
 
@@ -311,7 +318,7 @@ DTS-HD, 7 DD+. DVD has LPCM at 4.
   (a cut at 4379.198 s moves to 4378.891 s, the second EVO starts at
   3313.143 s). A clip after a missing one is appended as before.
 - **VC-1 frame times:** rewritten after the mux when the EVOs' frame
-  count matches the MKV's VC-1 blocks and at least 90% of the frames lie
+  count matches the MKV's VC-1 blocks and at least 80% of the frames lie
   within 20 ms of mkvmerge's times (after the median offset), and each
   EVO's first block lies within 0.5 s of that offset; otherwise
   mkvmerge's times stay, with a warning. Not done for a cut (`--split`) mux.

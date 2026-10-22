@@ -350,6 +350,23 @@ def test_correct_vc1_frame_times_puts_a_clock_join_on_the_clock(
     assert [block.time for block in after.blocks] == right[:1] + right[:-1]
 
 
+def test_correct_vc1_frame_times_takes_a_stretch_mkvmerge_runs_early(
+    tmp_path: Path,
+) -> None:
+    evo = tmp_path / "a.evo"
+    right = [round(t / 90) for t in _write_evo(evo, gops=4)]
+    # 4 of 28 frames two frames early, as where a stream drops its B frames.
+    muxed = [0] + [time + 40 for time in right[1:]]
+    for index in range(20, 24):
+        muxed[index] -= 67
+    path = tmp_path / "a.mkv"
+    _write_mkv(path, muxed)
+    assert correct_vc1_frame_times(path, [evo]) is not None
+    after = read_track_times(path, is_vc1_track)
+    assert after is not None
+    assert [block.time for block in after.blocks] == right[:1] + right[:-1]
+
+
 def test_correct_vc1_frame_times_refuses_a_first_frame_off_the_rest(
     tmp_path: Path,
 ) -> None:

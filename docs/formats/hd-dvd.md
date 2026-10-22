@@ -88,6 +88,14 @@ every posted disc has `timeBase="60fps"`, and frame values up to `:54` occur.
 `tickBase` (24 or 60 fps) is the markup's tick rate, not the video's. (D9)
 Chapter times are relative to the title.
 
+✔ real discs: "60fps" is 60/1.001. The time counts frames like
+non-drop-frame timecode (`HH:MM:SS` of 60 frames a second, then `FF`),
+and the frames run at 59.94 Hz. On two retail discs, each a feature in two
+seamless EVOs, the first EVO's video PTS run exactly 1.001 times its XPL
+length (3313.143 s for `00:55:09:50`, 2791.956 s for `00:46:29:10`), up to
+where the second EVO's PTS continue. Read at 60, every chapter falls
+3.6 s early per hour. Other time bases are taken as they are.
+
 ### Media attributes
 
 | Element | `codec` values seen | Notes |
@@ -229,14 +237,17 @@ DTS-HD, 7 DD+. DVD has LPCM at 4.
   EVO follows on the shared clock when it continues it, else after the
   previous EVO's video PTS span plus one GOP. ✔ real disc: a feature in
   two EVOs (seamless) runs its first EVO 3.31 s past the XPL's
-  `titleTimeEnd`, mkvmerge muxes all of it, and the second EVO's first
-  video PTS continues the first's clock. Timing by XPL durations put the
-  second EVO's subtitles 3.31 s early; by the clock, a sign's translation
-  lands on the sign's shot.
-- **Seamless joins:** at that join mkvmerge starts the second EVO's audio
-  where the shared clock says, but its VC-1 video about 0.3 s later
-  (the first EVO's frames already run about 0.1 s ahead of their PTS by
-  the end). Not investigated further.
+  `titleTimeEnd` read at 60 fps (exactly its length at 59.94, see
+  Times), and the second EVO's first video PTS continues the first's
+  clock. Timing by those durations put the second EVO's subtitles 3.31 s
+  early; by the clock, a sign's translation lands on the sign's shot.
+- **Seamless joins:** a clip marked `seamless="true"` is read with the
+  one before it as one stream (mkvmerge's `( a b )`), not appended. ✔
+  real disc: appended in track mode, the second EVO's audio started where
+  the shared clock says but its VC-1 video 0.31 s later (a 0.24 s jump in
+  the video timestamps at the join); concatenated, both follow the clock
+  (a cut at 4379.198 s moves to 4378.891 s, the second EVO starts at
+  3313.143 s). A clip after a missing one is appended as before.
 - **Track matching:** audio of a codec outside DD+, MLP and DTS-HD, and
   video, are matched to mkvmerge's tracks by position within each type.
 - **Unused fields:** chapter `displayName` and `selectable` aren't read.

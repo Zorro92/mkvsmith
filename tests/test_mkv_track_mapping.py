@@ -418,6 +418,49 @@ def test_append_input_files_repeats_track_filters() -> None:
     ]
 
 
+def test_append_input_files_reads_clips_on_one_clock_as_one_stream() -> None:
+    # HD DVD seamless clips carry on the previous clip's clock: b and c are
+    # read with a as one stream, d (a fresh clock) is appended.
+    cmd = ["mkvmerge"]
+    inputs = [Path("a.evo"), Path("b.evo"), Path("c.evo"), Path("d.evo")]
+    filters = ["--video-tracks", "0"]
+
+    mkv._append_input_files(
+        cmd, inputs, filters, clock_joins=[False, True, True, False]
+    )
+
+    assert cmd == [
+        "mkvmerge",
+        "--append-mode",
+        "track",
+        "(",
+        "a.evo",
+        "b.evo",
+        "c.evo",
+        ")",
+        "+",
+        "--video-tracks",
+        "0",
+        "d.evo",
+    ]
+
+    one_stream = ["mkvmerge"]
+    mkv._append_input_files(one_stream, inputs[:2], filters, clock_joins=[False, True])
+    assert one_stream == ["mkvmerge", "(", "a.evo", "b.evo", ")"]
+
+
+def test_kept_clock_joins_follow_dropped_clips() -> None:
+    title = Title(
+        index=0, source_file=Path("a.evo"), name="Title 1", duration_seconds=10.0
+    )
+    title.continues_clock = [False, True, True, True]
+    # Clip 1 dropped: clip 2 no longer continues anything kept.
+    assert mkv._kept_clock_joins(title, 4, [1]) == [False, False, True]
+    assert mkv._kept_clock_joins(title, 4, []) == [False, True, True, True]
+    # Flags that don't line up with the inputs are ignored.
+    assert mkv._kept_clock_joins(title, 3, []) == []
+
+
 def test_append_input_files_bluray_clips_use_file_mode() -> None:
     cmd = ["mkvmerge"]
     inputs = [Path("00000.m2ts"), Path("00001.m2ts")]

@@ -81,12 +81,21 @@ def _write_disc(tmp_path: Path) -> tuple[Path, Path]:
     return adv_obj, hvdt
 
 
+# "60fps" XPL timecode counts 60 frames a second but runs at 60/1.001.
+_NTSC = 1.001
+
+
 def test_parse_xpl_time_frames() -> None:
     assert parse_xpl_time("00:00:00:00") == 0.0
-    assert parse_xpl_time("00:02:04:35") == pytest.approx(124 + 35 / 60.0)
+    assert parse_xpl_time("00:02:04:35") == pytest.approx((124 + 35 / 60.0) * _NTSC)
     assert parse_xpl_time("02:23:18:40") == pytest.approx(
-        2 * 3600 + 23 * 60 + 18 + 40 / 60.0
+        (2 * 3600 + 23 * 60 + 18 + 40 / 60.0) * _NTSC
     )
+    # A real disc: the first EVO of a two-EVO feature ends here in the XPL,
+    # and its video PTS run 3313.143 s.
+    assert parse_xpl_time("00:55:09:50") == pytest.approx(3313.143, abs=0.001)
+    # Other time bases are taken as they are.
+    assert parse_xpl_time("00:00:01:25", 50.0) == pytest.approx(1.5)
     assert parse_xpl_time(None) == 0.0
     assert parse_xpl_time("bogus") == 0.0
 
@@ -118,9 +127,10 @@ def test_parse_xpl_titles_clips_chapters(tmp_path: Path) -> None:
     assert [t.number for t in disc.titles] == [3, 8, 10, 11]
     main = disc.titles[0]
     assert main.name == "Main Movie"
-    assert main.duration_seconds == pytest.approx(8598 + 40 / 60.0)
+    assert main.duration_seconds == pytest.approx((8598 + 40 / 60.0) * _NTSC)
     assert [c.evo_path.name for c in main.clips] == ["FEATURE_1.EVO", "FEATURE_2.EVO"]
-    assert main.chapters == pytest.approx([0.0, 124 + 35 / 60.0])
+    assert [c.seamless for c in main.clips] == [False, True]
+    assert main.chapters == pytest.approx([0.0, (124 + 35 / 60.0) * _NTSC])
     # First clip carries the full track list, including PiP secondaries.
     kinds = [s.kind for s in main.streams]
     assert kinds == ["video", "audio", "audio", "subtitle", "subtitle", "subvideo"]
@@ -340,6 +350,24 @@ def test_keeping_some_clips_closes_up_the_timeline() -> None:
     # The middle clip's chapters go; the last clip's move back 150 s.
     assert without_middle.chapters == pytest.approx([0.0, 50.0, 100.0, 125.0])
     assert keep_clips(title, title.clips) is title
+
+
+def test_a_clip_after_a_dropped_one_no_longer_continues_its_clock() -> None:
+    first = HddvdClip(Path("A.EVO"), 0.0, 100.0)
+    second = HddvdClip(Path("B.EVO"), 100.0, 250.0, seamless=True)
+    third = HddvdClip(Path("C.EVO"), 250.0, 300.0, seamless=True)
+    title = HddvdTitle(
+        number=1, name="Feature", duration_seconds=300.0, clips=[first, second, third]
+    )
+
+    assert [c.seamless for c in keep_clips(title, [first, third]).clips] == [
+        False,
+        False,
+    ]
+    assert [c.seamless for c in keep_clips(title, [second, third]).clips] == [
+        False,
+        True,
+    ]
 
 
 def test_picture_in_picture_tracks_are_labelled_and_never_default() -> None:

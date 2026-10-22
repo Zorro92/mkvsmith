@@ -107,6 +107,9 @@ class HddvdClip:
     begin_seconds: float = 0.0
     end_seconds: float = 0.0
     streams: list[HddvdStream] = field(default_factory=list[HddvdStream])
+    # seamless="true": the clip carries on the previous clip's clock (its
+    # first video PTS continues where that EVO's video ends).
+    seamless: bool = False
 
 
 @dataclass
@@ -135,17 +138,23 @@ def keep_clips(title: HddvdTitle, kept: Sequence[HddvdClip]) -> HddvdTitle:
     """*title* playing only the *kept* clips, its timeline closed up.
 
     The duration becomes the kept clips' total, and each chapter moves with
-    its clip: those in a dropped clip go, those after one move back. With
+    its clip: those in a dropped clip go, those after one move back. A clip
+    after a dropped one no longer continues its predecessor's clock. With
     every clip kept the title is returned as is, ``titleDuration`` and all.
     """
     if len(kept) == len(title.clips):
         return title
     kept_ids = {id(clip) for clip in kept}
     chapters: list[float] = []
+    clips: list[HddvdClip] = []
     offset = 0.0
+    previous_kept = False
     for clip in title.clips:
         if id(clip) not in kept_ids:
+            previous_kept = False
             continue
+        clips.append(clip if previous_kept else replace(clip, seamless=False))
+        previous_kept = True
         chapters.extend(
             offset + chapter - clip.begin_seconds
             for chapter in title.chapters
@@ -154,7 +163,7 @@ def keep_clips(title: HddvdTitle, kept: Sequence[HddvdClip]) -> HddvdTitle:
         offset += max(clip.end_seconds - clip.begin_seconds, 0.0)
     return replace(
         title,
-        clips=list(kept),
+        clips=clips,
         duration_seconds=offset,
         chapters=sorted(set(chapters)),
     )
@@ -193,25 +202,38 @@ def _display_name(element: ET.Element, number: int) -> str:
     return name
 
 
-def parse_xpl_time(text: str | None, fps: float = 60.0) -> float:
-    """Parse an XPL ``HH:MM:SS:FF`` timestamp (frames at *fps*) to seconds."""
+# A "60fps" XPL clock really runs at 60/1.001: on two retail discs the
+# EVOs' video PTS span exactly 1.001 times the XPL clip lengths.
+_NTSC_60 = 60000 / 1001
+
+
+def parse_xpl_time(text: str | None, fps: float = _NTSC_60) -> float:
+    """Parse an XPL ``HH:MM:SS:FF`` timestamp to seconds.
+
+    Like non-drop-frame SMPTE timecode, it counts frames at the nominal
+    rate (60 for *fps* 59.94): ``HH:MM:SS`` is that many whole nominal
+    seconds of frames, then FF more frames, all at *fps*.
+    """
     if not text:
         return 0.0
     match = _XPL_TIME_RE.fullmatch(text.strip())
     if not match:
         return 0.0
     hours, minutes, seconds, frames = (int(part) for part in match.groups())
-    return hours * 3600.0 + minutes * 60.0 + seconds + frames / fps
+    nominal = round(fps)
+    return ((hours * 3600 + minutes * 60 + seconds) * nominal + frames) / fps
 
 
 def _fps_from_titleset(root: ET.Element) -> float:
+    """The real rate of ``TitleSet@timeBase``; "60fps" is 60/1.001."""
     for child in root:
         if _local(child.tag) == "TitleSet":
             base = child.get("timeBase", "60fps")
             match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*fps", base.strip())
             if match:
-                return float(match.group(1))
-    return 60.0
+                rate = float(match.group(1))
+                return _NTSC_60 if rate == 60 else rate
+    return _NTSC_60
 
 
 def _default_language_from_titleset(root: ET.Element) -> str:
@@ -421,6 +443,7 @@ def parse_xpl(xpl_path: Path, hvdvd_ts: Path) -> HddvdDisc:
                     evo_path=evo,
                     begin_seconds=parse_xpl_time(child.get("titleTimeBegin"), fps),
                     end_seconds=parse_xpl_time(child.get("titleTimeEnd"), fps),
+                    seamless=child.get("seamless", "").lower() == "true",
                 )
                 for track_el in child:
                     kind = _local(track_el.tag).lower()

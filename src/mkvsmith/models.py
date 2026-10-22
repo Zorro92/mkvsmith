@@ -907,6 +907,11 @@ class Title:
     # (connection_condition 5/6). The muxer then trims each clip's trailing
     # audio frames so every track stays locked to the video across joins.
     seamless_connections: bool = False
+    # Per input clip, True when it carries on the previous clip's clock (an
+    # HD DVD clip marked seamless): the muxer reads such a run as one stream
+    # with mkvmerge's ( ) concatenation instead of appending it, so every
+    # track follows the disc's clock across the join. Empty when unknown.
+    continues_clock: list[bool] = field(default_factory=list[bool])
     # Per input clip, the part the playlist plays, when any clip is played
     # only in part: the mux then keeps just those parts. Empty when every
     # clip plays whole.

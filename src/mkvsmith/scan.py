@@ -1399,6 +1399,9 @@ def _build_hddvd_title(
     title.clip_durations = [
         max(clip.end_seconds - clip.begin_seconds, 0.0) for clip in ht.clips
     ]
+    title.continues_clock = [
+        index > 0 and clip.seamless for index, clip in enumerate(ht.clips)
+    ]
     try:
         title.clip_sizes = [
             path.stat().st_size for path in probe_files if path.is_file()

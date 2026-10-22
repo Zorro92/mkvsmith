@@ -1610,11 +1610,31 @@ def _prepare_seamless_append(
     return result
 
 
+def _kept_clock_joins(
+    title: Title, input_count: int, dropped: Sequence[int]
+) -> list[bool]:
+    """``title.continues_clock`` for the inputs left after *dropped*.
+
+    A clip whose predecessor was dropped no longer continues its clock.
+    Empty when the flags don't line up with the inputs.
+    """
+    flags = title.continues_clock
+    if len(flags) != input_count:
+        return []
+    gone = set(dropped)
+    return [
+        flags[index] and index - 1 not in gone
+        for index in range(input_count)
+        if index not in gone
+    ]
+
+
 def _append_input_files(
     cmd: list[str],
     inputs: list[Path],
     track_filter_opts: list[str],
     track_mode: bool = False,
+    clock_joins: Sequence[bool] = (),
 ) -> None:
     # Blu-ray clips use mkvmerge's default ``file`` append mode: each appended
     # clip is offset by the previous file's end, so audio and video stay
@@ -1627,13 +1647,25 @@ def _append_input_files(
     # trimmed by _prepare_seamless_append, which bounds that creep.
     # The filter is repeated before each appended input so clips carrying a
     # later-starting PID remain valid append sources.
-    if len(inputs) > 1 and (track_mode or not _is_bluray_clip_append(inputs)):
+    # A clip that carries on the previous clip's clock (*clock_joins*, HD DVD
+    # seamless clips) is read with it as one stream, ( a b ): appended, a
+    # VC-1 track lands ~0.3 s behind its audio (docs/formats/hd-dvd.md).
+    groups: list[list[Path]] = [[inputs[0]]]
+    for index, clip in enumerate(inputs[1:], start=1):
+        if index < len(clock_joins) and clock_joins[index]:
+            groups[-1].append(clip)
+        else:
+            groups.append([clip])
+    if len(groups) > 1 and (track_mode or not _is_bluray_clip_append(inputs)):
         cmd += ["--append-mode", "track"]
-    cmd.append(str(inputs[0]))
-    for clip in inputs[1:]:
-        cmd += ["+"]
-        cmd += track_filter_opts
-        cmd.append(str(clip))
+    for index, group in enumerate(groups):
+        if index:
+            cmd += ["+"]
+            cmd += track_filter_opts
+        if len(group) > 1:
+            cmd += ["(", *(str(path) for path in group), ")"]
+        else:
+            cmd.append(str(group[0]))
 
 
 def _create_mux_tags_file(
@@ -1786,6 +1818,7 @@ def _build_mkvmerge_command(
     preferred_languages: Sequence[str] = (),
     trim: _ClipTrimPlan | None = None,
     pgs_subtitles: Sequence[tuple[Stream, Path]] = (),
+    clock_joins: Sequence[bool] = (),
 ) -> list[str]:
     cmd: list[str] = (
         ["mkvmerge"]
@@ -1864,7 +1897,13 @@ def _build_mkvmerge_command(
     if tags_file is not None:
         cmd += ["--global-tags", str(tags_file)]
     _append_art_attachments(cmd, art_attachments)
-    _append_input_files(cmd, inputs, track_filter_opts, track_mode=track_append)
+    _append_input_files(
+        cmd,
+        inputs,
+        track_filter_opts,
+        track_mode=track_append,
+        clock_joins=clock_joins,
+    )
 
     if subtitle_fallback is not None and fallback_tracks:
         cmd += _dvd_subtitle_fallback_options(
@@ -3078,6 +3117,13 @@ class MKVCreator:
                 preferred_languages=self.config.preferred_languages,
                 trim=trim,
                 pgs_subtitles=prepared_tracks.pgs_subtitles,
+                clock_joins=(
+                    []
+                    if seamless_inputs is not None
+                    else _kept_clock_joins(
+                        title, len(input_plan.inputs), dropped_inputs
+                    )
+                ),
             )
             return self._execute_mux(
                 title,

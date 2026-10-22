@@ -20,6 +20,7 @@ files people have posted. Claims we could only infer say so.
 | AS | Sonic AuthorScript HD DVD SDK guide, chapter 3 (cites spec section numbers) | http://delancie.net/PD_Samples/AS_HDDVD_SDK_Guide/HD_Guide_Parts/HD_Guide_3.htm |
 | D9 | Doom9 forum threads with complete decrypted retail `VPLST000.XPL` files | https://forum.doom9.org/archive/index.php/t-120842.html, `t-121272.html` |
 | H | hddvdinfo (no licence: facts only, never copied) | https://github.com/9Oc/hddvdinfo |
+| V | FFmpeg `libavcodec/vc1.c` (`ff_vc1_decode_sequence_header`, `ff_vc1_parse_frame_header_adv`; LGPL-2.1+), for SMPTE 421M's advanced-profile headers | https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/vc1.c |
 
 ## Disc layout
 
@@ -201,6 +202,49 @@ them. Decoded with F's 8-bit run codes, they render as clean anti-aliased
 text, each unit carrying its own 256-entry palette (details in
 [subpictures.md](subpictures.md#hd-dvd-subpictures)).
 
+### VC-1 frame timing
+
+A feature's VC-1 stream stamps a PTS on the first frame of each GOP only
+(✔ real disc: 942 PTSs for 12,770 frames). Every other frame's time
+follows from decode order and the pulldown flags (V):
+
+- **Sequence header** (start code `0x0F`): `PULLDOWN`, `INTERLACE`,
+  `TFCNTRFLAG`, `PSF`, and in the display extension the frame rate
+  (`FRAMERATENR` 1–7 = 24, 25, 30, 50, 60, 48, 72; `FRAMERATEDR` 1 =
+  /1000, 2 = /1001).
+- **Frame header** (`0x0D`): `FCM` when interlaced, then `PTYPE` (`0` P,
+  `10` B, `110` I, `1110` BI, `1111` skipped) or, for field pictures,
+  `FPTYPE`; `TFCNTR`; then with pulldown `RPTFRM` (2 bits, progressive
+  or PSF) or `TFF` and `RFF`.
+- B and BI frames show when decoded; I, P and skipped frames show when
+  the next one of them is decoded. A frame shows for 2 fields, plus 1
+  with `RFF`, or 2 × (1 + `RPTFRM`) progressive.
+
+✔ real disc: interlaced, pulldown, 30000/1001. Timed that way, every
+GOP's predicted start hits its PTS within a millisecond, and a frame's
+time matches the decoder's.
+
+mkvmerge (K) gets the first GOP after each chapter's sequence header
+wrong. ✔ real disc: at every one of a feature's 37 chapters, two frames
+get duplicate times and a 117–151 ms hole follows 0.45 s in, which plays
+as a stutter; the 1.1 GB start of the EVO muxed alone does the same, so
+it isn't the join. Its `--timestamps` files can't fix it: their times
+must be sorted, and mkvmerge hands them out by its own frame order, so
+the wrong frames get them (a frame two places late, the timer stepping
+back). mkvsmith therefore rewrites the finished MKV's VC-1 block times
+in place (`vc1time.py`, `mkvtimes.py`). VC-1 in Matroska is VfW mode,
+where block times rise in file order and the decoder adds the reorder
+delay, so the sorted times go to the blocks in file order. Each EVO's
+times are lined up with its run of blocks by the median offset from
+mkvmerge's times: right on all but a few frames, though mkvmerge's
+cadence is often a field (16.7 ms) out of phase with the decoder's. ✔
+real discs: on two features (two EVOs each, 156,382 and 166,621 frames)
+every step between block times becomes 33–34 or 50–51 ms, from 110
+duplicates and 37 holes on one and 1,708 bad steps (some backwards) on
+the other; keyframes keep mkvmerge's times except where it had stored
+times out of order, every cue still matches its block, and the stutter
+is gone.
+
 ### Sources disagree
 
 - **E-AC-3 range:** F takes `0xC0`–`0xCF` as AC-3/E-AC-3, K only
@@ -248,6 +292,10 @@ DTS-HD, 7 DD+. DVD has LPCM at 4.
   the video timestamps at the join); concatenated, both follow the clock
   (a cut at 4379.198 s moves to 4378.891 s, the second EVO starts at
   3313.143 s). A clip after a missing one is appended as before.
+- **VC-1 frame times:** rewritten after the mux when the EVOs' frame
+  count matches the MKV's VC-1 blocks and at least 90% of the frames lie
+  within 20 ms of mkvmerge's times; otherwise mkvmerge's times stay, with
+  a warning. Not done for a cut (`--split`) mux.
 - **Track matching:** audio of a codec outside DD+, MLP and DTS-HD, and
   video, are matched to mkvmerge's tracks by position within each type.
 - **Unused fields:** chapter `displayName` and `selectable` aren't read.

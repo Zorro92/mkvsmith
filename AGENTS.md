@@ -129,7 +129,9 @@ runtime dependencies to add. The canonical attributions live in the header of
   chapter/track structure, parsed directly in `hddvd.py`. EVO files are
   MPEG-PS-based and read by mkvmerge natively; EVO subpictures are in an
   HD layout mkvmerge can't read, so `hdspu.py` decodes them and writes
-  PGS.
+  PGS. mkvmerge mistimes VC-1 frames after each chapter's sequence
+  header, so `vc1time.py` rebuilds the frame times from the EVOs and
+  `mkvtimes.py` writes them over the finished MKV's block times.
 - Encrypted HD DVDs need AACS handling at the OS level, same as Blu-ray.
 
 ### Codec / bitstream

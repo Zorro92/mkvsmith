@@ -46,6 +46,21 @@ _ES: dict[str, str] = {
     "{count} HD DVD subtitle(s) could not be decoded and were skipped": (
         "No se pudieron decodificar {count} subtítulo(s) de HD DVD; se omitieron"
     ),
+    "Corrected the timing of {count} VC-1 frame(s)": (
+        "Se corrigió el tiempo de {count} fotograma(s) VC-1"
+    ),
+    "Could not correct the VC-1 frame timing: {err}": (
+        "No se pudo corregir el tiempo de los fotogramas VC-1: {err}"
+    ),
+    "could not read the frame cadence of {name}": (
+        "no se pudo leer la cadencia de fotogramas de {name}"
+    ),
+    "{frames} frames in the source, {blocks} in the MKV": (
+        "{frames} fotogramas en el origen, {blocks} en el MKV"
+    ),
+    "only {agreeing} of {frames} frame times agree with mkvmerge's": (
+        "solo {agreeing} de {frames} tiempos de fotograma coinciden con los de mkvmerge"
+    ),
     "This disc has Dolby Vision, which needs mkvmerge {minimum} or newer to mux as one video track; update MKVToolNix": "Este disco tiene Dolby Vision, que necesita mkvmerge {minimum} o posterior para multiplexarse como una sola pista de vídeo; actualiza MKVToolNix",
     "A source path is required": "Se requiere una ruta de origen",
     "Run with -h to see usage, e.g. script.py /path/to/media": "Ejecuta con -h para ver el uso, p. ej. script.py /ruta/al/medio",

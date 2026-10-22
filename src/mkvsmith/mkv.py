@@ -58,6 +58,7 @@ from mkvsmith.vobsub import (
     _vobsub_pts_offset,
 )
 from mkvsmith.hdspu import scan_evo_subpictures, write_sup
+from mkvsmith.vc1time import correct_vc1_frame_times
 from mkvsmith.cc608 import (
     CC608_CODECS,
     extract_cc608_captions,
@@ -2095,6 +2096,22 @@ def _extract_dvd_subtitle_fallback(
     return fallback_path, fallback_tracks, unmatched_subs
 
 
+def _correct_vc1_frame_times(out_file: Path, inputs: Sequence[Path]) -> None:
+    """Rewrite mkvmerge's VC-1 frame times from the source EVOs.
+
+    mkvmerge mistimes the first GOP after each chapter's sequence header,
+    which plays as a stutter (see vc1time). A failure leaves the file as
+    mkvmerge wrote it.
+    """
+    try:
+        changed = correct_vc1_frame_times(out_file, inputs)
+    except (ValueError, OSError) as exc:
+        log_warn(tr("Could not correct the VC-1 frame timing: {err}", err=exc))
+        return
+    if changed:
+        log_info(tr("Corrected the timing of {count} VC-1 frame(s)", count=changed))
+
+
 def _extract_hddvd_pgs_subtitles(
     title: Title,
     mapped: list[MappedStream],
@@ -3005,6 +3022,7 @@ class MKVCreator:
         retime_dropped_inputs: list[int] | None = None,
         trimmed_chapters: list[float] | None = None,
         fix_source_id_statistics: bool = False,
+        vc1_inputs: Sequence[Path] = (),
     ) -> Path:
         """Run the mux and finalise the output.
 
@@ -3014,6 +3032,8 @@ class MKVCreator:
         lists the union clip indices that were not muxed. *fix_source_id_statistics*
         lists each track's SOURCE_ID in its _STATISTICS_TAGS afterwards so
         players surface it (see _apply_source_id_statistics_fix).
+        *vc1_inputs* are HD DVD EVOs whose VC-1 frame times replace
+        mkvmerge's (see _correct_vc1_frame_times).
         """
         self._stop_if_cancelled(title)
         log_info(tr("Muxing: {name}...", name=out_file.name))
@@ -3040,6 +3060,8 @@ class MKVCreator:
             with contextlib.suppress(OSError):
                 out_file.unlink(missing_ok=True)
             raise
+        if vc1_inputs:
+            _correct_vc1_frame_times(out_file, vc1_inputs)
         if retime_dropped_inputs is not None:
             _apply_retimed_edition_chapters(
                 out_file, title, retime_dropped_inputs, self.cleanup.temp_files
@@ -3142,6 +3164,12 @@ class MKVCreator:
                 or any(
                     _source_id_for_stream(stream, title) is not None
                     for stream in streams
+                ),
+                # A cut (--split) mux no longer lines up with whole EVOs.
+                vc1_inputs=(
+                    kept_inputs
+                    if title.hddvd_title_number is not None and "--split" not in command
+                    else ()
                 ),
             )
         finally:

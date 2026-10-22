@@ -182,7 +182,10 @@ and MaxFALL in cd/m² (`331`, `226`). Playlists without HDR video carry the
 extension with no entries, or an entry of type 0 with every value 0.
 mkvsmith passes these to mkvmerge (`bluray._parse_mpls_static_hdr`).
 
-If a playlist won't parse, L retries `BDMV/BACKUP/PLAYLIST/` (L `mpls_get`).
+If a playlist won't parse, L retries `BDMV/BACKUP/PLAYLIST/` (L `mpls_get`),
+and so does mkvsmith (`bluray._parse_mpls`), for clip info files too
+(`BDMV/BACKUP/CLIPINF/`), on folder and drive sources. Disc images
+extract only the primary copies.
 
 ## Clip info (`BDMV/CLIPINF/xxxxx.clpi`)
 
@@ -408,28 +411,18 @@ ID and a 16-byte disc ID. `sound.bdmv` (`BCLK`) holds menu sound effects.
 
 ## Open parser mismatches
 
-- **Version `0240` is refused.** `_parse_clpi` accepts only versions
-  `0100`, `0200` and `0300`, so a 3D disc's clip info merge does nothing.
-  Its `HDBD` magic has no source.
+- **`HDBD` magic.** `_parse_clpi` also accepts `HDBD` clip info headers,
+  which no source mentions.
 - **Channel counts.** Presentation types 6 and 12 say no count; 6 is
   taken as 5.1 and 12 gives none until mkvmerge's count at mux time.
-- **Picture-in-picture.** In-mux PiP streams (entry type 3) are skipped in
-  the clip info merge, though their PIDs are in the main clip.
-- **Unread attributes.** The playlist's audio format and rate are never
-  read. The clip info's HEVC dynamic range, colour space and HDR10+ bytes
-  aren't read either.
-- **Stale comments.**
-  - `_merge_clpi_into_mpls`'s docstring swaps TrueHD (`83`) and DTS-HD
-    (`85`).
-  - `_parse_clpi`'s comments misname its blocks and only fit the first
-    program.
-  - The module header calls libbluray GPL-2.0; it is LGPL-2.1-or-later.
+- **Unread attributes.** The clip info's HEVC dynamic range, colour space
+  and HDR10+ bytes aren't read (the playlist's are). Only the first
+  program of ProgramInfo is read.
 - **Not supported.**
   - Only the first angle is used.
   - SubPath streams (text subtitles, out-of-mux audio) are listed but not
     muxed.
   - The chapter names aren't read.
-  - There's no `BACKUP` fallback.
   - Repeated-segment playlists aren't filtered: L drops playlists that
     repeat a segment more than twice; mkvmerge's GUI treats five repeats
     as a menu.

@@ -655,6 +655,9 @@ class Stream:
     # None for streams in the PlayItem's main clip. mkvsmith muxes only
     # main-path clips, so such streams are listed but never muxed.
     subpath_id: int | None = None
+    # A SubPath stream carried in the main clip's own transport stream
+    # (stream_entry type 3, in-mux picture-in-picture): muxable.
+    in_mux: bool = False
     # Video-only metadata that must be explicitly forwarded so the muxer
     # does not substitute wrong defaults (e.g. MPEG-2 SAR, or missing colour
     # signalling on DVD/BD sources).
@@ -687,8 +690,9 @@ class Stream:
 
     @property
     def is_muxable(self) -> bool:
-        """False for Blu-ray SubPath streams, which mkvsmith cannot mux."""
-        return self.subpath_id is None
+        """False for Blu-ray SubPath streams in other clips, which mkvsmith
+        cannot mux."""
+        return self.subpath_id is None or self.in_mux
 
     @property
     def display_id(self) -> str:

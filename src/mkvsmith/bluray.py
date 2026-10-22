@@ -12,9 +12,9 @@ Contains portions inspired by:
   CHARACTER_CODE, HEVC HDR metadata)
 - bluinfo (GPL-3.0) https://github.com/SavSanta/bluinfo (CLPI format layout,
   stream attribute constants)
-- libbluray (GPL-2.0) https://code.videolan.org/videolan/libbluray (BD-ROM
+- libbluray (LGPL-2.1-or-later) https://code.videolan.org/videolan/libbluray (BD-ROM
   structure reference, CLPI/MPLS parsing implementation)
-- ace20022/libbluray (GPL-2.0) https://github.com/ace20022/libbluray
+- ace20022/libbluray (LGPL-2.1-or-later) https://github.com/ace20022/libbluray
   (clean Pythonic CLPI/MPLS parsing reference)
 - Blu-ray Disc Read-Only Format specifications (BD-ROM)
 
@@ -257,6 +257,7 @@ def _parse_clpi(data: bytes) -> dict[int, dict[str, Any]]:
     if magic not in (
         b"HDMV0100",
         b"HDMV0200",
+        b"HDMV0240",  # 3D (profile 5), libbluray bdmv_parse.c
         b"HDMV0300",
         b"HDBD0100",
         b"HDBD0200",
@@ -265,11 +266,14 @@ def _parse_clpi(data: bytes) -> dict[int, dict[str, Any]]:
         log_debug(f"CLPI: unknown magic {magic}")
         return result
     try:
-        # Offset to clip info block is at byte 12 (4 bytes, big-endian).
+        # ProgramInfo's offset is at byte 12 (4 bytes, big-endian).
         clip_index = _read_u32(data, 12)
         if clip_index + 4 >= len(data):
             return result
-        # Clip info: [length(4)] [reserved(4)] [num_streams(1)] ...
+        # ProgramInfo (libbluray _parse_program): length(4), reserved(1),
+        # program count(1); the first program: SPN start(4), PMT PID(2),
+        # stream count(1), group count(1), then its streams. Only the first
+        # program is read.
         clip_pos = clip_index + 4
         if clip_pos + 12 > len(data):
             return result
@@ -402,23 +406,35 @@ def _clip_stc_spans(
 ) -> dict[int, tuple[int, int]]:
     if clip not in cache:
         cache[clip] = {}
-        for path in (clpi_dir / f"{clip}.clpi", clpi_dir / f"{clip}.CLPI"):
+        backup = clpi_dir.parent / "BACKUP" / clpi_dir.name
+        for path in (
+            clpi_dir / f"{clip}.clpi",
+            clpi_dir / f"{clip}.CLPI",
+            backup / f"{clip}.clpi",
+            backup / f"{clip}.CLPI",
+        ):
             try:
-                cache[clip] = _parse_clpi_stc_spans(path.read_bytes())
-                break
+                spans = _parse_clpi_stc_spans(path.read_bytes())
             except OSError:
                 continue
+            if spans:
+                cache[clip] = spans
+                break
     return cache[clip]
 
 
 def _parse_clpi_file(clpi_path: Path) -> dict[int, dict[str, Any]]:
-    """Read and parse a .clpi file on disk.  Returns PID->info dict."""
-    try:
-        data = clpi_path.read_bytes()
-        return _parse_clpi(data)
-    except Exception as e:
-        log_debug(f"CLPI read/parse failed for {clpi_path.name}: {e}")
-        return {}
+    """Read and parse a .clpi file on disk, or its ``BDMV/BACKUP`` copy when
+    it won't parse.  Returns PID->info dict."""
+    for path in (clpi_path, _bdmv_backup(clpi_path)):
+        try:
+            streams = _parse_clpi(path.read_bytes())
+        except Exception as e:
+            log_debug(f"CLPI read/parse failed for {path}: {e}")
+            continue
+        if streams:
+            return streams
+    return {}
 
 
 def _merge_clpi_into_mpls(
@@ -433,14 +449,14 @@ def _merge_clpi_into_mpls(
     The ``codec`` field is **overridden** from CLPI when the two disagree.
     The CLPI is the authoritative per-clip metadata (generated from the actual
     M2TS stream), while the MPLS STN table is a per-playitem view that can
-    contain authoring errors — e.g. some Disney discs declare TrueHD (0x85)
-    as DTS-HD HR (0x83) in the MPLS STN table.
+    contain authoring errors — e.g. some discs declare TrueHD (0x83) as
+    DTS-HD (0x85) in the MPLS STN table.
     """
     for s in mpls_streams:
         pid = s.get("pid")
-        # SubPath streams live in another clip; the main clip's CLPI entry
-        # for the same PID describes a different stream.
-        if pid is None or "subpath_id" in s:
+        # SubPath streams live in another clip, so the main clip's CLPI entry
+        # for the same PID describes a different stream; in-mux ones don't.
+        if pid is None or ("subpath_id" in s and not s.get("in_mux")):
             continue
         cinfo = clpi_streams.get(pid)
         if cinfo is None:
@@ -449,9 +465,10 @@ def _merge_clpi_into_mpls(
         clpi_codec = cinfo.get("codec")
         if clpi_codec and clpi_codec != "unknown" and s.get("codec") != clpi_codec:
             s["codec"] = clpi_codec
-        if s.get("channels") is None:
+        # The clip's own attributes win over the playlist's copy.
+        if cinfo.get("channels") is not None:
             s["channels"] = cinfo.get("channels")
-        if s.get("sample_rate") is None:
+        if cinfo.get("sample_rate") is not None:
             s["sample_rate"] = cinfo.get("sample_rate")
         if s.get("height") is None:
             s["height"] = cinfo.get("height")
@@ -594,9 +611,12 @@ class MplsStreamInfo(TypedDict):
     channels: int | None
     pid: int | None
     coding_type: NotRequired[int]
-    # Set for stream_entry types 2-4: the stream lives in this SubPath's
-    # clip, not in the PlayItem's main clip (libbluray MPLS_STREAM).
+    # Set for stream_entry types 2-4: the stream belongs to this SubPath
+    # (libbluray MPLS_STREAM). Types 2 and 4 live in its clip; type 3 is
+    # in-mux picture-in-picture (SubPath type 7), carried in the main clip's
+    # own transport stream (MKVToolNix mpls.h), so in_mux is set.
     subpath_id: NotRequired[int]
+    in_mux: NotRequired[bool]
     dynamic_range_type: NotRequired[str]
     colorspace: NotRequired[str]
     # An STN Dolby Vision entry: the enhancement layer of the primary video,
@@ -751,6 +771,7 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
         pid: int | None = None
         lang = "und"
         channels: int | None = None
+        sample_rate: int | None = None
         codec = "unknown"
         st: StreamType | None = None
         dynamic_range_type: str | None = None
@@ -759,7 +780,7 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
         # stream_entry (libbluray mpls_parse.c _parse_stream): byte 0 is
         # stream_type. 1 = main-clip stream: pid(16). 2 = SubPath sub-clip:
         # subpath_id(8), subclip_id(8), pid(16). 3/4 = SubPath stream:
-        # subpath_id(8), pid(16). All big-endian.
+        # subpath_id(8), pid(16); 3 is in the main clip's TS. Big-endian.
         subpath_id: int | None = None
         stream_type = entry_data[0] if elen >= 1 else 0
         if stream_type == 1 and elen >= 3:
@@ -786,6 +807,11 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
         elif coding_type in _BD_AUDIO_CODING_MAP:
             st = StreamType.AUDIO
             codec = _BD_AUDIO_CODING_MAP[coding_type][0]
+            # Presentation type (4 bits) and sample rate (4 bits), coded as
+            # in the CLPI, which overrides them when it is read.
+            if len(attr) >= 2:
+                channels = _BD_CHANNEL_LAYOUT_MAP.get(attr[1] >> 4)
+                sample_rate = _BD_SAMPLE_RATE_MAP.get(attr[1] & 0x0F)
             if len(attr) >= 5:
                 raw_lang = attr[2:5]
                 if all(32 <= c < 127 for c in raw_lang):
@@ -826,8 +852,12 @@ def _parse_stn_table_streams(stn_bytes: bytes) -> list[MplsStreamInfo]:
             "channels": channels,
             "pid": pid,
         }
+        if sample_rate is not None:
+            entry["sample_rate"] = sample_rate
         if subpath_id is not None:
             entry["subpath_id"] = subpath_id
+            if stream_type == 3:
+                entry["in_mux"] = True
         if dynamic_range_type is not None:
             entry["dynamic_range_type"] = dynamic_range_type
         if colorspace is not None:
@@ -966,7 +996,29 @@ def _parse_subpath_entries(
     return entries, pos
 
 
+def _bdmv_backup(path: Path) -> Path:
+    """The ``BDMV/BACKUP`` copy of a playlist or clip info file:
+    ``BDMV/PLAYLIST/x.mpls`` -> ``BDMV/BACKUP/PLAYLIST/x.mpls``."""
+    return path.parent.parent / "BACKUP" / path.parent.name / path.name
+
+
 def _parse_mpls(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | None:
+    """Parse a playlist, or its ``BDMV/BACKUP`` copy when it won't parse.
+
+    libbluray retries the backup the same way (``mpls_get``), as for a
+    scratched disc or a damaged image (docs/formats/bluray.md).
+    """
+    info = _parse_mpls_file(path, clpi_dir)
+    if info is None:
+        backup = _bdmv_backup(path)
+        if backup.is_file():
+            info = _parse_mpls_file(backup, clpi_dir)
+            if info is not None:
+                log_debug(f"{path.name} unreadable; using {backup}")
+    return info
+
+
+def _parse_mpls_file(path: Path, clpi_dir: Path | None = None) -> dict[str, Any] | None:
     """Parse a .mpls playlist file and return stream/chapter data.
 
     If *clpi_dir* is provided (a ``BDMV/CLIPINF`` directory), the first

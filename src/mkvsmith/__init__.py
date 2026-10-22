@@ -25,11 +25,11 @@ Contains portions inspired by:
   CHARACTER_CODE, HEVC HDR metadata)
 - bluinfo (GPL-3.0) https://github.com/SavSanta/bluinfo (CLPI format layout,
   stream attribute constants)
-- libbluray (GPL-2.0) https://code.videolan.org/videolan/libbluray (BD-ROM
+- libbluray (LGPL-2.1-or-later) https://code.videolan.org/videolan/libbluray (BD-ROM
   structure reference, CLPI/MPLS parsing implementation)
 - libbluray documentation https://videolan.videolan.me/libbluray/index.html
   (BD-J, UDF structure, disc metadata)
-- ace20022/libbluray (GPL-2.0) https://github.com/ace20022/libbluray
+- ace20022/libbluray (LGPL-2.1-or-later) https://github.com/ace20022/libbluray
   (clean Pythonic CLPI/MPLS parsing reference)
 - Blu-ray Disc Read-Only Format specifications (BD-ROM)
 """

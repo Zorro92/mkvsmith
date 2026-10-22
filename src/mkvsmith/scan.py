@@ -156,6 +156,7 @@ def _streams_from_mpls(
                 type_index=type_counts[StreamType.VIDEO],
                 pid=stream_info.get("pid"),
                 subpath_id=stream_info.get("subpath_id"),
+                in_mux=bool(stream_info.get("in_mux")),
             )
             height = stream_info.get("height")
             if height is not None:
@@ -183,6 +184,7 @@ def _streams_from_mpls(
                 type_index=type_counts[StreamType.AUDIO],
                 pid=stream_info.get("pid"),
                 subpath_id=stream_info.get("subpath_id"),
+                in_mux=bool(stream_info.get("in_mux")),
             )
             stream.channels = stream_info.get("channels")
             title_streams.append(stream)
@@ -199,6 +201,7 @@ def _streams_from_mpls(
                 type_index=type_counts[StreamType.SUBTITLE],
                 pid=stream_info.get("pid"),
                 subpath_id=stream_info.get("subpath_id"),
+                in_mux=bool(stream_info.get("in_mux")),
             )
             title_streams.append(stream)
             type_counts[StreamType.SUBTITLE] += 1

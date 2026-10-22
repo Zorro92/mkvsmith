@@ -456,3 +456,95 @@ def test_without_clip_info_nothing_is_trimmed(tmp_path: Path) -> None:
     )
     assert info is not None
     assert _clip_spans(info["play_items"]) == []
+
+
+# --- clip info versions, backups, in-mux streams ---------------------------------
+
+
+def test_3d_clip_info_version_0240_is_read() -> None:
+    data = bytearray(clpi([ClipStream(0x1100, AC3, presentation=MULTI)]))
+    data[4:8] = b"0240"  # BD-ROM profile 5 (libbluray bdmv_parse.c)
+
+    streams = _parse_clpi(bytes(data))
+
+    assert streams[0x1100]["channels"] == 6
+
+
+def test_a_damaged_playlist_is_read_from_its_backup(tmp_path: Path) -> None:
+    playlist_dir, backup_dir = tmp_path / "PLAYLIST", tmp_path / "BACKUP" / "PLAYLIST"
+    playlist_dir.mkdir()
+    backup_dir.mkdir(parents=True)
+    (playlist_dir / "00800.mpls").write_bytes(b"MPLS" + bytes(8))  # truncated
+    (backup_dir / "00800.mpls").write_bytes(
+        mpls([PlayItem("00001", 0, 600, _feature_stn())])
+    )
+
+    info = _parse_mpls(playlist_dir / "00800.mpls")
+
+    assert info is not None
+    assert [item["clip"] for item in info["play_items"]] == ["00001"]
+
+
+def test_a_damaged_clip_info_is_read_from_its_backup(tmp_path: Path) -> None:
+    clipinf, backup = tmp_path / "CLIPINF", tmp_path / "BACKUP" / "CLIPINF"
+    clipinf.mkdir()
+    backup.mkdir(parents=True)
+    (clipinf / "00001.clpi").write_bytes(b"HDMV0200")  # truncated
+    (backup / "00001.clpi").write_bytes(
+        clpi([ClipStream(0x1100, AC3, presentation=MULTI)], presentation=(0, 600))
+    )
+
+    assert bluray._parse_clpi_file(clipinf / "00001.clpi")[0x1100]["channels"] == 6
+    spans = bluray._clip_stc_spans(clipinf, "00001", {})
+    assert spans == {0: (0, 600 * 45000)}
+
+
+def test_playlist_audio_carries_its_own_channels_and_rate() -> None:
+    # Without the clip's CLPI, the playlist's presentation type and rate
+    # still give the channels and sample rate.
+    stn = Stn(
+        video=[Stream(H264, 0x1011)],
+        audio=[Stream(AC3, 0x1100, presentation=MULTI)],
+    )
+    streams = bluray._parse_stn_table_streams(stn.encode())
+
+    audio = [s for s in streams if s["type"] == StreamType.AUDIO]
+    assert audio[0]["channels"] == 6
+    assert audio[0].get("sample_rate") == 48_000
+
+
+def test_in_mux_picture_in_picture_streams_are_muxable(tmp_path: Path) -> None:
+    # Stream entry type 3 (SubPath type 7) is carried in the main clip's TS:
+    # it is merged with the main clip's CLPI and can be muxed; type 2 lives
+    # in its SubPath's own clip and can't.
+    from mkvsmith.scan import _streams_from_mpls
+
+    stn = Stn(
+        video=[Stream(H264, 0x1011)],
+        audio=[
+            Stream(AC3, 0x1100),
+            Stream(AC3, 0x1A00, stream_type=3, subpath=1),
+            Stream(AC3, 0x1100, stream_type=2, subpath=0, subclip=0),
+        ],
+    )
+    clipinf = tmp_path / "CLIPINF"
+    clipinf.mkdir()
+    (clipinf / "00001.clpi").write_bytes(
+        clpi([ClipStream(0x1100, AC3), ClipStream(0x1A00, AC3, presentation=MULTI)])
+    )
+    playlist = _write(tmp_path, "00800.mpls", mpls([PlayItem("00001", 0, 600, stn)]))
+
+    info = _parse_mpls(playlist, clpi_dir=clipinf)
+
+    assert info is not None
+    audio = [
+        s
+        for s in _streams_from_mpls(info["streams"])
+        if s.stream_type == StreamType.AUDIO
+    ]
+    assert [(s.pid, s.is_muxable) for s in audio] == [
+        (0x1100, True),
+        (0x1A00, True),
+        (0x1100, False),
+    ]
+    assert audio[1].channels == 6  # from the main clip's CLPI

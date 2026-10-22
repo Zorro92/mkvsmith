@@ -19,7 +19,7 @@ from mkvsmith.hddvd import (
     parse_xpl_time,
 )
 from mkvsmith.models import Stream, StreamType, Title
-from mkvsmith.scan import _apply_hddvd_languages
+from mkvsmith.scan import _apply_hddvd_languages, _synthesize_hddvd_subtitles
 
 XPL = """<?xml version="1.0" encoding="UTF-8"?>
 <Playlist majorVersion="1" minorVersion="0"
@@ -386,3 +386,33 @@ def test_picture_in_picture_tracks_are_labelled_and_never_default() -> None:
     assert (pip_video.title, pip_video.is_default) == ("Director's picture", False)
     assert (audio.language, audio.title, audio.is_default) == ("eng", "", True)
     assert (pip_audio.title, pip_audio.is_default) == ("Director", False)
+
+
+def test_declared_subtitles_are_synthesised_as_pgs_on_their_sub_streams() -> None:
+    clip = HddvdClip(
+        evo_path=Path("FEATURE_1.EVO"),
+        begin_seconds=0.0,
+        end_seconds=60.0,
+        streams=[
+            HddvdStream(kind="video", track=1, stream_number=1),
+            HddvdStream(kind="subtitle", track=1, stream_number=1, language="en"),
+            HddvdStream(
+                kind="subtitle", track=2, stream_number=3, language="es", is_forced=True
+            ),
+        ],
+    )
+    title = Title(
+        index=0,
+        source_file=Path("FEATURE_1.EVO"),
+        name="Title 1",
+        duration_seconds=60.0,
+    )
+    title.streams.append(Stream(index=0, stream_type=StreamType.VIDEO))
+
+    _synthesize_hddvd_subtitles(title, HddvdTitle(number=1, name="", clips=[clip]))
+
+    subtitles = title.subtitle_streams
+    assert [(s.codec, s.language, s.sub_id, s.is_forced) for s in subtitles] == [
+        ("hdmv_pgs_subtitle", "en", 0x20, False),
+        ("hdmv_pgs_subtitle", "es", 0x22, True),
+    ]

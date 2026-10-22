@@ -1415,7 +1415,7 @@ def _synthesize_hddvd_subtitles(title: Title, ht: HddvdTitle) -> None:
 
     EVO subpictures ride the 0xBD private stream like DVD subpictures, and
     mkvmerge misses them the same way — so they become unmatched streams
-    (``sub_id`` 0x20+) that the VobSub fallback extracts at mux time.
+    (``sub_id`` 0x20+) that are converted to PGS at mux time (hdspu.py).
     Only synthesised when the probe found none, to never double a track
     mkvmerge did detect.
     """
@@ -1430,7 +1430,7 @@ def _synthesize_hddvd_subtitles(title: Title, ht: HddvdTitle) -> None:
             Stream(
                 index=base + pos,
                 stream_type=StreamType.SUBTITLE,
-                codec="dvd_subtitle",
+                codec="hdmv_pgs_subtitle",
                 language=hs.language,
                 is_forced=hs.is_forced,
                 is_commentary=hs.is_commentary,

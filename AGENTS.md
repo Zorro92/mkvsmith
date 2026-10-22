@@ -127,8 +127,9 @@ runtime dependencies to add. The canonical attributions live in the header of
 
 - **DVD Forum HD DVD playlist schema** (`ADV_OBJ/VPLST*.XPL`) — title/clip/
   chapter/track structure, parsed directly in `hddvd.py`. EVO files are
-  MPEG-PS-based and read by mkvmerge natively; EVO subpictures reuse the
-  DVD VobSub fallback in `mkv.py`.
+  MPEG-PS-based and read by mkvmerge natively; EVO subpictures are in an
+  HD layout mkvmerge can't read, so `hdspu.py` decodes them and writes
+  PGS.
 - Encrypted HD DVDs need AACS handling at the OS level, same as Blu-ray.
 
 ### Codec / bitstream

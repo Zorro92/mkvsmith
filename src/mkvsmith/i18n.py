@@ -36,6 +36,16 @@ _ES: dict[str, str] = {
     "Missing: mkvmerge (install mkvtoolnix)": "Falta: mkvmerge (instala mkvtoolnix)",
     "mkvmerge {version} is older than {minimum}: accessibility, commentary and original-language tracks won't be flagged; update MKVToolNix": "mkvmerge {version} es anterior a {minimum}: las pistas de accesibilidad, de comentarios y en el idioma original no se marcarán; actualiza MKVToolNix",
     "Picture-in-picture": "Imagen en imagen",
+    "No HD DVD subtitles found for track {track} ({language}); leaving it out": (
+        "No se encontraron subtítulos de HD DVD para la pista {track} "
+        "({language}); se omite"
+    ),
+    "Converted {count} HD DVD subtitle track(s) to PGS": (
+        "Se convirtieron {count} pista(s) de subtítulos de HD DVD a PGS"
+    ),
+    "{count} HD DVD subtitle(s) could not be decoded and were skipped": (
+        "No se pudieron decodificar {count} subtítulo(s) de HD DVD; se omitieron"
+    ),
     "This disc has Dolby Vision, which needs mkvmerge {minimum} or newer to mux as one video track; update MKVToolNix": "Este disco tiene Dolby Vision, que necesita mkvmerge {minimum} o posterior para multiplexarse como una sola pista de vídeo; actualiza MKVToolNix",
     "A source path is required": "Se requiere una ruta de origen",
     "Run with -h to see usage, e.g. script.py /path/to/media": "Ejecuta con -h para ver el uso, p. ej. script.py /ruta/al/medio",

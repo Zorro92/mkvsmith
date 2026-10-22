@@ -222,9 +222,21 @@ DTS-HD, 7 DD+. DVD has LPCM at 4.
 
 ## Open parser mismatches
 
-- **Subtitles:** XPL subtitles are declared `dvd_subtitle` and muxed
-  through the DVD VobSub path, which can't decode the HD SPUs retail
-  discs carry.
+- **Subtitles:** XPL-declared subtitles are decoded from the EVOs and
+  converted to PGS (`hdspu.py`), one `.sup` per track. Only the 8-bit HD
+  layout is read; a 2-bit HD unit (`0x05` instead of `0x85`) is skipped
+  and counted. Each EVO's times start at its first video PTS; the next
+  EVO follows on the shared clock when it continues it, else after the
+  previous EVO's video PTS span plus one GOP. ✔ real disc: a feature in
+  two EVOs (seamless) runs its first EVO 3.31 s past the XPL's
+  `titleTimeEnd`, mkvmerge muxes all of it, and the second EVO's first
+  video PTS continues the first's clock. Timing by XPL durations put the
+  second EVO's subtitles 3.31 s early; by the clock, a sign's translation
+  lands on the sign's shot.
+- **Seamless joins:** at that join mkvmerge starts the second EVO's audio
+  where the shared clock says, but its VC-1 video about 0.3 s later
+  (the first EVO's frames already run about 0.1 s ahead of their PTS by
+  the end). Not investigated further.
 - **Track matching:** audio of a codec outside DD+, MLP and DTS-HD, and
   video, are matched to mkvmerge's tracks by position within each type.
 - **Unused fields:** chapter `displayName` and `selectable` aren't read.

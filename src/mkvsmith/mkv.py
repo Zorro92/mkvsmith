@@ -36,7 +36,7 @@ import sys
 import tempfile
 import threading
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, TypedDict, cast, final
 from collections.abc import Callable, Sequence
@@ -57,6 +57,7 @@ from mkvsmith.vobsub import (
     _scan_evo_video_stream_id,
     _vobsub_pts_offset,
 )
+from mkvsmith.hdspu import scan_evo_subpictures, write_sup
 from mkvsmith.cc608 import (
     CC608_CODECS,
     extract_cc608_captions,
@@ -1268,6 +1269,10 @@ class _PreparedMuxTracks:
     fallback_tracks: list[dict[str, Any]]
     unmatched_ifo_subs: list[Stream]
     cc608_srt: Path | None
+    # HD DVD subtitles converted to PGS, one .sup file per track.
+    pgs_subtitles: list[tuple[Stream, Path]] = field(
+        default_factory=list[tuple[Stream, Path]]
+    )
 
 
 def _confirm_overwrite(out_file: Path, prompts: UserPrompts | None = None) -> bool:
@@ -1780,6 +1785,7 @@ def _build_mkvmerge_command(
     track_append: bool = False,
     preferred_languages: Sequence[str] = (),
     trim: _ClipTrimPlan | None = None,
+    pgs_subtitles: Sequence[tuple[Stream, Path]] = (),
 ) -> list[str]:
     cmd: list[str] = (
         ["mkvmerge"]
@@ -1872,6 +1878,19 @@ def _build_mkvmerge_command(
         )
         cleanup.append(subtitle_fallback)
         cmd.append(str(subtitle_fallback))
+
+    for stream, sup_path in pgs_subtitles:
+        # Each .sup holds one track, track 0 within its own file.
+        cmd += _dvd_subtitle_fallback_options_for_track(
+            0,
+            stream,
+            title=title,
+            cleanup=cleanup,
+            temp_files=temp_files,
+            hddvd_video_id=hddvd_video_id,
+        )
+        cleanup.append(sup_path)
+        cmd.append(str(sup_path))
 
     if cc608_srt is not None:
         cc_stream = next(
@@ -2035,6 +2054,80 @@ def _extract_dvd_subtitle_fallback(
         % (len(fallback_tracks), len(unmatched_subs))
     )
     return fallback_path, fallback_tracks, unmatched_subs
+
+
+def _extract_hddvd_pgs_subtitles(
+    title: Title,
+    mapped: list[MappedStream],
+    inputs: list[Path],
+    temp_files: list[Path],
+) -> list[tuple[Stream, Path]]:
+    """Convert the title's HD DVD subtitles to PGS, one ``.sup`` per track.
+
+    mkvmerge can't read the EVOs' HD subpictures (docs/formats/
+    subpictures.md), so the XPL-declared subtitle streams are decoded here.
+    A track with no decodable subpictures is left out with a warning.
+    """
+    wanted = [
+        entry["stream"]
+        for entry in mapped
+        if entry["input_id"] < 0
+        and entry["stream"].stream_type == StreamType.SUBTITLE
+        and entry["stream"].sub_id is not None
+    ]
+    if not wanted:
+        return []
+    found, failed = scan_evo_subpictures(
+        inputs, {stream.sub_id for stream in wanted if stream.sub_id is not None}
+    )
+    video = next(
+        (stream for stream in title.streams if stream.stream_type == StreamType.VIDEO),
+        None,
+    )
+    video_size = (
+        (video.width, video.height)
+        if video is not None and video.width and video.height
+        else (1920, 1080)
+    )
+    converted: list[tuple[Stream, Path]] = []
+    for stream in wanted:
+        subpictures = found.get(stream.sub_id or 0, [])
+        if not subpictures:
+            log_warn(
+                tr(
+                    "No HD DVD subtitles found for track {track} ({language}); "
+                    "leaving it out",
+                    track=stream.display_id,
+                    language=stream.language,
+                )
+            )
+            continue
+        temp_dir = RUNTIME_STATE.config.temp_dir
+        sup_path = Path(
+            tempfile.NamedTemporaryFile(
+                suffix=".sup",
+                delete=False,
+                dir=str(temp_dir) if temp_dir else None,
+            ).name
+        )
+        temp_files.append(sup_path)
+        write_sup(subpictures, sup_path, video_size)
+        converted.append((stream, sup_path))
+    if converted:
+        log_info(
+            tr(
+                "Converted {count} HD DVD subtitle track(s) to PGS",
+                count=len(converted),
+            )
+        )
+    if failed:
+        log_warn(
+            tr(
+                "{count} HD DVD subtitle(s) could not be decoded and were skipped",
+                count=failed,
+            )
+        )
+    return converted
 
 
 def _extract_dvd_cc608_sidecar(
@@ -2712,11 +2805,19 @@ class MKVCreator:
         mapped = _map_streams_to_ident_tracks(streams, ident_tracks)
         _verify_edition_append_pids(title, streams, input_plan.inputs, mapped)
 
-        # mkvmerge cannot detect sparse DVD subpictures from the first VOB,
-        # and misses HD DVD EVO subpictures the same way (0xBD private
-        # stream). Scan the MPEG-PS bitstream directly and emit a VobSub
-        # fallback input.
-        if input_plan.is_dvd_vob or title.hddvd_title_number is not None:
+        # mkvmerge cannot detect sparse DVD subpictures from the first VOB:
+        # scan the MPEG-PS bitstream directly and emit a VobSub fallback
+        # input. HD DVD EVO subpictures are in an HD layout VobSub can't
+        # carry, so they are converted to PGS instead.
+        pgs_subtitles: list[tuple[Stream, Path]] = []
+        if title.hddvd_title_number is not None:
+            fallback_path = None
+            fallback_tracks = []
+            unmatched_ifo_subs = []
+            pgs_subtitles = _extract_hddvd_pgs_subtitles(
+                title, mapped, input_plan.inputs, self.cleanup.temp_files
+            )
+        elif input_plan.is_dvd_vob:
             fallback_path, fallback_tracks, unmatched_ifo_subs = (
                 _extract_dvd_subtitle_fallback(
                     title,
@@ -2746,6 +2847,7 @@ class MKVCreator:
             fallback_tracks=fallback_tracks,
             unmatched_ifo_subs=unmatched_ifo_subs,
             cc608_srt=cc608_srt,
+            pgs_subtitles=pgs_subtitles,
         )
 
     def _validate_mux_result(
@@ -2975,6 +3077,7 @@ class MKVCreator:
                 track_append=seamless_inputs is not None,
                 preferred_languages=self.config.preferred_languages,
                 trim=trim,
+                pgs_subtitles=prepared_tracks.pgs_subtitles,
             )
             return self._execute_mux(
                 title,

@@ -226,5 +226,6 @@ PGS stream is forced. mkvmerge passes PGS through as `S_HDMV/PGS`. (FP, MK)
   backwards (relying on a visited set); F rejects them.
 - FSTA_DSP, STA_DSP and STP_DSP aren't read, so there's no per-SPU forced
   detection or start delay.
-- EVO subpictures in the 4-byte-offset layout would be misparsed; mkvsmith
-  doesn't decode them or convert them to PGS yet.
+- EVO subpictures in the 4-byte-offset layout don't go through the DVD
+  path: `hdspu.py` decodes them and writes PGS. Units with 2-bit pixels
+  in that layout are skipped (none seen on retail discs).

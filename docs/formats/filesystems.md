@@ -283,8 +283,13 @@ identifier; LUR returns the UDF primary volume descriptor's identifier
   partition's length; symbolic links and stream directories aren't listed;
   a file linked under two names is listed under both (only directories are
   de-duplicated, against loops).
-- **Recognition:** an NSR descriptor anywhere from sector 16 to the first
-  blank sector.
+- **Directories:** a directory whose metadata-file copy holds no file
+  identifier descriptor is read from the metadata mirror's copy.
+- **Recognition:** an NSR descriptor after `BEA01` (the extended area,
+  ECMA-167 2/9.2), from sector 16 to the first blank sector.
+- **ISO 9660:** the Joliet tree, or the primary tree when the Joliet one
+  won't read; file data after any extended attribute record; associated
+  files skipped; interleaved files read unit by unit.
 
 CRCs are checked on the volume structures only: a Python byte loop over every
 file entry would slow a scan. ✔ real disc: 9 retail disc images (DVD and
@@ -292,9 +297,6 @@ Blu-ray) list the same files, sizes and extents as before these checks.
 
 ## Open parser mismatches
 
-- **ISO 9660.** The extended attribute record, associated files and
-  interleaving are ignored, and Joliet always wins over the primary tree.
-- **Mirror for directory data.** Only file entries fall back to the
-  metadata mirror; a directory's identifier data still reads from the
-  metadata file.
-- **`BEA01`** isn't required before the NSR descriptor (LUR requires it).
+None known. Joliet and the primary tree list the same files on every image
+seen; mkvsmith prefers Joliet's names and reads the primary tree only when
+Joliet's won't read.

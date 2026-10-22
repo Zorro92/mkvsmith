@@ -174,3 +174,113 @@ def test_descriptor_tags_are_checked() -> None:
     bad_crc[100] ^= 1
     assert isofs._udf_tag_ok(bytes(bad_crc), 2)  # the CRC isn't checked by default
     assert not isofs._udf_tag_ok(bytes(bad_crc), 2, crc=True)
+
+
+# --- ISO 9660 ----------------------------------------------------------------------
+
+
+def _iso_only() -> bytearray:
+    return bytearray(build_image(FILES, udf=None, iso9660=True))
+
+
+def _iso_record_of(image: bytearray, name: str) -> int:
+    return image.index(name.encode() + b";1") - 33
+
+
+def test_an_unreadable_joliet_tree_falls_back_to_the_primary_one(
+    tmp_path: Path,
+) -> None:
+    image = _iso_only()
+    joliet = bytearray(_sector(image, 16))
+    joliet[0] = 2  # supplementary volume descriptor
+    joliet[88:91] = b"%/E"  # Joliet, UCS-2 level 3
+    struct.pack_into("<I", joliet, 156 + 2, len(image) // SECTOR + 100)  # root: nowhere
+    _put(image, 18, _sector(image, 17))  # the terminator moves down
+    _put(image, 17, joliet)
+
+    with _open(tmp_path, bytes(image)) as disc:
+        assert disc.filesystem == "iso9660"
+        assert _listing(disc) == FILES
+
+
+def test_associated_files_and_extended_attribute_records(tmp_path: Path) -> None:
+    image = _iso_only()
+    record = _iso_record_of(image, "VTS_01_0.IFO")
+    image[record + 25] |= 0x04  # an associated file: not the file itself
+    other = _iso_record_of(image, "VIDEO_TS.IFO")
+    extent = struct.unpack_from("<I", image, other + 2)[0]
+    image[other + 1] = 1  # one sector of extended attributes first
+    struct.pack_into("<I", image, other + 2, extent - 1)
+
+    with _open(tmp_path, bytes(image)) as disc:
+        (entry,) = disc.files()
+
+    assert entry.path == "VIDEO_TS/VIDEO_TS.IFO"
+    assert entry.runs[0].offset == extent * SECTOR
+
+
+def test_an_interleaved_file_reads_unit_by_unit() -> None:
+    # 2-sector units with 1-sector gaps: sectors 10-11, 13-14, then 16.
+    runs = isofs._iso_runs(10, 5 * SECTOR, 2, 1)
+
+    assert [(run.offset, run.length) for run in runs] == [
+        (10 * SECTOR, 2 * SECTOR),
+        (13 * SECTOR, 2 * SECTOR),
+        (16 * SECTOR, SECTOR),
+    ]
+
+
+# --- recognition and the mirror for directories -------------------------------------
+
+
+def test_udf_needs_bea01_before_its_nsr_descriptor(tmp_path: Path) -> None:
+    image = bytearray(build_image(FILES, udf="1.02", iso9660=True))
+    bea = image.index(b"BEA01")
+    image[bea : bea + 5] = b"XXXXX"  # no extended area: no UDF volume
+
+    with _open(tmp_path, bytes(image)) as disc:
+        assert disc.filesystem == "iso9660"
+
+
+def test_a_damaged_directory_reads_from_the_metadata_mirror(tmp_path: Path) -> None:
+    files: dict[str, bytes | int] = {
+        "BDMV/index.bdmv": b"INDX" * 100,
+        "BDMV/STREAM/00800.m2ts": b"\x47" * 5000,
+    }
+    image = bytearray(build_image(files, udf="2.50", iso9660=False))
+    lvd = bytearray(_sector(image, 33))
+    metadata_map = 440 + 6
+    metadata_lb = struct.unpack_from("<I", lvd, metadata_map + 40)[0]
+    path = tmp_path / "plain.iso"
+    path.write_bytes(bytes(image))
+    with path.open("rb") as handle:
+        ((first, length),) = isofs._UdfReader(handle)._meta_runs
+    assert first is not None
+    blocks = length // SECTOR
+
+    # A full mirror: the metadata blocks copied to spare partition blocks
+    # (the builder leaves blocks 1-63 unused), and a metadata mirror entry in
+    # block 1 whose extent points at the copy.
+    copy_lb = 2
+    assert copy_lb + blocks <= 64
+    for n in range(blocks):
+        _put(
+            image,
+            PARTITION_START + copy_lb + n,
+            _sector(image, PARTITION_START + first + n),
+        )
+    entry = bytearray(_sector(image, PARTITION_START + metadata_lb))
+    l_ea = struct.unpack_from("<I", entry, 208)[0]
+    struct.pack_into("<I", entry, 216 + l_ea + 4, copy_lb)  # its short_ad's block
+    _put(image, PARTITION_START + 1, _retag(entry, 1))
+    struct.pack_into("<I", lvd, metadata_map + 44, 1)
+    _put(image, 33, _retag(lvd, 33))
+    # Wipe the main copy of every directory block (those holding identifier
+    # descriptors), leaving the file entries.
+    for n in range(blocks):
+        sector = PARTITION_START + first + n
+        if struct.unpack_from("<H", image, sector * SECTOR)[0] == 257:
+            _put(image, sector, b"")
+
+    with _open(tmp_path, bytes(image)) as disc:
+        assert _listing(disc) == files

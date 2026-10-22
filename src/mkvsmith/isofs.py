@@ -215,6 +215,21 @@ def _merge_runs(runs: list[IsoRun]) -> tuple[IsoRun, ...]:
     return tuple(merged)
 
 
+def _trim_runs(runs: list[IsoRun], size: int, path: str) -> tuple[IsoRun, ...]:
+    """*runs* cut to *size* bytes (the last extent may be padded to a block
+    boundary), merged where adjacent."""
+    trimmed: list[IsoRun] = []
+    remaining = size
+    for run in runs:
+        if remaining <= 0:
+            break
+        trimmed.append(IsoRun(run.offset, min(run.length, remaining)))
+        remaining -= run.length
+    if remaining > 0:
+        raise IsoImageError(f"{path}: allocation shorter than file size")
+    return _merge_runs(trimmed)
+
+
 def _check_entry_count(count: int) -> None:
     if count > _MAX_ENTRIES:
         raise IsoImageError("directory tree too large (corrupt image?)")
@@ -237,6 +252,9 @@ class _UdfFile:
     # ICB file type: 4 directory, 5 file, 12 symbolic link, 13 stream
     # directory, ... (ECMA-167 4/14.6.6, UDF 2.50 2.3.5.2).
     file_type: int = 5
+    # The same data read through the metadata mirror, when it lies in a
+    # metadata partition that has one (directories do).
+    mirror_runs: tuple[IsoRun, ...] | None = None
 
 
 def _u16(buf: bytes, offset: int) -> int:
@@ -582,16 +600,23 @@ class _UdfReader:
         del flags  # either copy can be read whether or not it duplicates
 
     def _check_vrs(self) -> None:
-        """An NSR descriptor in the volume recognition sequence, which runs
-        from sector 16 to the first blank sector (ECMA-167 2/8.3)."""
+        """An NSR descriptor within the extended area of the volume
+        recognition sequence, which runs from sector 16 to the first blank
+        sector; the extended area opens with BEA01 (ECMA-167 2/8.3, 2/9.2).
+        ISO 9660's CD001 descriptors may come first on a bridge disc."""
+        extended = False
         for sector in range(16, 256):
             try:
                 ident = _read_sectors(self._f, sector)[1:6]
             except IsoImageError:
                 break
-            if ident in (b"NSR02", b"NSR03"):
+            if ident == b"BEA01":
+                extended = True
+            elif ident == b"TEA01":
+                extended = False
+            elif ident in (b"NSR02", b"NSR03") and extended:
                 return
-            if ident == b"\0\0\0\0\0":
+            elif ident == b"\0\0\0\0\0":
                 break
         raise IsoImageError("no UDF volume recognition sequence")
 
@@ -621,23 +646,30 @@ class _UdfReader:
                 is_dir, size, modified, (), ads[:size], fe_offset + start, file_type
             )
         runs: list[IsoRun] = []
+        mirror: list[IsoRun] | None = [] if self._mirror_runs else None
         for ext_part, lb, length, recorded in self._allocation_descriptors(
             ads, alloc_type, part, path
         ):
             offset = self._sector_of(ext_part, lb) * SECTOR if recorded else None
             runs.append(IsoRun(offset, length))
-        # The last extent may be padded to a block boundary; trim to the size.
-        trimmed: list[IsoRun] = []
-        remaining = size
-        for run in runs:
-            if remaining <= 0:
-                break
-            trimmed.append(IsoRun(run.offset, min(run.length, remaining)))
-            remaining -= run.length
-        if remaining > 0:
-            raise IsoImageError(f"{path}: allocation shorter than file size")
+            if mirror is not None:
+                in_metadata = (
+                    ext_part < len(self._maps)
+                    and self._maps[ext_part][0] == _MAP_METADATA
+                )
+                if in_metadata and recorded:
+                    try:
+                        sector = self._sector_of(ext_part, lb, mirror=True)
+                    except IsoImageError:
+                        mirror = None
+                        continue
+                    mirror.append(IsoRun(sector * SECTOR, length))
+                else:
+                    mirror.append(IsoRun(offset, length))
+        trimmed = _trim_runs(runs, size, path)
+        mirror_runs = _trim_runs(mirror, size, path) if mirror is not None else None
         return _UdfFile(
-            is_dir, size, modified, _merge_runs(trimmed), None, None, file_type
+            is_dir, size, modified, trimmed, None, None, file_type, mirror_runs
         )
 
     def _allocation_descriptors(
@@ -706,11 +738,11 @@ class _UdfReader:
             lb, part = _u32(buf, 40), _u16(buf, 44)
         raise IsoImageError(f"{path}: indirect entry chain too long")
 
-    def _file_bytes(self, node: _UdfFile, path: str) -> bytes:
+    def _file_bytes(self, node: _UdfFile, path: str, *, mirror: bool = False) -> bytes:
         if node.embedded is not None:
             return node.embedded
         out = bytearray()
-        for run in node.runs:
+        for run in node.mirror_runs or () if mirror else node.runs:
             if run.offset is None:
                 out += bytes(run.length)
                 continue
@@ -729,6 +761,9 @@ class _UdfReader:
         a bad identifier descriptor ends the listing (the next one can't be
         found)."""
         data = self._file_bytes(node, path)
+        if node.mirror_runs and data and _udf_tag(data) != _TAG_FID:
+            # The metadata file's copy is damaged; the mirror's may not be.
+            data = self._file_bytes(node, path, mirror=True)
         i = 0
         while i + 38 <= len(data):
             if _udf_tag(data, i) != _TAG_FID:
@@ -857,6 +892,7 @@ class _Iso9660Reader:
             else label_raw.decode("latin-1")
         ).strip()
         self._root = volume[156:190]
+        self._primary_root = pvd[156:190]
 
     def _records(self, extent: int, size: int) -> Iterator[bytes]:
         data = _read_sectors(self._f, extent, -(-size // SECTOR))[:size]
@@ -871,13 +907,21 @@ class _Iso9660Reader:
             i += length
 
     def files(self) -> list[IsoEntry]:
+        """The Joliet tree's files, or the primary tree's when the Joliet one
+        won't read (they describe the same files; Joliet has long names)."""
+        if self._joliet:
+            try:
+                return self._walk(self._root, joliet=True)
+            except IsoImageError:
+                pass
+        return self._walk(self._primary_root, joliet=False)
+
+    def _walk(self, root: bytes, *, joliet: bool) -> list[IsoEntry]:
         entries: dict[str, IsoEntry] = {}
         visited: set[int] = set()
-        root_extent, root_size = (
-            _u32(self._root, 2),
-            (_u32(self._root, 10)),
-        )
-        stack: list[tuple[str, int, int]] = [("", root_extent, root_size)]
+        # A directory's records start after its extended attribute record.
+        root_extent = _u32(root, 2) + root[1]
+        stack: list[tuple[str, int, int]] = [("", root_extent, _u32(root, 10))]
         while stack:
             dir_path, extent, size = stack.pop()
             if extent in visited:
@@ -893,25 +937,45 @@ class _Iso9660Reader:
                 if name_raw in (b"\0", b"\1"):
                     continue
                 flags = record[25]
-                rec_extent = _u32(record, 2)
+                if flags & 0x04:
+                    # An associated file (ECMA-119 9.1.6) shares its main
+                    # file's name; it isn't the file.
+                    continue
+                # The data follows the extended attribute record, if any.
+                rec_extent = _u32(record, 2) + record[1]
                 rec_size = _u32(record, 10)
-                path_name = _iso_name(name_raw, self._joliet)
+                path_name = _iso_name(name_raw, joliet)
                 path = f"{dir_path}/{path_name}" if dir_path else path_name
                 if flags & 0x02:
                     stack.append((path, rec_extent, rec_size))
                     continue
-                run = IsoRun(rec_extent * SECTOR, rec_size)
+                runs = _iso_runs(rec_extent, rec_size, record[26], record[27])
                 if pending is not None and pending.path == path:
                     # Multi-extent file (> 4 GiB): later records continue it.
                     pending = IsoEntry(
                         path,
                         pending.size + rec_size,
                         pending.modified,
-                        _merge_runs([*pending.runs, run]),
+                        _merge_runs([*pending.runs, *runs]),
                     )
                 else:
-                    pending = IsoEntry(path, rec_size, _iso_timestamp(record), (run,))
+                    pending = IsoEntry(path, rec_size, _iso_timestamp(record), runs)
                 if not flags & 0x80:
                     entries[path] = pending
                     pending = None
         return sorted(entries.values(), key=lambda entry: entry.path)
+
+
+def _iso_runs(extent: int, size: int, unit: int, gap: int) -> tuple[IsoRun, ...]:
+    """A file section's data: contiguous, or for an interleaved file (ECMA-119
+    9.1.7-9.1.8) *unit* sectors at a time with *gap* sectors between."""
+    if not unit:
+        return (IsoRun(extent * SECTOR, size),)
+    runs: list[IsoRun] = []
+    sector, remaining = extent, size
+    while remaining > 0:
+        length = min(unit * SECTOR, remaining)
+        runs.append(IsoRun(sector * SECTOR, length))
+        remaining -= length
+        sector += unit + gap
+    return tuple(runs)

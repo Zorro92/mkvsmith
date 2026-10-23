@@ -18,7 +18,8 @@ import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from collections.abc import Callable
+from typing import Any, BinaryIO
 
 from mkvsmith.dvdifo import _LANG_MAP_3_TO_2, _concat_file_layout
 from mkvsmith.models import (
@@ -989,7 +990,9 @@ def _scan_vob_subpicture_file(
     file_limit: int,
     spu_accumulator: _SpuAccumulator,
     pts_rebaser: _PtsTimelineRebaser,
+    scanned: Callable[[int], None] | None = None,
 ) -> tuple[dict[int, list[tuple[int, bytes]]], _VobScanCounts]:
+    """One VOB's subpicture packets; *scanned* gets the bytes read so far."""
     result: dict[int, list[tuple[int, bytes]]] = {}
     counts = _VobScanCounts()
     scan_window = 64 * 1024 * 1024
@@ -1026,6 +1029,8 @@ def _scan_vob_subpicture_file(
             finally:
                 data.close()
             offset += window_size
+            if scanned is not None:
+                scanned(offset)
     finally:
         os.close(descriptor)
 
@@ -1111,6 +1116,7 @@ def _scan_vob_subpictures(
     *,
     debug: bool = False,
     cache: SubpictureScanCache | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> SubpictureScanResult:
     """Scan VOB files for DVD subpicture SPU packets.
 
@@ -1131,6 +1137,7 @@ def _scan_vob_subpictures(
 
     When *cache* is given, repeated scans of the same inputs (multi-PGC
     discs scan shared VOBs once per title) return the memoised result.
+    *progress* gets the fraction of the bytes to scan read so far.
     """
     if not inputs:
         return {}
@@ -1149,8 +1156,21 @@ def _scan_vob_subpictures(
     # order, and cell clock resets can land anywhere, including file
     # boundaries.
     pts_rebaser = _PtsTimelineRebaser()
+    limits = [
+        min(path.stat().st_size, max_bytes or path.stat().st_size)
+        if path.exists()
+        else 0
+        for path in inputs
+    ]
+    whole = sum(limits) or 1
 
-    for vob_file in inputs:
+    def scanned_after(done: int) -> Callable[[int], None] | None:
+        if progress is None:
+            return None
+        report = progress
+        return lambda count: report((done + count) / whole)
+
+    for index, vob_file in enumerate(inputs):
         if not vob_file.exists():
             log_debug("  VOB scan: skipping %s (not found)" % vob_file.name)
             continue
@@ -1160,7 +1180,11 @@ def _scan_vob_subpictures(
         file_limit = file_size if max_bytes <= 0 else min(max_bytes, file_size)
 
         file_result, counts = _scan_vob_subpicture_file(
-            vob_file, file_limit, spu_accumulator, pts_rebaser
+            vob_file,
+            file_limit,
+            spu_accumulator,
+            pts_rebaser,
+            scanned_after(sum(limits[:index])),
         )
         for sub_stream_id, entries in file_result.items():
             result.setdefault(sub_stream_id, []).extend(entries)
@@ -1691,14 +1715,13 @@ def _extract_dvd_vobsubs(
     vob_paths: list[Path],
     lang_by_id: dict[int, str] | None = None,
     ifo_palette: list[tuple[int, int, int]] | None = None,
-    vobu_parts: list[Path] | None = None,
-    vobu_part_sizes: list[int] | None = None,
     total_duration: float = 0.0,
     *,
     temp_files: list[Path],
     debug: bool = False,
     only_listed: bool = False,
     frame_height: int = 480,
+    progress: Callable[[float], None] | None = None,
 ) -> tuple[Path, list[dict[str, Any]]] | None:
     """Extract DVD VobSub subtitles from VOB files by scanning the MPEG-PS
     bitstream directly.
@@ -1710,13 +1733,8 @@ def _extract_dvd_vobsubs(
     vob_paths: VOB file(s) to scan. Use the trimmed VOB when available.
     lang_by_id: {sub_stream_id: iso_639_2_code} from the IFO.
     ifo_palette: optional 16-entry RGB palette from the VTS IFO PGC.
-    vobu_parts: when the VOB was assembled from non-contiguous VOBU runs
-        (seamless-branching discs), this is the list of per-run temp files.
-        Each part has a continuous PTS timeline, but the concatenated VOB has
-        PTS discontinuities at run boundaries. When provided, subtitles are
-        scanned per-part and PTS values are remapped to form a continuous
-        timeline matching the muxed video.
     frame_height: the video's frame height, 480 (NTSC) or 576 (PAL).
+    progress: gets the fraction of the VOBs scanned so far.
 
     Returns (idx_path, track_list) on success, None on failure.
     """
@@ -1731,19 +1749,11 @@ def _extract_dvd_vobsubs(
         % (len(vob_paths), len(lang_by_id))
     )
 
-    if vobu_parts and len(vobu_parts) > 1:
-        # Seamless-branching: the concatenated VOB has PTS discontinuities at
-        # each VOBU run boundary. Per-part PTS remapping is unreliable because
-        # interleaved cells can reset their PTS mid-run. Instead, scan the
-        # entire concatenated VOB as a single stream and normalize PTS by the
-        # first video PTS — this is the same approach used for non-branching
-        # discs, and while not perfectly accurate at discontinuities, it avoids
-        # the compounding timing errors of per-part remapping.
-        log_debug(
-            "VobSub: seamless-branching with VOBU parts — "
-            "using concatenated VOB scan (no per-part remap)"
-        )
-    spus = _scan_vob_subpictures(vob_paths, debug=debug)
+    # A VOB assembled from VOBU runs (seamless branching) has a PTS jump at
+    # each run; the scan re-bases them onto one timeline (_PtsTimelineRebaser)
+    # rather than remapping per run, which interleaved cells' mid-run clock
+    # resets make unreliable.
+    spus = _scan_vob_subpictures(vob_paths, debug=debug, progress=progress)
     if not spus:
         log_warn(
             "DVD VobSub scan found no subpicture streams in the input VOBs. "
@@ -1869,24 +1879,46 @@ def _dvd_main_content_range(inputs: list[Path]) -> tuple[int, int] | None:
     return start, end
 
 
-def _extract_concat_range(inputs: list[Path], start: int, end: int, out: Path) -> Path:
-    """Copy global byte range [start, end) across ``inputs`` into ``out``."""
+def _copy_concat_range(
+    inputs: list[Path],
+    start: int,
+    end: int,
+    out_f: BinaryIO,
+    copied: Callable[[int], None] | None = None,
+) -> None:
+    """Write global byte range [start, end) across ``inputs`` to ``out_f``.
+
+    *copied* gets the bytes written so far after each chunk.
+    """
     remaining = end - start
     cursor = start
+    for f, fstart, fend in _concat_file_layout(inputs):
+        if fend <= cursor or remaining <= 0:
+            continue
+        local = cursor - fstart
+        with open(f, "rb") as fh:
+            fh.seek(local)
+            while remaining > 0:
+                chunk = fh.read(min(1024 * 1024, remaining, fend - cursor))
+                if not chunk:
+                    break
+                out_f.write(chunk)
+                remaining -= len(chunk)
+                cursor += len(chunk)
+                if copied is not None:
+                    copied(cursor - start)
+        if remaining <= 0:
+            break
+
+
+def _extract_concat_range(
+    inputs: list[Path],
+    start: int,
+    end: int,
+    out: Path,
+    copied: Callable[[int], None] | None = None,
+) -> Path:
+    """Copy global byte range [start, end) across ``inputs`` into ``out``."""
     with open(out, "wb") as out_f:
-        for f, fstart, fend in _concat_file_layout(inputs):
-            if fend <= cursor or remaining <= 0:
-                continue
-            local = cursor - fstart
-            with open(f, "rb") as fh:
-                fh.seek(local)
-                while remaining > 0:
-                    chunk = fh.read(min(1024 * 1024, remaining, fend - cursor))
-                    if not chunk:
-                        break
-                    out_f.write(chunk)
-                    remaining -= len(chunk)
-                    cursor += len(chunk)
-            if remaining <= 0:
-                break
+        _copy_concat_range(inputs, start, end, out_f, copied)
     return out

@@ -52,6 +52,7 @@ from mkvsmith.dvdifo import (
 )
 from mkvsmith.vobsub import (
     _dvd_main_content_range,
+    _copy_concat_range,
     _extract_concat_range,
     _extract_dvd_vobsubs,
     _scan_evo_video_stream_id,
@@ -1234,13 +1235,6 @@ def _append_track_options(
                 cmd += ["--tags", f"{input_id}:{tags_file}"]
 
 
-@dataclass
-class _DvdTrimResult:
-    inputs: list[Path]
-    vobu_parts: list[Path] | None
-    vobu_part_sizes: list[int] | None
-
-
 def _is_dvd_vob_input(streams: list[Stream], inputs: list[Path]) -> bool:
     video_stream = next(
         (stream for stream in streams if stream.stream_type == StreamType.VIDEO),
@@ -1259,8 +1253,6 @@ class _MuxInputPlan:
     inputs: list[Path]
     cleanup: list[Path]
     is_dvd_vob: bool
-    vobu_parts: list[Path] | None
-    vobu_part_sizes: list[int] | None
 
 
 @dataclass
@@ -1371,25 +1363,29 @@ def _write_vobu_trim(
     inputs: list[Path],
     ranges: list[tuple[int, int]],
     output: Path,
-    temp_directory: Path | None,
-    cleanup: list[Path],
-    temp_files: list[Path],
-) -> tuple[list[Path], list[int]]:
+    progress: Callable[[float], None] | None = None,
+) -> None:
+    """Write the VOBU *ranges* of *inputs*, in order, into *output*.
+
+    *progress* gets the fraction of the bytes written so far.
+    """
     total_vobu = sum(end - start for start, end in ranges)
     log_debug(
         f"Trimming DVD title ({len(ranges)} VOBU run(s), {total_vobu / 1e9:.1f} GB)..."
     )
-    parts: list[Path] = []
-    for start, end in ranges:
-        part = _temp_vob_path(temp_directory)
-        _register_temp_file(part, cleanup, temp_files)
-        _extract_concat_range(inputs, start, end, part)
-        parts.append(part)
+    whole = total_vobu or 1
+
+    def copied_after(done: int) -> Callable[[int], None] | None:
+        if progress is None:
+            return None
+        report = progress
+        return lambda count: report((done + count) / whole)
+
+    done = 0
     with output.open("wb") as output_file:
-        for part in parts:
-            with part.open("rb") as part_file:
-                shutil.copyfileobj(part_file, output_file, length=1024 * 1024)
-    return parts, [end - start for start, end in ranges]
+        for start, end in ranges:
+            _copy_concat_range(inputs, start, end, output_file, copied_after(done))
+            done += end - start
 
 
 def _prepare_dvd_edition_inputs(
@@ -1398,7 +1394,8 @@ def _prepare_dvd_edition_inputs(
     temp_base: Path | None,
     cleanup: list[Path],
     temp_files: list[Path],
-) -> _DvdTrimResult:
+    progress: Callable[[float], None] | None = None,
+) -> list[Path]:
     """Combined VOB for a multi-edition DVD title, with retimed editions.
 
     The union cells' own VOBUs are written in the combined order, and each
@@ -1421,9 +1418,7 @@ def _prepare_dvd_edition_inputs(
     runs, durations = layout
     output = _temp_vob_path(temp_base)
     _register_temp_file(output, cleanup, temp_files)
-    parts, part_sizes = _write_vobu_trim(
-        inputs, runs, output, temp_base, cleanup, temp_files
-    )
+    _write_vobu_trim(inputs, runs, output, progress)
     bounds: list[tuple[float, float]] = []
     running = 0.0
     for duration in durations:
@@ -1432,8 +1427,7 @@ def _prepare_dvd_edition_inputs(
     title.editions = _retime_editions(title.editions, title.clip_durations, bounds)
     title.clip_durations = durations
     title.duration_seconds = running
-    vobu_parts = parts if len(parts) > 1 else None
-    return _DvdTrimResult([output], vobu_parts, part_sizes if vobu_parts else None)
+    return [output]
 
 
 def _prepare_dvd_inputs(
@@ -1442,10 +1436,13 @@ def _prepare_dvd_inputs(
     temp_base: Path | None,
     cleanup: list[Path],
     temp_files: list[Path],
-) -> _DvdTrimResult:
+    progress: Callable[[float], None] | None = None,
+) -> list[Path]:
+    """The title's own part of the VOBs, in one temp VOB (or *inputs* as
+    they are when trimming fails). *progress* gets the fraction written."""
     if title.dvd_edition_cells:
         return _prepare_dvd_edition_inputs(
-            title, inputs, temp_base, cleanup, temp_files
+            title, inputs, temp_base, cleanup, temp_files, progress
         )
     trim_range = _find_dvd_trim_range(title, inputs)
     if trim_range is None:
@@ -1454,7 +1451,7 @@ def _prepare_dvd_inputs(
             "Output duration may be incorrect. "
             "Run with --debug to see why trimming was skipped."
         )
-        return _DvdTrimResult(inputs, None, None)
+        return inputs
 
     start, end = trim_range
     temp_directory = temp_base
@@ -1463,19 +1460,18 @@ def _prepare_dvd_inputs(
 
     vobu_ranges = _main_edition_vobu_ranges(title, inputs)
     if vobu_ranges:
-        parts, part_sizes = _write_vobu_trim(
-            inputs, vobu_ranges, output, temp_directory, cleanup, temp_files
-        )
-        vobu_parts = parts if len(parts) > 1 else None
-        return _DvdTrimResult(
-            [output],
-            vobu_parts,
-            part_sizes if vobu_parts else None,
-        )
+        _write_vobu_trim(inputs, vobu_ranges, output, progress)
+        return [output]
 
     log_debug(f"Trimming DVD title ({(end - start) / 1e9:.1f} GB)...")
-    _extract_concat_range(inputs, start, end, output)
-    return _DvdTrimResult([output], None, None)
+    whole = (end - start) or 1
+
+    def copied(count: int) -> None:
+        if progress is not None:
+            progress(count / whole)
+
+    _extract_concat_range(inputs, start, end, output, copied)
+    return [output]
 
 
 def _is_bluray_clip_append(inputs: list[Path]) -> bool:
@@ -2071,10 +2067,9 @@ def _extract_dvd_subtitle_fallback(
     title: Title,
     mapped: list[MappedStream],
     inputs: list[Path],
-    vobu_parts: list[Path] | None,
-    vobu_part_sizes: list[int] | None,
     temp_files: list[Path],
     debug: bool = False,
+    progress: Callable[[float], None] | None = None,
 ) -> tuple[Path | None, list[dict[str, Any]], list[Stream]]:
     unmatched_subs = [
         entry["stream"]
@@ -2116,13 +2111,12 @@ def _extract_dvd_subtitle_fallback(
         inputs,
         language_by_id,
         ifo_palette=palette,
-        vobu_parts=vobu_parts,
-        vobu_part_sizes=vobu_part_sizes if vobu_parts else None,
         total_duration=title.duration_seconds,
         temp_files=temp_files,
         debug=debug,
         only_listed=True,
         frame_height=frame_height,
+        progress=progress,
     )
     if result is None:
         return None, [], unmatched_subs
@@ -2924,24 +2918,16 @@ class MKVCreator:
             raise RipError(message="No source files", title=title, streams=streams)
 
         is_dvd_vob = _is_dvd_vob_input(streams, inputs)
-        dvd_trim = (
-            _prepare_dvd_inputs(
+        if is_dvd_vob:
+            inputs = _prepare_dvd_inputs(
                 title,
                 inputs,
                 extract_temp_base,
                 cleanup,
                 self.cleanup.temp_files,
+                self._stage_progress(title, tr("Preparing the title")),
             )
-            if is_dvd_vob
-            else _DvdTrimResult(inputs, None, None)
-        )
-        return _MuxInputPlan(
-            inputs=dvd_trim.inputs,
-            cleanup=cleanup,
-            is_dvd_vob=is_dvd_vob,
-            vobu_parts=dvd_trim.vobu_parts,
-            vobu_part_sizes=dvd_trim.vobu_part_sizes,
-        )
+        return _MuxInputPlan(inputs=inputs, cleanup=cleanup, is_dvd_vob=is_dvd_vob)
 
     def _prepare_tracks(
         self,
@@ -2983,10 +2969,9 @@ class MKVCreator:
                     title,
                     mapped,
                     input_plan.inputs,
-                    input_plan.vobu_parts,
-                    input_plan.vobu_part_sizes,
                     self.cleanup.temp_files,
                     self.logger.debug_enabled,
+                    self._stage_progress(title, tr("Reading subtitles")),
                 )
             )
         else:

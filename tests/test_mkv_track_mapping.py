@@ -150,14 +150,14 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
         language_by_id: dict[int, str] | None,
         *,
         ifo_palette: list[tuple[int, int, int]] | None,
-        vobu_parts: list[Path] | None,
-        vobu_part_sizes: list[int] | None,
         total_duration: float,
         temp_files: list[Path],
         debug: bool,
         only_listed: bool,
         frame_height: int,
+        progress: object,
     ) -> tuple[Path, list[dict[str, Any]]]:
+        assert progress is None
         assert only_listed  # never the subtitles nobody chose
         assert frame_height == 480  # no video attributes in the IFO: NTSC
         calls.append(
@@ -165,8 +165,6 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
                 inputs,
                 language_by_id,
                 ifo_palette,
-                vobu_parts,
-                vobu_part_sizes,
                 total_duration,
                 temp_files,
                 debug,
@@ -183,7 +181,7 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
     temp_files: list[Path] = []
 
     result = mkv._extract_dvd_subtitle_fallback(
-        title, mapped, [title.source_file], None, None, temp_files
+        title, mapped, [title.source_file], temp_files
     )
 
     assert result[0] == tmp_path / "subs.idx"
@@ -194,8 +192,6 @@ def test_dvd_subtitle_fallback_passes_ifo_attributes(
             [title.source_file],
             {0x20: "en"},
             [(1, 2, 3)],
-            None,
-            None,
             120,
             [],
             False,
@@ -234,7 +230,7 @@ def test_dvd_subtitle_fallback_matches_tracks_to_streams_by_id(
     monkeypatch.setattr(mkv, "_extract_dvd_vobsubs", extract)
 
     _path, tracks, streams = mkv._extract_dvd_subtitle_fallback(
-        title, mapped, [title.source_file], None, None, []
+        title, mapped, [title.source_file], []
     )
 
     assert [track["sub_id"] for track in tracks] == [0x20, 0x22]
@@ -267,8 +263,6 @@ def test_dvd_subtitle_fallback_sizes_pal_subtitles_to_576_lines(
         title,
         [make_mapped_entry(-1, "subtitles", subtitle)],
         [title.source_file],
-        None,
-        None,
         [],
     )
 
@@ -318,7 +312,9 @@ def test_prepare_dvd_inputs_extracts_contiguous_range(
     monkeypatch.setattr(mkv, "_dvd_main_content_range", fake_content_range)
     calls: list[tuple[list[Path], int, int, Path]] = []
 
-    def extract(inputs: list[Path], start: int, end: int, output: Path) -> Path:
+    def extract(
+        inputs: list[Path], start: int, end: int, output: Path, _copied: object
+    ) -> Path:
         calls.append((inputs, start, end, output))
         output.write_bytes(b"trimmed")
         return output
@@ -328,11 +324,9 @@ def test_prepare_dvd_inputs_extracts_contiguous_range(
 
     result = mkv._prepare_dvd_inputs(title, [source], None, cleanup, temp_files)
 
-    assert calls == [([source], 2, 8, result.inputs[0])]
-    assert result.inputs[0].read_bytes() == b"trimmed"
-    assert result.vobu_parts is None
-    assert result.vobu_part_sizes is None
-    assert cleanup == [result.inputs[0]]
+    assert calls == [([source], 2, 8, result[0])]
+    assert result[0].read_bytes() == b"trimmed"
+    assert cleanup == [result[0]]
     assert temp_files == cleanup
 
 
@@ -364,25 +358,18 @@ def test_prepare_dvd_inputs_concatenates_vobu_runs(
     monkeypatch.setattr(mkv, "_lookup_main_feature_range", fake_feature_range)
     monkeypatch.setattr(mkv, "_parse_vts_vobu_admap", fake_vobu_admap)
     monkeypatch.setattr(mkv, "_build_main_edition_vobu_ranges", fake_vobu_ranges)
-    calls: list[tuple[int, int]] = []
-
-    def extract(_inputs: list[Path], start: int, end: int, output: Path) -> Path:
-        calls.append((start, end))
-        output.write_bytes(f"{start}:{end}".encode())
-        return output
-
-    monkeypatch.setattr(mkv, "_extract_concat_range", extract)
     cleanup: list[Path] = []
+    seen: list[float] = []
 
-    result = mkv._prepare_dvd_inputs(title, [source], None, cleanup, temp_files)
+    result = mkv._prepare_dvd_inputs(
+        title, [source], None, cleanup, temp_files, seen.append
+    )
 
-    assert calls == [(0, 2), (4, 6)]
-    assert result.inputs[0].read_bytes() == b"0:24:6"
-    assert result.vobu_parts is not None
-    assert len(result.vobu_parts) == 2
-    assert result.vobu_part_sizes == [2, 2]
-    assert cleanup == [result.inputs[0], *result.vobu_parts]
+    # The runs go straight into one VOB: no per-run files on the way.
+    assert result[0].read_bytes() == b"0145"
+    assert cleanup == [result[0]]
     assert temp_files == cleanup
+    assert seen == [0.5, 1.0]
 
 
 def test_is_dvd_vob_input_requires_mpeg2_vob() -> None:
@@ -721,8 +708,6 @@ def test_prepare_inputs_preserves_folder_inputs(tmp_path: Path) -> None:
     assert plan.inputs == [source, append]
     assert plan.cleanup == []
     assert plan.is_dvd_vob is False
-    assert plan.vobu_parts is None
-    assert plan.vobu_part_sizes is None
 
 
 # A disc image is read from inside whatever it's called.
@@ -809,8 +794,6 @@ def test_prepare_tracks_dispatches_dvd_subtitle_fallback(
         inputs=[title.source_file],
         cleanup=[],
         is_dvd_vob=True,
-        vobu_parts=[tmp_path / "part-0.vob"],
-        vobu_part_sizes=[20],
     )
 
     def fake_identify(_path: Path) -> list[dict[str, Any]]:
@@ -828,12 +811,12 @@ def test_prepare_tracks_dispatches_dvd_subtitle_fallback(
         _title: Title,
         _mapped: list[MappedStream],
         inputs: list[Path],
-        vobu_parts: list[Path] | None,
-        vobu_part_sizes: list[int] | None,
         temp_files: list[Path],
         debug: bool,
+        progress: object,
     ) -> tuple[Path | None, list[dict[str, Any]], list[Stream]]:
-        calls.append((inputs, vobu_parts, vobu_part_sizes, temp_files, debug))
+        assert callable(progress)
+        calls.append((inputs, temp_files, debug))
         return fallback, [{"id": 0}], [video]
 
     monkeypatch.setattr(mkv, "_extract_dvd_subtitle_fallback", extract_fallback)
@@ -848,8 +831,6 @@ def test_prepare_tracks_dispatches_dvd_subtitle_fallback(
     assert calls == [
         (
             plan.inputs,
-            plan.vobu_parts,
-            plan.vobu_part_sizes,
             runtime_state.cleanup.temp_files,
             False,
         )

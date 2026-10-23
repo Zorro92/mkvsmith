@@ -93,6 +93,13 @@ def test_track_plan_follows_session_option_changes() -> None:
     assert all(choice.keep for choice in track_plan(title, config))
 
 
+def test_main_feature_titles_finds_the_title_by_its_number() -> None:
+    # A list that isn't the whole scan: the titles' numbers aren't their
+    # places in it.
+    titles = [make_title(4, 600.0), make_title(7, 5400.0)]
+    assert main_feature_titles(titles, Config()) == [titles[1]]
+
+
 def test_main_feature_titles_picks_one_title_on_a_movie_disc() -> None:
     titles = [make_title(0, 600.0), make_title(1, 6000.0)]
 

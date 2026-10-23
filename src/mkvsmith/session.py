@@ -271,7 +271,8 @@ def main_feature_titles(titles: Sequence[Title], config: Config) -> list[Title]:
     if episodes:
         return episodes
     index = pick_main_feature(list(titles), config)
-    return [titles[index]] if index >= 0 else []
+    # pick_main_feature names the title by its number, not its place here.
+    return [title for title in titles if title.index == index][:1]
 
 
 @dataclass(frozen=True)

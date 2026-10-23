@@ -304,6 +304,8 @@ _ES: dict[str, str] = {
     "Extracting from the ISO": "Extrayendo del ISO",
     "Converting subtitles": "Convirtiendo los subtítulos",
     "Correcting the frame timing": "Corrigiendo los tiempos de los fotogramas",
+    "Preparing the title": "Preparando el título",
+    "Reading subtitles": "Leyendo los subtítulos",
     "Stop": "Detener",
     "Ripping {pos} of {total}": "Extrayendo {pos} de {total}",
     "Preparing": "Preparando",

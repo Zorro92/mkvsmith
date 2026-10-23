@@ -151,9 +151,10 @@ def test_scan_vob_subpictures_memoises_by_inputs(
         file_limit: int,
         spu_accumulator: vobsub._SpuAccumulator,
         pts_rebaser: vobsub._PtsTimelineRebaser,
+        scanned: Callable[[int], None] | None = None,
     ) -> tuple[dict[int, list[tuple[int, bytes]]], vobsub._VobScanCounts]:
         calls.append(1)
-        return real(vob_file, file_limit, spu_accumulator, pts_rebaser)
+        return real(vob_file, file_limit, spu_accumulator, pts_rebaser, scanned)
 
     monkeypatch.setattr(vobsub, "_scan_vob_subpicture_file", counting)
     vob = tmp_path / "a.VOB"

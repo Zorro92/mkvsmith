@@ -1582,12 +1582,19 @@ def _seamless_audio_pids(mapped: list[MappedStream]) -> set[int] | None:
     return set(pids)
 
 
-def _clone_or_copy(src: Path, dst: Path) -> None:
+# How much of a clip the seamless copy moves at a time.
+_CLIP_COPY_CHUNK = 4 * 1024 * 1024
+
+
+def _clone_or_copy(
+    src: Path, dst: Path, copied: Callable[[int], None] | None = None
+) -> None:
     """Copy *src* to *dst*, as a copy-on-write clone where supported.
 
     FICLONE (btrfs, XFS, ...) shares the data blocks, so only the trimmed
     tail is ever duplicated; any failure (other filesystems, cross-device,
-    non-Linux) falls back to a regular copy.
+    non-Linux) falls back to a regular copy. *copied* gets the bytes
+    copied so far (all of them at once for a clone).
     """
     try:
         import fcntl
@@ -1598,10 +1605,20 @@ def _clone_or_copy(src: Path, dst: Path) -> None:
         ficlone = 0x40049409  # _IOW(0x94, 9, int), linux/fs.h
         with src.open("rb") as source, dst.open("wb") as target:
             ioctl(target.fileno(), ficlone, source.fileno())
+        if copied is not None:
+            copied(src.stat().st_size)
         return
     except (ImportError, OSError):
         pass
-    shutil.copyfile(src, dst)
+    if copied is None:
+        shutil.copyfile(src, dst)
+        return
+    done = 0
+    with src.open("rb") as source, dst.open("wb") as target:
+        while chunk := source.read(_CLIP_COPY_CHUNK):
+            target.write(chunk)
+            done += len(chunk)
+            copied(done)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1638,6 +1655,7 @@ def _prepare_seamless_append(
     cleanup: list[Path],
     temp_dirs: list[Path],
     config: Config | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> _SeamlessAppend | None:
     """Trim clip tails so a seamless title can be appended in track mode.
 
@@ -1646,7 +1664,7 @@ def _prepare_seamless_append(
     in *owned* are already private copies (extracted from an ISO) and are
     trimmed in place; others are copied into a temp dir first so source
     files are never modified. Folder, drive, and ISO sources therefore mux
-    identically.
+    identically. *progress* gets the fraction of those copies' bytes done.
     """
     if not title.seamless_connections or len(inputs) < 2:
         return None
@@ -1684,6 +1702,15 @@ def _prepare_seamless_append(
     copy_dir: Path | None = None
     result: list[Path] = []
     nulled = 0
+    whole = copy_bytes or 1
+    done = 0
+
+    def copied_after(before: int) -> Callable[[int], None] | None:
+        if progress is None:
+            return None
+        report = progress
+        return lambda count: report((before + count) / whole)
+
     for path, cuts in zip(inputs, plan):
         if not cuts:
             result.append(path)
@@ -1699,8 +1726,9 @@ def _prepare_seamless_append(
                 )
                 temp_dirs.append(copy_dir)
             target = copy_dir / path.name
-            _clone_or_copy(path, target)
             cleanup.append(target)
+            _clone_or_copy(path, target, copied_after(done))
+            done += path.stat().st_size
         nulled += null_packets_from(target, cuts)
         result.append(target)
     trimmed = sum(1 for cuts in plan if cuts)
@@ -3343,6 +3371,9 @@ class MKVCreator:
                 cleanup=input_plan.cleanup,
                 temp_dirs=self.cleanup.temp_dirs,
                 config=self.config,
+                progress=self._stage_progress(
+                    title, tr("Copying clips for the seamless joins")
+                ),
             )
             if seamless is not None:
                 kept_inputs = seamless.inputs

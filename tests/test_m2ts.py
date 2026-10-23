@@ -335,6 +335,26 @@ def test_clone_or_copy_preserves_content(tmp_path: Path) -> None:
     assert src.read_bytes() == bytes(range(256)) * 1024
 
 
+def test_clone_or_copy_reports_the_bytes_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "clip.m2ts"
+    src.write_bytes(bytes(range(256)) * 40_000)  # 10 MB: three 4 MB chunks
+    dst = tmp_path / "copy.m2ts"
+    import fcntl
+
+    def no_clone(*_args: object) -> None:
+        raise OSError("no FICLONE here")
+
+    monkeypatch.setattr(fcntl, "ioctl", no_clone)
+    seen: list[int] = []
+
+    mkv._clone_or_copy(src, dst, seen.append)
+
+    assert dst.read_bytes() == src.read_bytes()
+    assert seen == [4 * 1024 * 1024, 8 * 1024 * 1024, src.stat().st_size]
+
+
 # --- the same, on synthetic clips (run everywhere) ------------------------------
 
 # Three clips of 48 film frames with TrueHD (and its AC-3 core), AC-3 and
@@ -476,10 +496,18 @@ def test_prepare_seamless_append_on_synthetic_clips(
     # Clips we don't own are copied before trimming; the sources stay intact.
     cleanup: list[Path] = []
     temp_dirs: list[Path] = []
+    seen: list[float] = []
     result = mkv._prepare_seamless_append(
-        title, clips, _mapped([0x1100, 0x1101]), set(), cleanup, temp_dirs
+        title,
+        clips,
+        _mapped([0x1100, 0x1101]),
+        set(),
+        cleanup,
+        temp_dirs,
+        progress=seen.append,
     )
     assert result is not None
+    assert seen and seen[-1] == 1.0  # the one copied clip, all of it
     assert result.inputs[0] == clips[0] and result.inputs[2] == clips[2]
     assert result.inputs[1] != clips[1] and result.inputs[1].parent == temp_dirs[0]
     assert cleanup == [result.inputs[1]]

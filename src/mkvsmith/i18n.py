@@ -306,6 +306,7 @@ _ES: dict[str, str] = {
     "Correcting the frame timing": "Corrigiendo los tiempos de los fotogramas",
     "Preparing the title": "Preparando el título",
     "Locating the title": "Localizando el título",
+    "Copying clips for the seamless joins": "Copiando los clips para las uniones sin cortes",
     "Reading the title from the ISO ({size} GB of VOBs)...": "Leyendo el título del ISO ({size} GB de VOB)...",
     "Reading subtitles": "Leyendo los subtítulos",
     "Stop": "Detener",

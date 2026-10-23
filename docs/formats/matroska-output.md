@@ -108,6 +108,17 @@ This follows the RFC:
 - The first edition flagged default is the default; with none flagged, the
   first edition (§20.1.2).
 
+The atoms are placed on the clip offsets mkvmerge actually used (it
+appends each clip at its real end, a little past the play item's out
+time), read back from `--generate-chapters when-appending` placeholders,
+and an atom that jumps ends 1 ms early so mpv lets no frame of the next
+clip in. ✔ real disc: two seamless H.264 cuts (26 play items each, 39
+clips in all) muxed into one file; at every play item of both editions
+the frame at its atom's start is that clip's first frame, byte for byte.
+The cut with a jump at every item comes out 23 ms short of its playlist
+(the 1 ms margins), the other within 1 ms; mpv reads both editions at
+their playlists' lengths.
+
 mpv plays ordered chapters by default and picks the default edition the same
 way (MPV). Support in other players wasn't researched. Matroska v5's
 `EditionDisplay`/`EditionString` (mkvmerge 71.0) would name editions

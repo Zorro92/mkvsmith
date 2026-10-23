@@ -577,8 +577,10 @@ def test_build_mkvmerge_command_orders_metadata_inputs_and_fallback(
         temp_files,
     )
 
-    assert cmd[:5] == [
+    assert cmd[:7] == [
         "mkvmerge",
+        "--ui-language",
+        "en_US",
         "-o",
         str(tmp_path / "movie.mkv"),
         "--title",
@@ -1675,11 +1677,24 @@ def test_build_mkvmerge_command_verbose_adds_flag(tmp_path: Path) -> None:
         [],
     ]
 
-    assert mkv._build_mkvmerge_command(*args)[:2] == ["mkvmerge", "-o"]
-    assert mkv._build_mkvmerge_command(*args, verbose=True)[:3] == [
-        "mkvmerge",
+    # English output: the progress and warning lines are parsed.
+    english = ["mkvmerge", "--ui-language", "en_US"]
+    assert mkv._build_mkvmerge_command(*args)[:4] == [*english, "-o"]
+    assert mkv._build_mkvmerge_command(*args, verbose=True)[:5] == [
+        *english,
         "-v",
         "-o",
+    ]
+
+
+def test_mkvmerge_warnings_are_the_lines_mkvmerge_starts_with_warning() -> None:
+    output = (
+        "'/rips/Warning Signs/a.m2ts' track 0: Using the output module\n"
+        "Progress: 45%\rWarning: '/rips/Warning Signs/a.m2ts': a gap\n"
+        "Progress: 100%\rMultiplexing took 3 seconds.\n"
+    )
+    assert mkv._mkvmerge_warnings(output) == [
+        "Warning: '/rips/Warning Signs/a.m2ts': a gap"
     ]
 
 

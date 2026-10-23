@@ -1864,8 +1864,10 @@ def _build_mkvmerge_command(
     clock_joins: Sequence[bool] = (),
     vc1_sync: tuple[int, float] | None = None,
 ) -> list[str]:
+    # English output whatever the locale: the progress and warning lines
+    # are parsed ("Progreso: 5%" and "Advertencia:" in Spanish).
     cmd: list[str] = (
-        ["mkvmerge"]
+        ["mkvmerge", "--ui-language", "en_US"]
         + (["-v"] if verbose else [])
         + [
             "-o",
@@ -2796,6 +2798,19 @@ def _read_mkvmerge_output(
     return "".join(chunks)
 
 
+def _mkvmerge_warnings(output_text: str) -> list[str]:
+    """The warning lines of mkvmerge's output (exit code 1 means it warned).
+
+    mkvmerge starts each with "Warning:" (the mux runs it in English);
+    progress updates end in a carriage return, so they're split off.
+    """
+    return [
+        stripped
+        for line in re.split(r"[\r\n]", output_text)
+        if (stripped := line.strip()).startswith("Warning:")
+    ]
+
+
 @final
 class MKVCreator:
     def __init__(
@@ -2989,13 +3004,7 @@ class MKVCreator:
                 streams=streams,
             )
         if returncode == 1:
-            warnings = [
-                stripped
-                for line in output_text.split("\n")
-                if (stripped := line.strip())
-                and ("Warning" in stripped or "warning" in stripped)
-                and "%" not in stripped
-            ]
+            warnings = _mkvmerge_warnings(output_text)
             if not warnings:
                 log_warn(
                     "mkvmerge completed with warnings, but no warning lines "

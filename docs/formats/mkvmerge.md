@@ -47,7 +47,8 @@ that need a newer mkvmerge are gated on it (details in
 | `-J` JSON: `container.recognized`, each track's `id`, `type`, `codec` and `properties` (`pixel_dimensions`, `audio_channels`, `audio_sampling_frequency`, `language`, `number`, `track_name`, `default_track`, `forced_track`); an MKV's `container.properties.duration`. `identification_format_version` is 20 in v96 | `probe.py`, `mkv.py` | ✔ contract test (the common fields) |
 | `-J` codec names, mapped to mkvsmith's (`MPEG-1/2`, `AVC/H.264/MPEG-4p10`, …) | `probe._MKVMERGE_CODEC_MAP` | ✔ contract test (VC-1 only); [codecs.md](codecs.md) |
 | `Progress: N%` lines while muxing, read as they arrive | `mkv._read_mkvmerge_output` | ✔ contract test |
-| Exit code 0, 1 (finished with warnings, lines holding "Warning"), 2 (failed) | `mkv._validate_mux_result` | none |
+| Exit code 0, 1 (finished with warnings, each line starting `Warning:`), 2 (failed) | `mkv._mkvmerge_warnings`, `mkv._validate_mux_result` | ✔ contract test |
+| English output: the mux passes `--ui-language en_US`, since in another locale mkvmerge translates the lines above (`Progreso: N%`, `Advertencia:` in its Spanish catalogue) | `mkv._build_mkvmerge_command` | ✔ contract test (the option, back to v54.0); the catalogue read from the v103.0 AppImage |
 | An EVO's private stream 1 track IDs, `(sub-stream << 32) \| 0xBD` | `scan._apply_hddvd_languages` | ✔ real disc |
 
 ## Behaviour mkvsmith works around
@@ -61,7 +62,7 @@ that need a newer mkvmerge are gated on it (details in
 | `track` append mode: each audio track follows its own end, so an overhang creeps at every join; `file` mode leaves gaps | trims clip tails' audio before a `track` append (`m2ts.plan_seamless_trim`) | `m2ts.py`, [bluray.md](bluray.md) | ✔ real disc |
 | `file` append mode offsets each clip by its real end, past the play item's out time | edition chapters placed on placeholder chapters from `--generate-chapters when-appending` | `mkv.py` (`_RETIME_EPS`) | ✔ real disc |
 | Shifts chapters unevenly across `--split parts:` | writes the chapters after the mux | [bluray.md](bluray.md#clips-played-in-part) | ✔ real disc |
-| Regenerates `_STATISTICS_TAGS` without `SOURCE_ID`, and puts a mux-time tag's UID after its Simples | rewrites the tags after the mux | `mkv._normalize_tags_for_source_id`, [matroska-output.md](matroska-output.md) | none |
+| Regenerates `_STATISTICS_TAGS` without `SOURCE_ID`, and puts a mux-time tag's UID after its Simples | rewrites the tags after the mux | `mkv._normalize_tags_for_source_id`, [matroska-output.md](matroska-output.md) | ✔ contract test (both still so, and fixed after) |
 | Writes no interlace elements for AVC | flags interlaced H.264 after the mux | `mkv._apply_interlace_flags` | none |
 | Misses sparse DVD subpictures it doesn't see in the first VOB | scans the VOBs and adds a VobSub input | `vobsub.py`, `mkv.py` | ✔ real disc |
 | Outputs TrueHD and its embedded AC-3 core as two tracks on one PID | treats the PID as not trimmable; the trim plan follows the TrueHD units | `m2ts._audio_tail`, `mkv._seamless_audio_pids` | none |

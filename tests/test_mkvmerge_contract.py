@@ -10,8 +10,10 @@ with other releases.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, cast
 
@@ -84,7 +86,8 @@ def test_identification_has_the_fields_mkvsmith_reads(tmp_path: Path) -> None:
 def test_progress_lines_are_read_while_muxing(tmp_path: Path) -> None:
     (clip, _) = _clips(tmp_path, 19)
     process = subprocess.Popen(
-        ["mkvmerge", "-o", str(tmp_path / "out.mkv"), str(clip)],
+        ["mkvmerge", "--ui-language", "en_US", "-o", str(tmp_path / "out.mkv")]
+        + [str(clip)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -94,6 +97,81 @@ def test_progress_lines_are_read_while_muxing(tmp_path: Path) -> None:
     mkv._read_mkvmerge_output(process.stdout, seen.append)
     assert process.wait() == 0
     assert seen and seen[-1] == 100
+
+
+def test_exit_codes_and_warning_lines(tmp_path: Path) -> None:
+    evo = tmp_path / "a.evo"
+    synth_vc1.write_evo(evo, gops=2)
+    out = tmp_path / "a.mkv"
+    # An option for a track the file doesn't have: a warning, not an error.
+    # In English, as mkvsmith runs the mux; the test's own path holds
+    # "warning", which only a line's start may match.
+    warned = subprocess.run(
+        ["mkvmerge", "--ui-language", "en_US", "-o", str(out)]
+        + ["--track-name", "5:x", str(evo)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    assert warned.returncode == 1 and out.exists()
+    warnings = mkv._mkvmerge_warnings(warned.stdout)
+    assert len(warnings) == 1 and "ID 5" in warnings[0]
+
+    failed = subprocess.run(
+        ["mkvmerge", "-o", str(tmp_path / "b.mkv"), str(tmp_path / "missing.evo")],
+        capture_output=True,
+        check=False,
+    )
+    assert failed.returncode == 2
+
+
+# --- Track tags (mkv._apply_source_id_statistics_fix) ---------------------------
+
+
+def _source_id_tag(path: Path) -> list[ET.Element]:
+    """The children of the tag holding SOURCE_ID, in file order."""
+    extract = subprocess.run(
+        ["mkvextract", str(path), "tags"], capture_output=True, check=True
+    )
+    for tag in ET.fromstring(extract.stdout).findall("Tag"):
+        if any(s.findtext("Name") == "SOURCE_ID" for s in tag.findall("Simple")):
+            return list(tag)
+    raise AssertionError("no tag holds SOURCE_ID")
+
+
+def _statistics_listing(children: list[ET.Element]) -> Sequence[str]:
+    for child in children:
+        if child.tag == "Simple" and child.findtext("Name") == "_STATISTICS_TAGS":
+            return (child.findtext("String") or "").split()
+    raise AssertionError("no _STATISTICS_TAGS")
+
+
+def test_source_id_tags_are_fixed_after_the_mux(tmp_path: Path) -> None:
+    evo = tmp_path / "a.evo"
+    synth_vc1.write_evo(evo, gops=2)
+    tags = mkv._create_source_id_tags_file("0100FD", [], [])
+    out = tmp_path / "a.mkv"
+    try:
+        _mkvmerge("-o", out, "--tags", f"0:{tags}", evo)
+    finally:
+        tags.unlink()
+    muxed = _source_id_tag(out)
+    # A failure here means mkvmerge now writes these tags the way players
+    # need them, and the post-mux rewrite may no longer be needed.
+    assert muxed[0].tag == "Simple", "the UID now comes before the Simples"
+    assert "SOURCE_ID" not in _statistics_listing(muxed)
+
+    assert mkv._apply_source_id_statistics_fix(out, [])
+    fixed = _source_id_tag(out)
+    assert fixed[0].tag == "Targets"
+    assert fixed[0].findtext("TrackUID") == muxed_uid(muxed)
+    assert "SOURCE_ID" in _statistics_listing(fixed)
+
+
+def muxed_uid(children: list[ET.Element]) -> str | None:
+    targets = next(child for child in children if child.tag == "Targets")
+    return targets.findtext("TrackUID")
 
 
 # --- HD DVD: VC-1 in an EVO (vc1time.correct_vc1_frame_times) -----------------

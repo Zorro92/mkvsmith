@@ -14,6 +14,7 @@ from mkvsmith.mkv import MKVCreator
 from mkvsmith.models import (
     Config,
     DiscMetadata,
+    RipCancelled,
     RipError,
     RuntimeState,
     Stream,
@@ -58,12 +59,12 @@ class FakeCreator:
     def __init__(self, fail: set[int] | None = None) -> None:
         self.fail = fail or set()
         self.ripped: list[tuple[int, list[Stream] | None]] = []
-        self.on_progress: Callable[[str, int], None] | None = None
+        self.on_progress: Callable[[str, int | None], None] | None = None
         self.cancelled: Callable[[], bool] | None = None
 
     def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path:
         if self.on_progress is not None:
-            self.on_progress(f"{title.name}.mkv", 50)
+            self.on_progress("Muxing", 50)
         if title.index in self.fail:
             raise RipError(message=f"boom {title.index}", title=title)
         self.ripped.append((title.index, streams))
@@ -143,7 +144,7 @@ def test_run_rip_jobs_passes_explicit_streams() -> None:
 def test_run_rip_jobs_reports_start_and_progress_per_job() -> None:
     jobs = [RipJob(make_title(0)), RipJob(make_title(1))]
     creator = FakeCreator()
-    events: list[tuple[str, int, int]] = []
+    events: list[tuple[str, int, object]] = []
 
     run_rip_jobs(
         creator,
@@ -152,15 +153,17 @@ def test_run_rip_jobs_reports_start_and_progress_per_job() -> None:
             started=lambda job, pos, total: events.append(
                 ("start", job.title.index, pos * 10 + total)
             ),
-            progress=lambda job, pct: events.append(("pct", job.title.index, pct)),
+            progress=lambda job, stage, pct: events.append(
+                ("pct", job.title.index, (stage, pct))
+            ),
         ),
     )
 
     assert events == [
         ("start", 0, 12),
-        ("pct", 0, 50),
+        ("pct", 0, ("Muxing", 50)),
         ("start", 1, 22),
-        ("pct", 1, 50),
+        ("pct", 1, ("Muxing", 50)),
     ]
     # The creator's own progress display is restored afterwards.
     assert creator.on_progress is None
@@ -197,7 +200,9 @@ def test_run_rip_jobs_lets_the_muxer_stop_the_title_in_progress(
         return False
 
     callbacks = (
-        RipCallbacks(progress=lambda _job, _pct: None) if with_progress else None
+        RipCallbacks(progress=lambda _job, _stage, _pct: None)
+        if with_progress
+        else None
     )
 
     run_rip_jobs(creator, [RipJob(make_title(0))], callbacks, cancelled=cancelled)
@@ -226,16 +231,52 @@ def test_run_rip_jobs_runs_before_each_ahead_of_every_rip() -> None:
     assert order == ["before 0", "rip 0", "before 1", "rip 1"]
 
 
+def test_stage_progress_reports_each_new_percent_and_stops_when_cancelled(
+    tmp_path: Path,
+) -> None:
+    creator = MKVCreator(tmp_path, runtime_state=RuntimeState())
+    seen: list[tuple[str, int | None]] = []
+    creator.on_progress = lambda stage, pct: seen.append((stage, pct))
+    stopped = False
+    creator.cancelled = lambda: stopped
+    report = creator._stage_progress(make_title(0), "Extracting from the ISO")
+
+    for fraction in (0.0, 0.004, 0.25, 0.251, 1.0):
+        report(fraction)
+    assert seen == [
+        ("Extracting from the ISO", 0),
+        ("Extracting from the ISO", 25),
+        ("Extracting from the ISO", 100),
+    ]
+    stopped = True
+    with pytest.raises(RipCancelled):
+        report(1.0)
+
+
+def test_terminal_progress_gives_each_stage_its_own_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    creator = MKVCreator(tmp_path, runtime_state=RuntimeState())
+    creator._show_progress("Extracting from the ISO", 50)
+    creator._show_progress("Extracting from the ISO", 100)
+    creator._show_progress("Muxing", 10)
+
+    err = capsys.readouterr().err
+    lines = err.split("\n")
+    assert lines[0].endswith("Extracting from the ISO " + "█" * 20 + " 100%")
+    assert lines[1] == "\rMuxing " + "██" + "░" * 18 + "  10%"
+
+
 def test_mkv_creator_sends_progress_to_the_callback(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     creator = MKVCreator(tmp_path, runtime_state=RuntimeState())
-    seen: list[tuple[str, int]] = []
-    creator.on_progress = lambda name, pct: seen.append((name, pct))
+    seen: list[tuple[str, int | None]] = []
+    creator.on_progress = lambda stage, pct: seen.append((stage, pct))
 
-    creator._show_progress("movie.mkv", 42)
+    creator._show_progress("Muxing", 42)
 
-    assert seen == [("movie.mkv", 42)]
+    assert seen == [("Muxing", 42)]
     assert capsys.readouterr().err == ""
 
 

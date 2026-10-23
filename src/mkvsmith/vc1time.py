@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import mmap
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -277,8 +277,17 @@ class _FrameParser:
         self.frames.append(frame)
 
 
-def _scan_frames(path: Path) -> tuple[list[_Frame], _Sequence | None]:
-    """The primary VC-1 stream's frames in decode order."""
+# How often a frame scan reports the bytes it has read.
+_SCAN_REPORT_BYTES = 64 * 1024 * 1024
+
+
+def _scan_frames(
+    path: Path, scanned: Callable[[int], None] | None = None
+) -> tuple[list[_Frame], _Sequence | None]:
+    """The primary VC-1 stream's frames in decode order.
+
+    *scanned* gets the bytes read so far, every 64 MB and at the end.
+    """
     parser = _FrameParser()
     with (
         path.open("rb") as handle,
@@ -286,7 +295,11 @@ def _scan_frames(path: Path) -> tuple[list[_Frame], _Sequence | None]:
     ):
         length = len(data)
         pack = data.find(_PACK_START)
+        report_at = _SCAN_REPORT_BYTES
         while 0 <= pack and pack + 14 <= length:
+            if scanned is not None and pack >= report_at:
+                scanned(pack)
+                report_at = pack + _SCAN_REPORT_BYTES
             cursor = pack + 14 + (data[pack + 13] & 7)
             end = min(pack + 2048, length)
             while cursor + 9 <= end and data[cursor : cursor + 3] == _START_CODE:
@@ -306,6 +319,8 @@ def _scan_frames(path: Path) -> tuple[list[_Frame], _Sequence | None]:
                 pack = following
             else:
                 pack = data.find(_PACK_START, pack + 4)
+        if scanned is not None:
+            scanned(length)
     parser.finish()
     return parser.frames, parser.sequence
 
@@ -326,14 +341,16 @@ def _presentation_order(frames: Sequence[_Frame]) -> list[_Frame]:
     return shown
 
 
-def evo_frame_times(path: Path) -> EvoFrameTimes | None:
+def evo_frame_times(
+    path: Path, scanned: Callable[[int], None] | None = None
+) -> EvoFrameTimes | None:
     """Sorted presentation times (90 kHz ticks) of an EVO's VC-1 frames.
 
     Times count from the file's first PTS, which is where mkvmerge starts
     the file. ``None`` when the EVO has no primary VC-1 stream, no frame
     rate to time it by, or the cadence disagrees with the disc's PTSs.
     """
-    frames, sequence = _scan_frames(path)
+    frames, sequence = _scan_frames(path, scanned)
     if not frames or sequence is None or sequence.field_ticks is None:
         return None
     first = next((frame.pts for frame in frames if frame.pts is not None), None)
@@ -363,7 +380,11 @@ def evo_frame_times(path: Path) -> EvoFrameTimes | None:
     return EvoFrameTimes(first, sorted(times))
 
 
-def correct_vc1_frame_times(mkv_path: Path, evo_paths: Sequence[Path]) -> int | None:
+def correct_vc1_frame_times(
+    mkv_path: Path,
+    evo_paths: Sequence[Path],
+    progress: Callable[[float], None] | None = None,
+) -> int | None:
     """Rewrite *mkv_path*'s VC-1 block times from its source EVOs.
 
     *evo_paths* are the files muxed, in order. Each file's frames start at
@@ -373,14 +394,23 @@ def correct_vc1_frame_times(mkv_path: Path, evo_paths: Sequence[Path]) -> int | 
     are right for most frames but run late. Returns the number of blocks
     changed, ``None`` when there is no VC-1 track, and raises
     ``FrameTimingError`` (leaving the file alone) when the frames don't
-    line up.
+    line up. *progress* gets the fraction of the EVOs' bytes read so far.
     """
     track = read_track_times(mkv_path, is_vc1_track)
     if track is None:
         return None
+    sizes = [path.stat().st_size for path in evo_paths]
+    whole = sum(sizes) or 1
+
+    def scanned_after(done: int) -> Callable[[int], None] | None:
+        if progress is None:
+            return None
+        report = progress
+        return lambda count: report((done + count) / whole)
+
     per_file: list[EvoFrameTimes] = []
-    for path in evo_paths:
-        evo = evo_frame_times(path)
+    for index, path in enumerate(evo_paths):
+        evo = evo_frame_times(path, scanned_after(sum(sizes[:index])))
         if evo is None:
             raise FrameTimingError(
                 tr("could not read the frame cadence of {name}", name=path.name)

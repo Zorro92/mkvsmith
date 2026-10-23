@@ -141,18 +141,23 @@ class IsoImage:
         dest: Path,
         limit: int | None = None,
         before_chunk: Callable[[], None] | None = None,
+        copied: Callable[[int], None] | None = None,
     ) -> None:
         """Write *entry* (or its first *limit* bytes) to *dest*.
 
         *before_chunk* runs before each chunk is copied; raising from it
-        stops the copy (and the exception propagates).
+        stops the copy (and the exception propagates). *copied* gets the
+        bytes written so far after each chunk.
         """
         total = entry.size if limit is None else min(limit, entry.size)
         with dest.open("wb") as out:
             for offset in range(0, total, _COPY_CHUNK):
                 if before_chunk is not None:
                     before_chunk()
-                out.write(self.read(entry, offset, min(_COPY_CHUNK, total - offset)))
+                size = min(_COPY_CHUNK, total - offset)
+                out.write(self.read(entry, offset, size))
+                if copied is not None:
+                    copied(offset + size)
 
 
 def _read_filesystem(f: _Readable) -> tuple[str, str, list[IsoEntry], list[str]]:

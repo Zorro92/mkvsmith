@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -293,3 +294,45 @@ def test_real_iso_matches_7z(iso: Path, tmp_path: Path) -> None:
                 check=True,
             ).stdout
             assert image.read(entry) == extracted, entry.path
+
+
+def test_extract_iso_files_reports_the_fraction_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Entry:
+        def __init__(self, size: int) -> None:
+            self.size = size
+
+    class Image:
+        entries = {"A/a.m2ts": Entry(300), "A/b.m2ts": Entry(100)}
+
+        def __enter__(self) -> Image:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def copy_to(
+            self,
+            entry: Entry,
+            dest: Path,
+            _limit: int | None,
+            _before_chunk: object,
+            copied: Callable[[int], None] | None,
+        ) -> None:
+            dest.write_bytes(bytes(entry.size))
+            for done in range(100, entry.size + 1, 100):
+                if copied is not None:
+                    copied(done)
+
+    monkeypatch.setattr(disc_reader, "_open_iso", lambda _path: Image())
+    seen: list[float] = []
+    extracted = disc_reader._extract_iso_files(
+        tmp_path / "x.iso",
+        ["A/a.m2ts", "A/b.m2ts"],
+        tmp_path / "out",
+        progress=seen.append,
+    )
+    assert len(extracted) == 2
+    # Across both files, by bytes: 300 then 100.
+    assert seen == [0.25, 0.5, 0.75, 1.0]

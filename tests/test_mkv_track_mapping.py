@@ -754,11 +754,13 @@ def test_prepare_inputs_uses_iso_and_injected_registries(
         temp_base: Path | None,
         temp_dirs: list[Path] | None,
         before_chunk: Callable[[], None] | None,
+        progress: Callable[[float], None] | None,
     ) -> list[Path]:
         calls["temp_base"] = temp_base
         calls["temp_dirs"] = temp_dirs
-        assert before_chunk is not None
+        assert before_chunk is not None and progress is not None
         before_chunk()  # not stopped: the copy goes on
+        progress(0.5)
         stopped.append(True)
         with pytest.raises(models.RipCancelled):
             before_chunk()
@@ -916,12 +918,12 @@ def test_execute_mux_finalizes_output_and_metadata(
             "label": "Poster",
         }
     ]
-    run_calls: list[tuple[list[str], str, float, int]] = []
+    run_calls: list[tuple[list[str], float, int]] = []
 
     def run(
-        command: list[str], label: str, duration: float, timeout: int = 3600
+        command: list[str], duration: float, timeout: int = 3600
     ) -> tuple[int, str, bool]:
-        run_calls.append((command, label, duration, timeout))
+        run_calls.append((command, duration, timeout))
         out_file.write_bytes(b"matroska")
         return 1, "Warning: retained for tests", False
 
@@ -943,7 +945,7 @@ def test_execute_mux_finalizes_output_and_metadata(
     assert result == out_file
     assert result.read_bytes() == b"matroska"
     assert result.with_suffix(".xml").is_file()
-    assert run_calls == [(["mkvmerge"], out_file.name, 100.0, 3600)]
+    assert run_calls == [(["mkvmerge"], 100.0, 3600)]
     assert runtime_state.active_processes.output_files == []
 
 
@@ -974,9 +976,7 @@ def test_execute_mux_deletes_the_partial_output_when_the_mux_does_not_finish(
     stopped: list[bool] = []
     creator.cancelled = lambda: bool(stopped)
 
-    def run(
-        _command: list[str], _label: str, _duration: float
-    ) -> tuple[int, str, bool]:
+    def run(_command: list[str], _duration: float) -> tuple[int, str, bool]:
         out_file.write_bytes(b"truncated")
         if outcome == "reader-error":
             raise RuntimeError("App is not running")
@@ -1035,7 +1035,7 @@ def test_run_mkvmerge_kills_a_muxer_started_just_after_a_stop(
     monkeypatch.setattr(mkv, "_start_mkvmerge_watchdog", fake_watchdog)
     monkeypatch.setattr(mkv, "_kill_mkvmerge_process", killed.append)
 
-    creator._run_mkvmerge(["mkvmerge"], "movie.mkv", 100.0)
+    creator._run_mkvmerge(["mkvmerge"], 100.0)
 
     assert killed == [process]
 
@@ -1353,7 +1353,7 @@ def test_run_mkvmerge_collects_output_and_unregisters_muxer(
         fake_show_progress,
     )
 
-    result = creator._run_mkvmerge(["mkvmerge"], "movie.mkv", 100.0, timeout=17)
+    result = creator._run_mkvmerge(["mkvmerge"], 100.0, timeout=17)
 
     assert result == (0, "Progress: 42%\nwarning\n", False)
     assert progress == [42]
@@ -1391,7 +1391,7 @@ def test_run_mkvmerge_interrupt_kills_waits_and_finishes_progress(
     runtime_state.active_processes.set_progress_active(True)
 
     with pytest.raises(KeyboardInterrupt):
-        creator._run_mkvmerge(["mkvmerge"], "movie.mkv", 100.0)
+        creator._run_mkvmerge(["mkvmerge"], 100.0)
 
     assert killed == [process]
     assert process.waited is True
@@ -1426,7 +1426,7 @@ def test_run_mkvmerge_kills_child_on_unexpected_reader_error(
     monkeypatch.setattr(mkv, "_kill_mkvmerge_process", killed.append)
 
     with pytest.raises(RuntimeError, match="pipe closed"):
-        creator._run_mkvmerge(["mkvmerge"], "movie.mkv", 100.0)
+        creator._run_mkvmerge(["mkvmerge"], 100.0)
 
     assert killed == [process]
     assert process.waited is False

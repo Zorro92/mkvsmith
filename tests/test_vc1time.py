@@ -233,10 +233,13 @@ def test_correct_vc1_frame_times_lines_up_appended_files(tmp_path: Path) -> None
     muxed = times_a + [time + 1000 for time in times_b]
     path = tmp_path / "a.mkv"
     _write_mkv(path, muxed)
-    correct_vc1_frame_times(path, [first, second])
+    seen: list[float] = []
+    correct_vc1_frame_times(path, [first, second], seen.append)
     after = read_track_times(path, is_vc1_track)
     assert after is not None
     assert [block.time for block in after.blocks] == muxed[:1] + muxed[:-1]
+    # Both EVOs read, by bytes: each reports its end.
+    assert seen == [0.5, 1.0]
 
 
 def test_correct_vc1_frame_times_puts_a_clock_join_on_the_clock(
@@ -345,7 +348,7 @@ def test_mux_failure_to_correct_only_warns(
     warnings: list[str] = []
     monkeypatch.setattr(mkv, "log_warn", warnings.append)
 
-    def fail(_path: Path, _inputs: object) -> int:
+    def fail(_path: Path, _inputs: object, _progress: object = None) -> int:
         raise FrameTimingError("12 frames in the source, 11 in the MKV")
 
     monkeypatch.setattr(mkv, "correct_vc1_frame_times", fail)

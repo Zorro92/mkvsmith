@@ -2142,7 +2142,11 @@ def _extract_dvd_subtitle_fallback(
     return fallback_path, fallback_tracks, unmatched_subs
 
 
-def _correct_vc1_frame_times(out_file: Path, inputs: Sequence[Path]) -> None:
+def _correct_vc1_frame_times(
+    out_file: Path,
+    inputs: Sequence[Path],
+    progress: Callable[[float], None] | None = None,
+) -> None:
     """Rewrite mkvmerge's VC-1 frame times from the source EVOs.
 
     mkvmerge mistimes the first GOP after each chapter's sequence header,
@@ -2150,7 +2154,7 @@ def _correct_vc1_frame_times(out_file: Path, inputs: Sequence[Path]) -> None:
     mkvmerge wrote it.
     """
     try:
-        changed = correct_vc1_frame_times(out_file, inputs)
+        changed = correct_vc1_frame_times(out_file, inputs, progress)
     except (ValueError, OSError) as exc:
         log_warn(tr("Could not correct the VC-1 frame timing: {err}", err=exc))
         return
@@ -2180,6 +2184,7 @@ def _extract_hddvd_pgs_subtitles(
     mapped: list[MappedStream],
     inputs: list[Path],
     temp_files: list[Path],
+    progress: Callable[[float], None] | None = None,
 ) -> list[tuple[Stream, Path]]:
     """Convert the title's HD DVD subtitles to PGS, one ``.sup`` per track.
 
@@ -2197,7 +2202,9 @@ def _extract_hddvd_pgs_subtitles(
     if not wanted:
         return []
     found, failed = scan_evo_subpictures(
-        inputs, {stream.sub_id for stream in wanted if stream.sub_id is not None}
+        inputs,
+        {stream.sub_id for stream in wanted if stream.sub_id is not None},
+        progress,
     )
     video = next(
         (stream for stream in title.streams if stream.stream_type == StreamType.VIDEO),
@@ -2831,9 +2838,11 @@ class MKVCreator:
         self.logger = state.logger
         self.cleanup = state.cleanup
         self.active_processes = state.active_processes
-        # Called with (output name, percent) while mkvmerge runs; None draws
-        # the terminal progress bar.
-        self.on_progress: Callable[[str, int], None] | None = None
+        # Called with (stage, percent) as a title is extracted, its subtitles
+        # converted, muxed and corrected; percent is None for a stage that
+        # can't measure itself. None draws the terminal progress bar.
+        self.on_progress: Callable[[str, int | None], None] | None = None
+        self._progress_stage = ""  # the stage the terminal bar shows
         # Polled while a title is prepared and muxed; once it returns True
         # the rip stops with RipCancelled and leaves no partial files.
         self.cancelled: Callable[[], bool] | None = None
@@ -2842,6 +2851,20 @@ class MKVCreator:
     def _stop_if_cancelled(self, title: Title) -> None:
         if self.cancelled is not None and self.cancelled():
             raise RipCancelled(title)
+
+    def _stage_progress(self, title: Title, stage: str) -> Callable[[float], None]:
+        """A fraction-done callback for *stage*: shows each new percent, and
+        stops the rip (RipCancelled) once it has been cancelled."""
+        shown: list[int] = []
+
+        def report(fraction: float) -> None:
+            self._stop_if_cancelled(title)
+            pct = max(0, min(100, int(fraction * 100)))
+            if not shown or shown[-1] != pct:
+                shown.append(pct)
+                self._show_progress(stage, pct)
+
+        return report
 
     def select_streams(
         self, title: Title, force: list[str] | None = None
@@ -2890,6 +2913,7 @@ class MKVCreator:
                 temp_base=extract_temp_base,
                 temp_dirs=self.cleanup.temp_dirs,
                 before_chunk=lambda: self._stop_if_cancelled(title),
+                progress=self._stage_progress(title, tr("Extracting from the ISO")),
             )
             cleanup = list(inputs)
         else:
@@ -2947,7 +2971,11 @@ class MKVCreator:
             fallback_tracks = []
             unmatched_ifo_subs = []
             pgs_subtitles = _extract_hddvd_pgs_subtitles(
-                title, mapped, input_plan.inputs, self.cleanup.temp_files
+                title,
+                mapped,
+                input_plan.inputs,
+                self.cleanup.temp_files,
+                self._stage_progress(title, tr("Converting subtitles")),
             )
         elif input_plan.is_dvd_vob:
             fallback_path, fallback_tracks, unmatched_ifo_subs = (
@@ -3115,7 +3143,7 @@ class MKVCreator:
         self.active_processes.register_output(out_file)
         try:
             returncode, output_text, timed_out = self._run_mkvmerge(
-                command, out_file.name, title.duration_seconds
+                command, title.duration_seconds
             )
             self._stop_if_cancelled(title)
             self._validate_mux_result(
@@ -3134,7 +3162,17 @@ class MKVCreator:
                 out_file.unlink(missing_ok=True)
             raise
         if vc1_inputs:
-            _correct_vc1_frame_times(out_file, vc1_inputs)
+            try:
+                _correct_vc1_frame_times(
+                    out_file,
+                    vc1_inputs,
+                    self._stage_progress(title, tr("Correcting the frame timing")),
+                )
+            except RipCancelled:
+                # Stopped after the mux: the uncorrected file goes too.
+                with contextlib.suppress(OSError):
+                    out_file.unlink(missing_ok=True)
+                raise
         if vc1_joins:
             _retime_vc1_join_frames(out_file)
         if retime_dropped_inputs is not None:
@@ -3277,21 +3315,29 @@ class MKVCreator:
                 return
             display /= 1024
 
-    def _show_progress(self, label: str, pct: int) -> None:
+    def _show_progress(self, stage: str, pct: int | None) -> None:
         if self.on_progress is not None:
-            self.on_progress(label, pct)
+            self.on_progress(stage, pct)
             return
-        name = label if len(label) <= 24 else label[:21] + "..."
+        if pct is None:
+            return
+        if stage != self._progress_stage:
+            # Each stage on its own line: a shorter one would leave the
+            # end of the last showing.
+            self.active_processes.finish_progress_line()
+            self._progress_stage = stage
         filled = max(0, min(20, pct // 5))
         bar = "█" * filled + "░" * (20 - filled)
         self.active_processes.set_progress_active(True)
-        sys.stderr.write(f"\rMuxing {name} {bar} {pct:3d}%")
+        sys.stderr.write(f"\r{stage} {bar} {pct:3d}%")
         sys.stderr.flush()
+        if pct >= 100:
+            # Done: what's logged next starts on a line of its own.
+            self.active_processes.finish_progress_line()
 
     def _run_mkvmerge(
         self,
         cmd: list[str],
-        label: str,
         duration: float,
         timeout: int = _MKVMERGE_STALL_SECONDS,
     ) -> tuple[int, str, bool]:
@@ -3320,7 +3366,7 @@ class MKVCreator:
             assert process.stdout is not None
             output = _read_mkvmerge_output(
                 process.stdout,
-                lambda percentage: self._show_progress(label, percentage),
+                lambda percentage: self._show_progress(tr("Muxing"), percentage),
                 watchdog.poke,
             )
         except BaseException as exc:

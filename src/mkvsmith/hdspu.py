@@ -11,7 +11,7 @@ colours are copied, never converted. See docs/formats/subpictures.md.
 from __future__ import annotations
 
 import mmap
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -308,12 +308,15 @@ class _FileScan:
         return end + (steps[len(steps) // 2] if steps else 0)
 
 
-def _scan_file(path: Path, sub_ids: set[int]) -> _FileScan:
+def _scan_file(
+    path: Path, sub_ids: set[int], scanned: Callable[[int], None] | None = None
+) -> _FileScan:
     """Walk one EVO's packs, joining each wanted sub-stream's units.
 
     A unit starts in a packet with a PTS and is complete once its 4-byte
     size is in. The first video PTS is the file's zero, as mkvmerge reads
-    it: every stream of the sampled EVOs starts there.
+    it: every stream of the sampled EVOs starts there. *scanned* gets the
+    bytes read so far after each window.
     """
     scan = _FileScan(video_steps=[], units=[])
     pending: dict[int, tuple[int, bytearray]] = {}
@@ -328,6 +331,8 @@ def _scan_file(path: Path, sub_ids: set[int]) -> _FileScan:
             ) as data:
                 _scan_window(data, sub_ids, scan, pending)
             offset += window
+            if scanned is not None:
+                scanned(offset)
     return scan
 
 
@@ -410,16 +415,31 @@ def _add_chunk(
 
 
 def scan_evo_subpictures(
-    inputs: Sequence[Path], sub_ids: set[int]
+    inputs: Sequence[Path],
+    sub_ids: set[int],
+    progress: Callable[[float], None] | None = None,
 ) -> tuple[dict[int, list[HdSubpicture]], int]:
     """Decode the wanted sub-streams' subpictures across the title's EVOs.
 
     The EVOs play one after another, as mkvmerge appends them: each file's
     times run from its first video PTS, shifted by the files before it
     (``_FileScan.span_to``). Returns the subpictures by sub-stream and the
-    count of units that couldn't be decoded.
+    count of units that couldn't be decoded. *progress* gets the fraction
+    of the EVOs' bytes read so far.
     """
-    scans = [_scan_file(path, sub_ids) for path in inputs]
+    sizes = [path.stat().st_size for path in inputs]
+    total = sum(sizes) or 1
+
+    def scanned_after(done: int) -> Callable[[int], None] | None:
+        if progress is None:
+            return None
+        report = progress
+        return lambda count: report((done + count) / total)
+
+    scans = [
+        _scan_file(path, sub_ids, scanned_after(sum(sizes[:index])))
+        for index, path in enumerate(inputs)
+    ]
     found: dict[int, list[HdSubpicture]] = {}
     failed = 0
     timeline = 0

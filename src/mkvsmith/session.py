@@ -382,7 +382,7 @@ class RipBatchResult:
 class Ripper(Protocol):
     """What ``run_rip_jobs`` needs from a muxer (``mkv.MKVCreator``)."""
 
-    on_progress: Callable[[str, int], None] | None
+    on_progress: Callable[[str, int | None], None] | None
     cancelled: Callable[[], bool] | None
 
     def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path: ...
@@ -393,12 +393,14 @@ class RipCallbacks:
     """Optional progress hooks for ``run_rip_jobs``.
 
     *started* gets (job, position, total) with a 1-based position,
-    *progress* gets (job, percent) while mkvmerge runs, and *finished* gets
+    *progress* gets (job, stage, percent) as each title is extracted, its
+    subtitles converted, muxed and corrected (stage is translated text,
+    percent None when a stage can't measure itself), and *finished* gets
     each job's outcome.
     """
 
     started: Callable[[RipJob, int, int], None] | None = None
-    progress: Callable[[RipJob, int], None] | None = None
+    progress: Callable[[RipJob, str, int | None], None] | None = None
     finished: Callable[[RipOutcome], None] | None = None
 
 
@@ -441,7 +443,7 @@ def _run_reporting(
     report = hooks.progress
     saved_progress = creator.on_progress
     current: list[RipJob] = []
-    creator.on_progress = lambda _name, pct: report(current[-1], pct)
+    creator.on_progress = lambda stage, pct: report(current[-1], stage, pct)
     try:
         return _run_jobs(creator, jobs, hooks, before_each, cancelled, current.append)
     finally:

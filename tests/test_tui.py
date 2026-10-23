@@ -14,7 +14,7 @@ from typing import Any, cast
 import pytest
 from textual import events
 from textual.pilot import Pilot
-from textual.widgets import Input, Label, OptionList, Static
+from textual.widgets import Input, Label, OptionList, ProgressBar, Static
 from textual.widgets._footer import FooterKey
 
 from mkvsmith import cli, models, settings, tui
@@ -733,13 +733,13 @@ class FakeCreator:
 
     def __init__(self, out: Path, *_args: object, **_kwargs: object) -> None:
         self.out = out
-        self.on_progress: Callable[[str, int], None] | None = None
+        self.on_progress: Callable[[str, int | None], None] | None = None
         self.cancelled: Callable[[], bool] | None = None
         self.prompts = models.UserPrompts()
 
     def create_mkv(self, title: Title, streams: list[Stream] | None = None) -> Path:
         if self.on_progress is not None:
-            self.on_progress("x.mkv", 40)
+            self.on_progress("Muxing", 40)
         if FakeCreator.gate is not None:
             FakeCreator.gate.wait(10)
         if self.cancelled is not None and self.cancelled():
@@ -1327,10 +1327,19 @@ def test_esc_while_ripping_asks_then_stops(
         await wait_until(
             pilot, lambda: "Muxing... 40%" in option_texts(app, "#jobs")[0]
         )
+        # While it rips, Esc stops it, and the bar shows the mux's progress.
+        await pilot.pause()
+        assert footer_keys(app)["escape"] == "Stop"
+        bar = app.screen.query_one("#progress", ProgressBar)
+        assert bar.total == 100 and bar.progress == 40
+        assert "Muxing... 40%" in str(app.screen.query_one("#stage", Static).content)
         await pilot.press("escape")
         await dialog(pilot, app, tui.ConfirmDialog)
         await pilot.press("enter")  # Yes, stop
         rip = await rip_done(pilot, app)
+        await pilot.pause()
+        assert footer_keys(app)["escape"] == "Back"
+        assert not rip.query_one("#progress", ProgressBar).display
         status = str(rip.query_one("#status", Static).content)
         assert status == "Stopped · Done: 0 ok, 0 failed"
         jobs = option_texts(app, "#jobs")

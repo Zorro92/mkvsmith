@@ -35,7 +35,16 @@ from textual.driver import Driver
 from textual.message import Message
 from textual.messages import InBandWindowResize
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Header, Input, Label, OptionList, RichLog, Static
+from textual.widgets import (
+    Footer,
+    Header,
+    Input,
+    Label,
+    OptionList,
+    ProgressBar,
+    RichLog,
+    Static,
+)
 from textual.widgets.option_list import Option, OptionDoesNotExist
 
 from mkvsmith.cli import (
@@ -1005,6 +1014,8 @@ class ScanScreen(_LogPage):
     """Scans the source (log shown as it goes), then opens the title list."""
 
     DEFAULT_CSS = """
+    ScanScreen #progress { width: 1fr; margin: 0 1 1 1; }
+    ScanScreen #progress Bar { width: 1fr; }
     ScanScreen #log { height: 1fr; }
     """
 
@@ -1020,6 +1031,8 @@ class ScanScreen(_LogPage):
             classes="heading",
             markup=False,
         )
+        # A scan can't tell how far it has got: the bar shows it's working.
+        yield ProgressBar(id="progress", total=None, show_eta=False)
         yield RichLog(id="log", wrap=True, markup=False, min_width=20)
 
     def on_mount(self) -> None:
@@ -1077,6 +1090,7 @@ class ScanScreen(_LogPage):
         self._when_on_top(self.app.pop_screen)
 
     def _failed(self, message: str) -> None:
+        self.query_one("#progress", ProgressBar).display = False
         self.query_one("#status", Static).update(message)
         self.notify(message, severity="error")
 
@@ -1500,7 +1514,10 @@ def _size_text(path: Path) -> str:
 
 @_keys(
     lambda: [
-        Binding("escape", "stop_or_back", tr("Back")),
+        # Esc stops a rip in progress and goes back once it's done; only
+        # the one that applies shows (check_action).
+        Binding("escape", "stop", tr("Stop")),
+        Binding("escape", "back", tr("Back")),
         Binding("q", "quit_app", tr("Quit")),
     ]
 )
@@ -1508,6 +1525,9 @@ class RipScreen(_LogPage):
     """Rips a batch, one line per output with its progress, plus the log."""
 
     DEFAULT_CSS = """
+    RipScreen #stage { margin: 1 1 0 1; }
+    RipScreen #progress { width: 1fr; margin: 0 1 1 1; }
+    RipScreen #progress Bar { width: 1fr; }
     RipScreen #log { height: 1fr; border-top: solid $panel; }
     """
 
@@ -1517,7 +1537,7 @@ class RipScreen(_LogPage):
         self.running = False
         self.result: RipBatchResult | None = None
         self._cancel = False
-        self._shown_pct: dict[int, int] = {}
+        self._shown: dict[int, tuple[str, int | None]] = {}
 
     def compose_body(self) -> ComposeResult:
         yield Static(
@@ -1532,7 +1552,16 @@ class RipScreen(_LogPage):
             ),
             id="jobs",
         )
+        yield Static("", id="stage", markup=False)
+        yield ProgressBar(id="progress", total=None, show_eta=False)
         yield RichLog(id="log", wrap=True, markup=False, min_width=20)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "stop":
+            return self.running
+        if action == "back":
+            return not self.running
+        return True
 
     @staticmethod
     def _job_prompt(job: RipJob, status: str) -> Text:
@@ -1547,6 +1576,7 @@ class RipScreen(_LogPage):
     def on_mount(self) -> None:
         app = self.mkvsmith
         self.running = True
+        self.refresh_bindings()
         self.run_worker(
             lambda: self._rip(app), thread=True, exclusive=True, group="rip"
         )
@@ -1567,7 +1597,7 @@ class RipScreen(_LogPage):
                 started=lambda job, pos, total: app.call_from_thread(
                     self._started, job, pos, total
                 ),
-                progress=lambda job, pct: self._progress(app, job, pct),
+                progress=lambda job, stage, pct: self._progress(app, job, stage, pct),
                 finished=lambda outcome: app.call_from_thread(self._finished, outcome),
             )
             result = run_rip_jobs(
@@ -1578,20 +1608,38 @@ class RipScreen(_LogPage):
             result = RipBatchResult(cancelled=True)
         app.call_from_thread(self._done, result)
 
-    def _progress(self, app: MkvsmithApp, job: RipJob, pct: int) -> None:
+    def _progress(
+        self, app: MkvsmithApp, job: RipJob, stage: str, pct: int | None
+    ) -> None:
         n = self.jobs.index(job)
-        if self._shown_pct.get(n) == pct:
+        if self._shown.get(n) == (stage, pct):
             return
-        self._shown_pct[n] = pct
-        app.call_from_thread(self._set_status, job, tr("Muxing... {pct}%", pct=pct))
+        self._shown[n] = (stage, pct)
+        app.call_from_thread(self._show_stage, job, stage, pct)
 
     # -- UI updates ---------------------------------------------------------
+
+    def _show_stage(self, job: RipJob, stage: str, pct: int | None) -> None:
+        """The job's line, and the bar under the list, at *stage*."""
+        if pct is None:
+            status = tr("{stage}...", stage=stage)
+        else:
+            status = tr("{stage}... {pct}%", stage=stage, pct=pct)
+        self._set_status(job, status)
+        self.query_one("#stage", Static).update(
+            f"#{job.title.index}  {job.title.name} · {status}"
+        )
+        bar = self.query_one("#progress", ProgressBar)
+        if pct is None:
+            bar.update(total=None)
+        else:
+            bar.update(total=100, progress=pct)
 
     def _started(self, job: RipJob, position: int, total: int) -> None:
         self.query_one("#status", Static).update(
             tr("Ripping {pos} of {total}", pos=position, total=total)
         )
-        self._set_status(job, tr("Preparing..."))
+        self._show_stage(job, tr("Preparing"), None)
         self.query_one("#jobs", OptionList).highlighted = self.jobs.index(job)
 
     def _finished(self, outcome: RipOutcome) -> None:
@@ -1613,6 +1661,9 @@ class RipScreen(_LogPage):
 
     def _done(self, result: RipBatchResult) -> None:
         self.running = False
+        self.refresh_bindings()
+        self.query_one("#stage", Static).display = False
+        self.query_one("#progress", ProgressBar).display = False
         self.result = result
         finished = {self.jobs.index(o.job) for o in result.outcomes}
         for n, job in enumerate(self.jobs):
@@ -1645,7 +1696,10 @@ class RipScreen(_LogPage):
         self.state.active_processes.kill_muxers()
         self.query_one("#status", Static).update(tr("Stopping..."))
 
-    def action_stop_or_back(self) -> None:
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    def action_stop(self) -> None:
         if not self.running:
             self.app.pop_screen()
             return

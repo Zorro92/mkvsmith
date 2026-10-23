@@ -231,9 +231,12 @@ def test_scan_times_units_on_the_appended_timeline(tmp_path: Path) -> None:
         5000,
         [(0x20, 5000 + 45000, unit), (0x21, 5000 + 45000, unit)],
     )
-    found, failed = scan_evo_subpictures([first, second], {0x20})
+    seen: list[float] = []
+    found, failed = scan_evo_subpictures([first, second], {0x20}, seen.append)
     assert failed == 0
     assert list(found) == [0x20]
+    # The fraction of both files' bytes read, rising to all of them.
+    assert seen == sorted(seen) and seen[-1] == 1.0
     starts = [(sub.start, sub.end) for sub in found[0x20]]
     assert starts == [
         (90000, 90000 + 50 * _DELAY_UNIT),

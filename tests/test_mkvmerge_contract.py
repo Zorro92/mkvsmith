@@ -21,9 +21,11 @@ from typing import Any, cast
 import pytest
 
 from mkvsmith import mkv, mkvtimes
+from mkvsmith.m2ts import DRIFT_TOLERANCE, scan_clip_tail
 from mkvsmith.mkvtimes import is_vc1_track, read_track_times
+from mkvsmith.models import Stream, StreamType, Title
 from mkvsmith.vc1time import correct_vc1_frame_times, retime_vc1_join_frames
-from tests import synth_h264, synth_vc1
+from tests import synth_ac3, synth_h264, synth_truehd, synth_vc1
 
 pytestmark = pytest.mark.skipif(
     shutil.which("mkvmerge") is None, reason="mkvmerge not installed"
@@ -173,6 +175,149 @@ def test_source_id_tags_are_fixed_after_the_mux(tmp_path: Path) -> None:
 def muxed_uid(children: list[ET.Element]) -> str | None:
     targets = next(child for child in children if child.tag == "Targets")
     return targets.findtext("TrackUID")
+
+
+# --- HD DVD: private stream 1 in an EVO (scan.py, hdspu.py) --------------------
+
+
+def test_evo_audio_numbers_and_skipped_subpictures(tmp_path: Path) -> None:
+    start = 900_000
+    audio = [
+        (pts, synth_vc1.private_pack(0x80, synth_ac3.frame(), pts))
+        for pts in range(
+            start, start + 60 * synth_ac3.FRAME_TICKS, synth_ac3.FRAME_TICKS
+        )
+    ]
+    subpictures = [
+        (start + t, synth_vc1.private_pack(0x20, b"\x00\x00" + bytes(60), start + t))
+        for t in (9000, 90000)
+    ]
+    evo = tmp_path / "a.evo"
+    synth_vc1.write_evo(evo, gops=6, first_pts=start, extras=audio + subpictures)
+    tracks = _identify(evo)["tracks"]
+    # mkvsmith matches EVO audio to the XPL by the sub-stream in mkvmerge's
+    # track number (scan._hddvd_sub_stream).
+    assert [(t["type"], t["codec"], t["properties"]["number"]) for t in tracks] == [
+        ("video", "VC-1", 0x55 << 32 | 0xFD),
+        ("audio", "AC-3", 0x80 << 32 | 0xBD),
+    ]
+    # A failure here means mkvmerge now reads EVO subpictures or languages:
+    # hdspu.py's PGS tracks would double its own, and the XPL's languages
+    # may no longer be needed.
+    assert all(t["type"] != "subtitles" for t in tracks)
+    assert all(t["properties"].get("language") in (None, "und") for t in tracks)
+
+
+# --- Blu-ray: audio across appended clips (m2ts.plan_seamless_trim) ------------
+
+_CLIP_FRAMES = 19  # 634 ms of video; 20 AC-3 frames (640 ms) cover it
+
+
+def _av_clips(tmp_path: Path, count: int) -> list[Path]:
+    clips: list[Path] = []
+    for index in range(count):
+        clip = tmp_path / f"{index + 1:05d}.m2ts"
+        clip.write_bytes(
+            synth_vc1.m2ts_clip(_CLIP_FRAMES, start=90_000 + index * 900_000, ac3=True)
+        )
+        clips.append(clip)
+    return clips
+
+
+def _track_times(path: Path, codec_id: bytes) -> list[int]:
+    track = read_track_times(path, lambda codec, _private: codec == codec_id)
+    assert track is not None
+    return [block.time for block in track.blocks]
+
+
+def test_track_append_starts_each_audio_track_at_its_own_end(tmp_path: Path) -> None:
+    clips = _av_clips(tmp_path, 3)
+    out = tmp_path / "a.mkv"
+    _mkvmerge(
+        "--disable-lacing", "-o", out, "--append-mode", "track",
+        clips[0], "+", clips[1], "+", clips[2],
+    )  # fmt: skip
+    audio = _track_times(out, b"A_AC3")
+    frame_ms = synth_ac3.FRAME_TICKS / 90
+    # A failure here means mkvmerge now appends audio where the video ends,
+    # and the trim plan's model of the drift is wrong.
+    assert audio[20] == round(20 * frame_ms) and audio[40] == round(40 * frame_ms)
+
+
+def test_seamless_trim_keeps_audio_on_the_video(tmp_path: Path) -> None:
+    clips = _av_clips(tmp_path, 8)
+    title = Title(0, tmp_path, "T", 10.0)
+    title.seamless_connections = True
+    mapped: list[mkv.MappedStream] = [
+        {
+            "input_id": 0,
+            "type": "video",
+            "stream": Stream(0, StreamType.VIDEO, "vc1", "und", pid=0x1011),
+            "ident_channels": None,
+        },
+        {
+            "input_id": 1,
+            "type": "audio",
+            "stream": Stream(1, StreamType.AUDIO, "ac3", "eng", pid=synth_vc1.AC3_PID),
+            "ident_channels": 2,
+        },
+    ]
+    seamless = mkv._prepare_seamless_append(title, clips, mapped, set(clips), [], [])
+    assert seamless is not None and seamless.vc1_sync is not None
+    kept = [
+        len(scan_clip_tail(clip, {synth_vc1.AC3_PID}).audio[synth_vc1.AC3_PID].frames)
+        for clip in seamless.inputs
+    ]
+    # Untrimmed the audio gains 6 ms a join, past half a frame by the
+    # fourth: the plan must have dropped frames.
+    assert sum(kept) < 20 * len(clips)
+
+    out = tmp_path / "a.mkv"
+    cmd = ["mkvmerge", "--ui-language", "en_US", "--disable-lacing", "-o", str(out)]
+    mkv._append_input_files(
+        cmd, seamless.inputs, [], track_mode=True, vc1_sync=seamless.vc1_sync
+    )
+    _mkvmerge(*cmd[1:])
+    retime_vc1_join_frames(out)
+    audio = _track_times(out, b"A_AC3")
+    video = sorted(_track_times(out, b"V_MS/VFW/FOURCC"))
+    clip_ms = _CLIP_FRAMES * _FRAME_MS
+    half_frame_ms = synth_ac3.FRAME_TICKS / 90 / 2
+    first_audio = 0
+    for index in range(1, len(clips)):
+        first_audio += kept[index - 1]
+        # The clip's first frame is shown at the next block's time.
+        video_start = video[index * _CLIP_FRAMES + 1]
+        assert video_start == pytest.approx(index * clip_ms, abs=1)
+        drift = audio[first_audio] - video_start
+        assert abs(drift) <= half_frame_ms + DRIFT_TOLERANCE * 1000, (index, drift)
+
+
+def test_truehd_and_its_ac3_core_are_two_tracks_on_one_pid(tmp_path: Path) -> None:
+    clip = tmp_path / "00001.m2ts"
+    clip.write_bytes(synth_vc1.m2ts_clip(_CLIP_FRAMES, truehd=True))
+    tracks = _identify(clip)["tracks"]
+    # Two muxed tracks from one PID can't be trimmed apart, so mkvsmith
+    # appends such a title in file mode (mkv._seamless_audio_pids).
+    assert [(t["codec"], t["properties"]["number"]) for t in tracks[1:]] == [
+        ("TrueHD", synth_vc1.AC3_PID),
+        ("AC-3", synth_vc1.AC3_PID),
+    ]
+
+
+def test_truehd_track_ends_where_the_tail_scan_says(tmp_path: Path) -> None:
+    clip = tmp_path / "00001.m2ts"
+    clip.write_bytes(synth_vc1.m2ts_clip(_CLIP_FRAMES, truehd=True))
+    out = tmp_path / "a.mkv"
+    _mkvmerge("--disable-lacing", "-o", out, "-a", "1", clip)
+    times = _track_times(out, b"A_TRUEHD")
+    tail = scan_clip_tail(clip, {synth_vc1.AC3_PID}).audio[synth_vc1.AC3_PID]
+    # The trim plan follows the TrueHD units, not the 32 ms core, and
+    # mkvmerge keeps every unit.
+    assert tail.frame_duration == synth_truehd.UNIT_TICKS
+    assert len(times) == len(tail.frames)
+    last_unit = (tail.end - synth_truehd.UNIT_TICKS - 90_000) / 90
+    assert times[-1] == pytest.approx(last_unit, abs=1)
 
 
 # --- Interlaced H.264 (mkv._apply_interlace_flags) -----------------------------

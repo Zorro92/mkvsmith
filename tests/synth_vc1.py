@@ -11,6 +11,7 @@ show what mkvmerge does with VC-1 timing.
 from __future__ import annotations
 
 import struct
+from collections.abc import Sequence
 from pathlib import Path
 
 from tests import synth_m2ts
@@ -76,8 +77,11 @@ def _timestamp(value: int, marker: int) -> bytes:
     )
 
 
-def pes(payload: bytes, pts: int | None, dts: int | None = None) -> bytes:
-    """A VC-1 PES (0xFD, stream_id_extension 0x55 in PES_extension_2)."""
+def pes(
+    payload: bytes, pts: int | None, dts: int | None = None, extension: int = 0x55
+) -> bytes:
+    """An extended-stream PES (0xFD), *extension* in PES_extension_2: VC-1
+    (0x55), or on Blu-ray TrueHD (0x72) and its AC-3 core (0x76)."""
     fields = b""
     flags = 0x01
     if pts is not None and dts is not None:
@@ -86,7 +90,7 @@ def pes(payload: bytes, pts: int | None, dts: int | None = None) -> bytes:
     elif pts is not None:
         flags |= 0x80
         fields = _timestamp(pts, 0x20)
-    fields += b"\x01\x81\x55"  # PES_extension_flag_2, length 1, extension 0x55
+    fields += bytes([0x01, 0x81, extension])  # PES_extension_flag_2, length 1
     body = bytes([0x81, flags, len(fields)]) + fields + payload
     return b"\x00\x00\x01\xfd" + len(body).to_bytes(2, "big") + body
 
@@ -102,9 +106,29 @@ def pack(pes: bytes) -> bytes:
 GOP = [("I", 0), ("P", 1), ("B", 1), ("B", 0), ("P", 0), ("B", 0), ("B", 1)]
 
 
-def write_evo(path: Path, gops: int, first_pts: int = 900_000) -> list[float]:
-    """An EVO of *gops* GOPs; returns the expected sorted frame times."""
+def private_pack(sub_stream: int, payload: bytes, pts: int) -> bytes:
+    """A private stream 1 pack (0xBD) for *sub_stream*: audio such as
+    AC-3 (0x80) with the DVD-style 3-byte header, or a subpicture (0x20)."""
+    head = bytes([sub_stream])
+    if sub_stream >= 0x80:
+        head += b"\x01\x00\x01"  # one frame, first access unit at 1
+    body = bytes([0x81, 0x80, 5]) + _timestamp(pts, 0x20) + head + payload
+    return pack(b"\x00\x00\x01\xbd" + len(body).to_bytes(2, "big") + body)
+
+
+def write_evo(
+    path: Path,
+    gops: int,
+    first_pts: int = 900_000,
+    extras: Sequence[tuple[int, bytes]] = (),
+) -> list[float]:
+    """An EVO of *gops* GOPs; returns the expected sorted frame times.
+
+    *extras* are (PTS, pack) pairs, such as private_pack's, laid in among
+    the video packs by time.
+    """
     packs: list[bytes] = []
+    waiting = list(extras)
     pts = first_pts
     expected: list[float] = []
     clock = 0.0
@@ -116,12 +140,16 @@ def write_evo(path: Path, gops: int, first_pts: int = 900_000) -> list[float]:
                 unit += b"\x00\x00\x01\x0e" + bytes(8)
             unit += b"\x00\x00\x01\x0d" + frame_header(kind, rff) + b"\x55" * 64
             packs.append(pack(pes(unit, pts if index == 0 else None)))
+            due = sorted(extra for extra in waiting if extra[0] <= pts)
+            waiting = [extra for extra in waiting if extra[0] > pts]
+            packs += [extra for _pts, extra in due]
         # Display order I B B P B B P: durations by each frame's RFF.
         shown = [GOP[0], GOP[2], GOP[3], GOP[1], GOP[5], GOP[6], GOP[4]]
         for _kind, rff in shown:
             expected.append(clock)
             clock += (2 + rff) * FIELD
         pts = first_pts + round(clock)
+    packs += [extra for _pts, extra in sorted(waiting)]
     path.write_bytes(b"".join(packs))
     return expected
 
@@ -146,50 +174,101 @@ def _section(table_id: int, extension: int, body: bytes) -> bytes:
 
 _PMT_PID = 0x100
 _PCR_PID = 0x1001
+AC3_PID = 0x1100
 _PAT = _section(0x00, 1, struct.pack(">HH", 1, 0xE000 | _PMT_PID))
 _REGISTRATION = b"\x05\x04HDMV"
-_PMT = _section(
-    0x02,
-    1,
-    struct.pack(">HH", 0xE000 | _PCR_PID, 0xF000 | len(_REGISTRATION))
-    + _REGISTRATION
-    + bytes([0xEA])  # stream_type: VC-1
-    + struct.pack(">HH", 0xE000 | synth_m2ts.VIDEO_PID, 0xF000),
-)
 
 
-def _psi() -> list[bytes]:
+def _pmt(audio: int | None) -> bytes:
+    streams = bytes([0xEA]) + struct.pack(  # stream_type: VC-1
+        ">HH", 0xE000 | synth_m2ts.VIDEO_PID, 0xF000
+    )
+    if audio is not None:  # 0x81 AC-3, 0x83 TrueHD (with an AC-3 core)
+        streams += bytes([audio]) + struct.pack(">HH", 0xE000 | AC3_PID, 0xF000)
+    return _section(
+        0x02,
+        1,
+        struct.pack(">HH", 0xE000 | _PCR_PID, 0xF000 | len(_REGISTRATION))
+        + _REGISTRATION
+        + streams,
+    )
+
+
+def _psi(pmt: bytes) -> list[bytes]:
     return [
         synth_m2ts.source_packet(0, b"\x00" + _PAT),
-        synth_m2ts.source_packet(_PMT_PID, b"\x00" + _PMT),
+        synth_m2ts.source_packet(_PMT_PID, b"\x00" + pmt),
     ]
 
 
-def m2ts_clip(frames: int, start: int = 90000) -> bytes:
+def _ts_packets(pid: int, pes: bytes, counter: int) -> list[bytes]:
+    """*pes* over as many source packets as it needs; the first starts it."""
+    chunks = [pes[i : i + 184] for i in range(0, len(pes), 184)]
+    return [
+        synth_m2ts.source_packet(pid, chunk, start=index == 0, counter=counter + index)
+        for index, chunk in enumerate(chunks)
+    ]
+
+
+def m2ts_clip(
+    frames: int, start: int = 90000, *, ac3: bool = False, truehd: bool = False
+) -> bytes:
     """A Blu-ray clip of *frames* progressive 29.97 fps VC-1 frames.
 
     Decode order I P B B P B B ..., one GOP; the first frame shows at
     *start* (90 kHz). As on a disc every frame has a PTS and a DTS, the DTS
-    running a frame behind the I frame's PTS. *frames* is 1 + 3n.
+    running a frame behind the I frame's PTS. *frames* is 1 + 3n. With
+    *ac3*, an AC-3 track on PID 0x1100 starts with the video and runs on
+    its own 32 ms grid until it covers the video, so its last frame
+    overhangs the video's end, as on a disc. With *truehd*, that PID
+    carries TrueHD instead, its access units on extension 0x72 and the
+    AC-3 core on 0x76.
     """
+    from tests import synth_ac3, synth_truehd
+
     if frames % 3 != 1:
         raise ValueError("frames must be 1 + 3n")
     order = [("I", 0)]
     for anchor in range(3, frames, 3):
         order += [("P", anchor), ("B", anchor - 2), ("B", anchor - 1)]
-    packets = _psi()
+    # (time, order, packets): video by DTS, audio by PTS, video first.
+    events: list[tuple[int, int, list[bytes]]] = []
     for index, (kind, shown) in enumerate(order):
         unit = b""
         if kind == "I":
             unit += b"\x00\x00\x01\x0f" + sequence_header(interlace=0, pulldown=0)
             unit += b"\x00\x00\x01\x0e" + bytes(8)
         unit += b"\x00\x00\x01\x0d" + progressive_frame_header(kind) + b"\x55" * 32
-        payload = pes(unit, start + shown * FRAME, start + (index - 1) * FRAME)
-        packets.append(
-            synth_m2ts.source_packet(synth_m2ts.VIDEO_PID, payload, counter=index)
-        )
+        dts = start + (index - 1) * FRAME
+        payload = pes(unit, start + shown * FRAME, dts)
+        packet = synth_m2ts.source_packet(synth_m2ts.VIDEO_PID, payload, counter=index)
+        events.append((dts, 0, [packet]))
+    counter = 0
+    if ac3 or truehd:
+        count = -(-frames * FRAME // synth_ac3.FRAME_TICKS)
+        for index in range(count):
+            pts = start + index * synth_ac3.FRAME_TICKS
+            if truehd:
+                audio = pes(synth_ac3.frame(), pts, extension=0x76)
+            else:
+                body = bytes([0x81, 0x80, 5]) + _timestamp(pts, 0x20)
+                body += synth_ac3.frame()
+                audio = b"\x00\x00\x01\xbd" + len(body).to_bytes(2, "big") + body
+            events.append((pts, 1, _ts_packets(AC3_PID, audio, counter)))
+            counter += 5
+    if truehd:
+        units = -(-frames * FRAME // synth_truehd.UNIT_TICKS)
+        for index in range(units):
+            pts = start + index * synth_truehd.UNIT_TICKS
+            unit = pes(synth_truehd.access_unit(index), pts, extension=0x72)
+            events.append((pts, 2, _ts_packets(AC3_PID, unit, counter)))
+            counter += 1
+    pmt = _pmt(0x83 if truehd else 0x81 if ac3 else None)
+    packets = _psi(pmt)
+    for index, (_time, _order, units) in enumerate(sorted(events, key=lambda e: e[:2])):
+        packets += units
         if index % 5 == 4:
-            packets += _psi()
+            packets += _psi(pmt)
     # mkvmerge probes a few hundred packets before it accepts a stream.
     packets += [synth_m2ts.null_packet()] * 400
     return b"".join(packets)

@@ -1332,7 +1332,6 @@ def test_esc_while_ripping_asks_then_stops(
         assert footer_keys(app)["escape"] == "Stop"
         bar = app.screen.query_one("#progress", ProgressBar)
         assert bar.total == 100 and bar.progress == 40
-        assert "Muxing... 40%" in str(app.screen.query_one("#stage", Static).content)
         await pilot.press("escape")
         await dialog(pilot, app, tui.ConfirmDialog)
         await pilot.press("enter")  # Yes, stop

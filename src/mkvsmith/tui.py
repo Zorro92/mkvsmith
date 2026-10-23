@@ -1525,8 +1525,7 @@ class RipScreen(_LogPage):
     """Rips a batch, one line per output with its progress, plus the log."""
 
     DEFAULT_CSS = """
-    RipScreen #stage { margin: 1 1 0 1; }
-    RipScreen #progress { width: 1fr; margin: 0 1 1 1; }
+    RipScreen #progress { width: 1fr; margin: 1 1 1 1; }
     RipScreen #progress Bar { width: 1fr; }
     RipScreen #log { height: 1fr; border-top: solid $panel; }
     """
@@ -1552,7 +1551,6 @@ class RipScreen(_LogPage):
             ),
             id="jobs",
         )
-        yield Static("", id="stage", markup=False)
         yield ProgressBar(id="progress", total=None, show_eta=False)
         yield RichLog(id="log", wrap=True, markup=False, min_width=20)
 
@@ -1620,15 +1618,12 @@ class RipScreen(_LogPage):
     # -- UI updates ---------------------------------------------------------
 
     def _show_stage(self, job: RipJob, stage: str, pct: int | None) -> None:
-        """The job's line, and the bar under the list, at *stage*."""
+        """The job's line at *stage*, and the bar under the list."""
         if pct is None:
             status = tr("{stage}...", stage=stage)
         else:
             status = tr("{stage}... {pct}%", stage=stage, pct=pct)
         self._set_status(job, status)
-        self.query_one("#stage", Static).update(
-            f"#{job.title.index}  {job.title.name} · {status}"
-        )
         bar = self.query_one("#progress", ProgressBar)
         if pct is None:
             bar.update(total=None)
@@ -1662,7 +1657,6 @@ class RipScreen(_LogPage):
     def _done(self, result: RipBatchResult) -> None:
         self.running = False
         self.refresh_bindings()
-        self.query_one("#stage", Static).display = False
         self.query_one("#progress", ProgressBar).display = False
         self.result = result
         finished = {self.jobs.index(o.job) for o in result.outcomes}

@@ -63,7 +63,7 @@ that need a newer mkvmerge are gated on it (details in
 | `file` append mode offsets each clip by its real end, past the play item's out time | edition chapters placed on placeholder chapters from `--generate-chapters when-appending` | `mkv.py` (`_RETIME_EPS`) | ✔ real disc |
 | Shifts chapters unevenly across `--split parts:` | writes the chapters after the mux | [bluray.md](bluray.md#clips-played-in-part) | ✔ real disc |
 | Regenerates `_STATISTICS_TAGS` without `SOURCE_ID`, and puts a mux-time tag's UID after its Simples | rewrites the tags after the mux | `mkv._normalize_tags_for_source_id`, [matroska-output.md](matroska-output.md) | ✔ contract test (both still so, and fixed after) |
-| Writes no interlace elements for AVC | flags interlaced H.264 after the mux | `mkv._apply_interlace_flags` | none |
+| Writes no interlace elements for AVC | flags interlaced H.264 after the mux | `mkv._apply_interlace_flags` | ✔ contract test (none written, then both field orders flagged, progressive left alone) |
 | Misses sparse DVD subpictures it doesn't see in the first VOB | scans the VOBs and adds a VobSub input | `vobsub.py`, `mkv.py` | ✔ real disc |
 | Outputs TrueHD and its embedded AC-3 core as two tracks on one PID | treats the PID as not trimmable; the trim plan follows the TrueHD units | `m2ts._audio_tail`, `mkv._seamless_audio_pids` | none |
 | Can't read scrambled VOBs | refuses them (`disc_reader.py`) | | none |

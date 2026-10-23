@@ -10,6 +10,7 @@ with other releases.
 from __future__ import annotations
 
 import json
+import mmap
 from collections.abc import Sequence
 import shutil
 import subprocess
@@ -19,10 +20,10 @@ from typing import Any, cast
 
 import pytest
 
-from mkvsmith import mkv
+from mkvsmith import mkv, mkvtimes
 from mkvsmith.mkvtimes import is_vc1_track, read_track_times
 from mkvsmith.vc1time import correct_vc1_frame_times, retime_vc1_join_frames
-from tests import synth_vc1
+from tests import synth_h264, synth_vc1
 
 pytestmark = pytest.mark.skipif(
     shutil.which("mkvmerge") is None, reason="mkvmerge not installed"
@@ -172,6 +173,81 @@ def test_source_id_tags_are_fixed_after_the_mux(tmp_path: Path) -> None:
 def muxed_uid(children: list[ET.Element]) -> str | None:
     targets = next(child for child in children if child.tag == "Targets")
     return targets.findtext("TrackUID")
+
+
+# --- Interlaced H.264 (mkv._apply_interlace_flags) -----------------------------
+
+_VIDEO = 0xE0
+_FLAG_INTERLACED = 0x9A
+_FIELD_ORDER = 0x9D
+
+
+def _interlace_elements(path: Path) -> dict[int, int]:
+    """The video track's FlagInterlaced and FieldOrder, where written."""
+    found: dict[int, int] = {}
+    with (
+        path.open("rb") as handle,
+        mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data,
+    ):
+        # Segment > Tracks > TrackEntry > Video > the flags.
+        spans = [(0, len(data))]
+        for wanted in (
+            mkvtimes._SEGMENT,
+            mkvtimes._TRACKS,
+            mkvtimes._TRACK_ENTRY,
+            _VIDEO,
+        ):
+            spans = [
+                (value, value + size)
+                for start, end in spans
+                for element, _offset, value, size in mkvtimes._children(
+                    data, start, end
+                )
+                if element == wanted
+            ]
+        for start, end in spans:
+            for element, _offset, value, size in mkvtimes._children(data, start, end):
+                if element in (_FLAG_INTERLACED, _FIELD_ORDER):
+                    found[element] = mkvtimes._uint(data, value, size)
+    return found
+
+
+def _avc(tmp_path: Path, pic_struct: int | None) -> Path:
+    """A muxed H.264 stream: MBAFF frames with *pic_struct* timing, or
+    progressive frames (frame_mbs_only) for None."""
+    if pic_struct is None:
+        sps = synth_h264.sps(frame_mbs_only=True, pic_struct=False)
+        frames = [[synth_h264.idr_slice()]]
+        frames += [[synth_h264.slice_header()] for _ in range(59)]
+    else:
+        sps = synth_h264.sps(frame_mbs_only=False, mbaff=True, pic_struct=True)
+        timing = synth_h264.pic_timing(pic_struct)
+        frames = [[timing, synth_h264.idr_slice(field=False)]]
+        frames += [[timing, synth_h264.slice_header(field=False)] for _ in range(59)]
+    stream = tmp_path / "a.h264"
+    stream.write_bytes(synth_h264.annexb([sps, synth_h264.pps()], frames))
+    out = tmp_path / "a.mkv"
+    _mkvmerge("-o", out, stream)
+    return out
+
+
+@pytest.mark.parametrize(("pic_struct", "field_order"), [(3, 1), (4, 6)])
+def test_interlaced_avc_is_flagged_after_the_mux(
+    tmp_path: Path, pic_struct: int, field_order: int
+) -> None:
+    out = _avc(tmp_path, pic_struct)
+    # A failure here means mkvmerge now flags interlaced AVC itself, and
+    # the post-mux flags may no longer be needed.
+    assert _interlace_elements(out) == {}
+
+    assert mkv._apply_interlace_flags(out)
+    assert _interlace_elements(out) == {_FLAG_INTERLACED: 1, _FIELD_ORDER: field_order}
+
+
+def test_progressive_avc_is_left_unflagged(tmp_path: Path) -> None:
+    out = _avc(tmp_path, None)
+    assert not mkv._apply_interlace_flags(out)
+    assert _interlace_elements(out) == {}
 
 
 # --- HD DVD: VC-1 in an EVO (vc1time.correct_vc1_frame_times) -----------------

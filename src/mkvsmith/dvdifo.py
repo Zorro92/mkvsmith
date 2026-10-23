@@ -2579,6 +2579,7 @@ def _scan_vobu_nav(
     inputs: list[Path],
     vobu_sectors: list[int],
     read_sector: Callable[[int], bytes] | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> dict[int, _VobuNav]:
     """Read each given VOBU's NAV pack: its (vob_id, cell_id) and span.
 
@@ -2586,11 +2587,15 @@ def _scan_vobu_nav(
     per VOBU, since this may run for thousands of VOBUs on discs with
     seamless branching. *read_sector*, when given, reads a sector of the
     VOB set instead (the VOBs read in place inside a disc image).
+    *progress* gets the fraction of the sectors read so far.
     """
     results: dict[int, _VobuNav] = {}
+    total = len(vobu_sectors) or 1
     if read_sector is not None:
-        for sector in vobu_sectors:
+        for done, sector in enumerate(vobu_sectors, start=1):
             data = read_sector(sector)
+            if progress is not None:
+                progress(done / total)
             ids = _read_nav_ids_from_sector(data)
             if ids is not None:
                 ptm = _read_nav_ptm_from_sector(data) or (0, 0)
@@ -2599,7 +2604,9 @@ def _scan_vobu_nav(
     layout = _concat_file_layout(inputs)
     handles: dict[Path, Any] = {}
     try:
-        for sector in vobu_sectors:
+        for done, sector in enumerate(vobu_sectors, start=1):
+            if progress is not None:
+                progress(done / total)
             offset = sector * 2048
             for f, fstart, fend in layout:
                 if fstart <= offset < fend:
@@ -2624,11 +2631,14 @@ def _scan_vobu_cell_ids(
     inputs: list[Path],
     vobu_sectors: list[int],
     read_sector: Callable[[int], bytes] | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> dict[int, tuple[int, int]]:
     """Read the NAV pack (vob_id, cell_id) identity for each given VOBU sector."""
     return {
         sector: nav.ids
-        for sector, nav in _scan_vobu_nav(inputs, vobu_sectors, read_sector).items()
+        for sector, nav in _scan_vobu_nav(
+            inputs, vobu_sectors, read_sector, progress
+        ).items()
     }
 
 
@@ -2810,6 +2820,7 @@ def edition_union_vobu_layout(
     ifo_data: bytes,
     inputs: list[Path],
     read_sector: Callable[[int], bytes] | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> tuple[list[tuple[int, int]], list[float]] | None:
     """Byte ranges and real durations for a multi-edition DVD's cell union.
 
@@ -2829,7 +2840,7 @@ def edition_union_vobu_layout(
     if bounds is None:
         return None
     admap_index, scan_sectors = bounds
-    nav = _scan_vobu_nav(inputs, scan_sectors, read_sector)
+    nav = _scan_vobu_nav(inputs, scan_sectors, read_sector, progress)
     order = {(cell.vob_id, cell.cell_id): index for index, cell in enumerate(cells)}
     cell_vobus: dict[int, list[int]] = {}
     durations = [0.0] * len(cells)
@@ -2906,6 +2917,7 @@ def _interleaved_vobu_ranges(
     vobu_admap: list[int],
     inputs: list[Path],
     read_sector: Callable[[int], bytes] | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> list[tuple[int, int]] | None:
     """Build playback-ordered ranges from each VOBU's NAV-pack cell identity."""
     bounds = _interleaved_scan_sectors(cells, vobu_admap)
@@ -2928,7 +2940,7 @@ def _interleaved_vobu_ranges(
         f"{len(target_ids)} unique (vob_id,cell_id) target(s)); "
         f"scanning {len(scan_sectors)} VOBU NAV packs for cell ownership..."
     )
-    nav_ids = _scan_vobu_cell_ids(inputs, scan_sectors, read_sector)
+    nav_ids = _scan_vobu_cell_ids(inputs, scan_sectors, read_sector, progress)
     nav_unique = set(nav_ids.values())
     log_debug(
         f"NAV scan found {len(nav_unique)} unique (vob_id,cell_id) "
@@ -2988,6 +3000,7 @@ def _build_main_edition_vobu_ranges(
     inputs: list[Path],
     pgc_number: int | None = None,
     read_sector: Callable[[int], bytes] | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> list[tuple[int, int]] | None:
     """Build (start_byte, end_byte) VOBU ranges for the main PGC's own edition.
 
@@ -3037,7 +3050,7 @@ def _build_main_edition_vobu_ranges(
 
     if not vobu_admap:
         return None
-    return _interleaved_vobu_ranges(cells, vobu_admap, inputs, read_sector)
+    return _interleaved_vobu_ranges(cells, vobu_admap, inputs, read_sector, progress)
 
 
 def _pgc_cell_playback_table_base(

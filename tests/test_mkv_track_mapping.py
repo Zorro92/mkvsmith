@@ -406,6 +406,22 @@ def test_dvd_source_reads_an_image_across_its_members() -> None:
     assert mkv._DvdSource([Path("a.vob")]).read_sector() is None
 
 
+def test_stopping_while_locating_a_dvd_title_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    title = Title(index=0, source_file=tmp_path / "a.vob", name="T", duration_seconds=1)
+    title.dvd_ifo_data = b"IFO"
+
+    def stopped(*_args: object) -> None:
+        raise models.RipCancelled(title)
+
+    monkeypatch.setattr(mkv, "_parse_vts_vobu_admap", lambda _data: [0])
+    monkeypatch.setattr(mkv, "_build_main_edition_vobu_ranges", stopped)
+    # Any other failure falls back to the contiguous range; a stop stops.
+    with pytest.raises(models.RipCancelled):
+        mkv._main_edition_vobu_ranges(title, mkv._DvdSource([tmp_path / "a.vob"]))
+
+
 def test_prepare_dvd_inputs_from_an_image_gives_up_without_an_ifo_range(
     tmp_path: Path,
 ) -> None:

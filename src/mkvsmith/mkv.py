@@ -1399,7 +1399,9 @@ def _register_temp_file(
 
 
 def _main_edition_vobu_ranges(
-    title: Title, source: _DvdSource
+    title: Title,
+    source: _DvdSource,
+    progress: Callable[[float], None] | None = None,
 ) -> list[tuple[int, int]] | None:
     if title.dvd_ifo_data is None:
         return None
@@ -1413,7 +1415,10 @@ def _main_edition_vobu_ranges(
             source.paths,
             title.dvd_pgc_number,
             source.read_sector(),
+            progress,
         )
+    except RipCancelled:
+        raise
     except Exception:
         return None
 
@@ -1454,6 +1459,7 @@ def _prepare_dvd_edition_inputs(
     cleanup: list[Path],
     temp_files: list[Path],
     progress: Callable[[float], None] | None = None,
+    locating: Callable[[float], None] | None = None,
 ) -> list[Path]:
     """Combined VOB for a multi-edition DVD title, with retimed editions.
 
@@ -1470,6 +1476,7 @@ def _prepare_dvd_edition_inputs(
             title.dvd_ifo_data,
             source.paths,
             source.read_sector(),
+            locating,
         )
         if title.dvd_ifo_data is not None
         else None
@@ -1503,19 +1510,22 @@ def _prepare_dvd_inputs(
     progress: Callable[[float], None] | None = None,
     *,
     source: _DvdSource | None = None,
+    locating: Callable[[float], None] | None = None,
 ) -> list[Path] | None:
     """The title's own part of the VOBs, in one temp VOB.
 
     *source* reads the VOBs in place inside a disc image (default: the
     *inputs* on disk). When the title can't be trimmed, the untrimmed
     *inputs* come back, or None when they aren't on disk (the caller
-    extracts them). *progress* gets the fraction written.
+    extracts them). *progress* gets the fraction written; *locating* the
+    fraction of the NAV packs read to find the title's VOBUs, when it
+    has to (seamless branching, editions).
     """
     if source is None:
         source = _DvdSource(inputs)
     if title.dvd_edition_cells:
         return _prepare_dvd_edition_inputs(
-            title, source, temp_base, cleanup, temp_files, progress
+            title, source, temp_base, cleanup, temp_files, progress, locating
         )
     trim_range = _find_dvd_trim_range(title, source)
     if trim_range is None:
@@ -1532,7 +1542,7 @@ def _prepare_dvd_inputs(
     output = _temp_vob_path(temp_base)
     _register_temp_file(output, cleanup, temp_files)
 
-    vobu_ranges = _main_edition_vobu_ranges(title, source)
+    vobu_ranges = _main_edition_vobu_ranges(title, source, locating)
     if vobu_ranges:
         _write_vobu_trim(source, vobu_ranges, output, progress)
         return [output]
@@ -2999,6 +3009,7 @@ class MKVCreator:
                 cleanup,
                 self.cleanup.temp_files,
                 self._stage_progress(title, tr("Preparing the title")),
+                locating=self._stage_progress(title, tr("Locating the title")),
             )
             inputs = trimmed if trimmed is not None else inputs
         return _MuxInputPlan(inputs=inputs, cleanup=cleanup, is_dvd_vob=is_dvd_vob)
@@ -3040,6 +3051,7 @@ class MKVCreator:
                 self.cleanup.temp_files,
                 self._stage_progress(title, tr("Preparing the title")),
                 source=_DvdSource([], image, members),
+                locating=self._stage_progress(title, tr("Locating the title")),
             )
         if inputs is None:
             log_debug("DVD title can't be trimmed from its IFO; extracting the VOBs")

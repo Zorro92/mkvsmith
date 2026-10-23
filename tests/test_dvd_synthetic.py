@@ -682,12 +682,21 @@ def test_nav_packs_read_in_place_match_the_files(tmp_path: Path) -> None:
     first.write_bytes(stream[: 4 * 2048])
     second.write_bytes(stream[4 * 2048 :])
 
-    from_files = dvdifo._scan_vobu_nav([first, second], [0, 3, 5])
+    seen_files: list[float] = []
+    seen_in_place: list[float] = []
+    from_files = dvdifo._scan_vobu_nav(
+        [first, second], [0, 3, 5], progress=seen_files.append
+    )
     in_place = dvdifo._scan_vobu_nav(
-        [], [0, 3, 5], lambda n: stream[n * 2048 : (n + 1) * 2048]
+        [],
+        [0, 3, 5],
+        lambda n: stream[n * 2048 : (n + 1) * 2048],
+        seen_in_place.append,
     )
 
     assert in_place == from_files
+    # A third of the NAV packs at a time.
+    assert seen_files == seen_in_place == pytest.approx([1 / 3, 2 / 3, 1.0])
     assert {n: nav.ids for n, nav in in_place.items()} == {
         0: (1, 1),
         3: (1, 2),

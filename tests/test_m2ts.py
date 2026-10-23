@@ -341,12 +341,16 @@ def test_clone_or_copy_reports_the_bytes_copied(
     src = tmp_path / "clip.m2ts"
     src.write_bytes(bytes(range(256)) * 40_000)  # 10 MB: three 4 MB chunks
     dst = tmp_path / "copy.m2ts"
-    import fcntl
+    try:
+        import fcntl
+    except ImportError:  # Windows: there is no clone to try
+        pass
+    else:
 
-    def no_clone(*_args: object) -> None:
-        raise OSError("no FICLONE here")
+        def no_clone(*_args: object) -> None:
+            raise OSError("no FICLONE here")
 
-    monkeypatch.setattr(fcntl, "ioctl", no_clone)
+        monkeypatch.setattr(fcntl, "ioctl", no_clone)
     seen: list[int] = []
 
     mkv._clone_or_copy(src, dst, seen.append)

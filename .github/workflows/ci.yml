@@ -85,6 +85,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.13"
+          # Its own uv cache key: the ubuntu-26.04 py3.13 test job's is the
+          # same otherwise, and the second to finish can't save it.
+          cache-suffix: mkvmerge-versions
 
       - name: Install dependencies
         run: uv sync --python 3.13

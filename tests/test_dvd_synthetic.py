@@ -665,3 +665,32 @@ def test_a_title_set_with_only_its_backup_is_found(tmp_path: Path) -> None:
 
     assert [layout.ifo_path.name for layout in layouts] == ["VTS_01_0.IFO"]
     assert dvdbuild._read_vts_ifo_bytes(layouts[0]) == _one_title()
+
+
+def test_nav_packs_read_in_place_match_the_files(tmp_path: Path) -> None:
+    # Three VOBUs across two VOB files: sectors 0 and 3 in the first, 5 in
+    # the second (a 4-sector file), each starting with its NAV pack.
+    from tests.synth_dvd import nav_pack
+
+    sectors = {
+        0: nav_pack(1, 1, 0, 900),
+        3: nav_pack(1, 2, 900, 1800),
+        5: nav_pack(2, 1, 0, 450),
+    }
+    stream = b"".join(sectors.get(n, bytes(2048)) for n in range(8))
+    first, second = tmp_path / "VTS_01_1.VOB", tmp_path / "VTS_01_2.VOB"
+    first.write_bytes(stream[: 4 * 2048])
+    second.write_bytes(stream[4 * 2048 :])
+
+    from_files = dvdifo._scan_vobu_nav([first, second], [0, 3, 5])
+    in_place = dvdifo._scan_vobu_nav(
+        [], [0, 3, 5], lambda n: stream[n * 2048 : (n + 1) * 2048]
+    )
+
+    assert in_place == from_files
+    assert {n: nav.ids for n, nav in in_place.items()} == {
+        0: (1, 1),
+        3: (1, 2),
+        5: (2, 1),
+    }
+    assert in_place[3].seconds == pytest.approx(0.01)

@@ -38,7 +38,7 @@ import threading
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, TypedDict, cast, final
+from typing import IO, TYPE_CHECKING, Any, BinaryIO, TypedDict, cast, final
 from collections.abc import Callable, Sequence
 
 from mkvsmith.dvdifo import (
@@ -50,11 +50,12 @@ from mkvsmith.dvdifo import (
     _LANG_MAP_3_TO_2,
     _parse_vts_video_attrs,
 )
+from mkvsmith.isofs import IsoEntry, IsoImage
 from mkvsmith.vobsub import (
     _dvd_main_content_range,
     _copy_concat_range,
-    _extract_concat_range,
     _extract_dvd_vobsubs,
+    _read_concat_bytes,
     _scan_evo_video_stream_id,
     _vobsub_pts_offset,
 )
@@ -1296,14 +1297,70 @@ def _output_file_for_title(output_dir: Path, title: Title) -> Path:
     return output_dir / f"{safe_name}_t{title.index:02d}.mkv"
 
 
-def _find_dvd_trim_range(title: Title, inputs: list[Path]) -> tuple[int, int] | None:
+# How much of a DVD title the trim reads at a time.
+_DVD_COPY_CHUNK = 4 * 1024 * 1024
+_DVD_SECTOR = 2048
+
+
+@dataclass(frozen=True)
+class _DvdSource:
+    """A DVD title's VOBs as one byte stream: files on disk, or the members
+    of a disc image read in place (*image* and its *entries*, in order)."""
+
+    paths: list[Path]
+    image: IsoImage | None = None
+    entries: list[IsoEntry] = field(default_factory=list[IsoEntry])
+
+    def size(self) -> int:
+        if self.image is not None:
+            return sum(entry.size for entry in self.entries)
+        return sum(path.stat().st_size for path in self.paths)
+
+    def read(self, offset: int, length: int) -> bytes:
+        if self.image is None:
+            return _read_concat_bytes(self.paths, offset, length)
+        chunks: list[bytes] = []
+        start = 0
+        for entry in self.entries:
+            end = start + entry.size
+            if offset < end and offset + length > start:
+                local = max(0, offset - start)
+                take = min(end, offset + length) - (start + local)
+                chunks.append(self.image.read(entry, local, take))
+            start = end
+        return b"".join(chunks)
+
+    def read_sector(self) -> Callable[[int], bytes] | None:
+        """A sector reader for the NAV scans; None reads the files directly."""
+        if self.image is None:
+            return None
+        return lambda sector: self.read(sector * _DVD_SECTOR, _DVD_SECTOR)
+
+    def copy(
+        self,
+        start: int,
+        end: int,
+        out: BinaryIO,
+        copied: Callable[[int], None] | None = None,
+    ) -> None:
+        """Write bytes [start, end) to *out*; *copied* gets the count so far."""
+        if self.image is None:
+            _copy_concat_range(self.paths, start, end, out, copied)
+            return
+        for offset in range(start, end, _DVD_COPY_CHUNK):
+            size = min(_DVD_COPY_CHUNK, end - offset)
+            out.write(self.read(offset, size))
+            if copied is not None:
+                copied(offset + size - start)
+
+
+def _find_dvd_trim_range(title: Title, source: _DvdSource) -> tuple[int, int] | None:
     trim_range: tuple[int, int] | None = None
     if title.dvd_ifo_data is not None:
         try:
-            total_size = sum(path.stat().st_size for path in inputs)
             trim_range = _lookup_main_feature_range(
                 title.dvd_ifo_data,
-                total_size,
+                source.size(),
                 title.dvd_pgc_number,
             )
             if trim_range:
@@ -1314,9 +1371,10 @@ def _find_dvd_trim_range(title: Title, inputs: list[Path]) -> tuple[int, int] | 
             log_debug(f"IFO cell table failed ({exc}); trying PTS scan")
             trim_range = None
 
-    if trim_range is None:
+    # The PTS scan reads the whole stream: only for files already on disk.
+    if trim_range is None and source.image is None:
         try:
-            trim_range = _dvd_main_content_range(inputs)
+            trim_range = _dvd_main_content_range(source.paths)
         except Exception as exc:
             log_debug(f"DVD PTS cell scan failed ({exc}); muxing raw VOBs")
             trim_range = None
@@ -1341,7 +1399,7 @@ def _register_temp_file(
 
 
 def _main_edition_vobu_ranges(
-    title: Title, inputs: list[Path]
+    title: Title, source: _DvdSource
 ) -> list[tuple[int, int]] | None:
     if title.dvd_ifo_data is None:
         return None
@@ -1352,20 +1410,21 @@ def _main_edition_vobu_ranges(
         return _build_main_edition_vobu_ranges(
             title.dvd_ifo_data,
             admap,
-            inputs,
+            source.paths,
             title.dvd_pgc_number,
+            source.read_sector(),
         )
     except Exception:
         return None
 
 
 def _write_vobu_trim(
-    inputs: list[Path],
+    source: _DvdSource,
     ranges: list[tuple[int, int]],
     output: Path,
     progress: Callable[[float], None] | None = None,
 ) -> None:
-    """Write the VOBU *ranges* of *inputs*, in order, into *output*.
+    """Write the VOBU *ranges* of *source*, in order, into *output*.
 
     *progress* gets the fraction of the bytes written so far.
     """
@@ -1384,13 +1443,13 @@ def _write_vobu_trim(
     done = 0
     with output.open("wb") as output_file:
         for start, end in ranges:
-            _copy_concat_range(inputs, start, end, output_file, copied_after(done))
+            source.copy(start, end, output_file, copied_after(done))
             done += end - start
 
 
 def _prepare_dvd_edition_inputs(
     title: Title,
-    inputs: list[Path],
+    source: _DvdSource,
     temp_base: Path | None,
     cleanup: list[Path],
     temp_files: list[Path],
@@ -1406,7 +1465,12 @@ def _prepare_dvd_edition_inputs(
     from mkvsmith.dvdifo import edition_union_vobu_layout
 
     layout = (
-        edition_union_vobu_layout(title.dvd_edition_cells, title.dvd_ifo_data, inputs)
+        edition_union_vobu_layout(
+            title.dvd_edition_cells,
+            title.dvd_ifo_data,
+            source.paths,
+            source.read_sector(),
+        )
         if title.dvd_ifo_data is not None
         else None
     )
@@ -1418,7 +1482,7 @@ def _prepare_dvd_edition_inputs(
     runs, durations = layout
     output = _temp_vob_path(temp_base)
     _register_temp_file(output, cleanup, temp_files)
-    _write_vobu_trim(inputs, runs, output, progress)
+    _write_vobu_trim(source, runs, output, progress)
     bounds: list[tuple[float, float]] = []
     running = 0.0
     for duration in durations:
@@ -1437,15 +1501,26 @@ def _prepare_dvd_inputs(
     cleanup: list[Path],
     temp_files: list[Path],
     progress: Callable[[float], None] | None = None,
-) -> list[Path]:
-    """The title's own part of the VOBs, in one temp VOB (or *inputs* as
-    they are when trimming fails). *progress* gets the fraction written."""
+    *,
+    source: _DvdSource | None = None,
+) -> list[Path] | None:
+    """The title's own part of the VOBs, in one temp VOB.
+
+    *source* reads the VOBs in place inside a disc image (default: the
+    *inputs* on disk). When the title can't be trimmed, the untrimmed
+    *inputs* come back, or None when they aren't on disk (the caller
+    extracts them). *progress* gets the fraction written.
+    """
+    if source is None:
+        source = _DvdSource(inputs)
     if title.dvd_edition_cells:
         return _prepare_dvd_edition_inputs(
-            title, inputs, temp_base, cleanup, temp_files, progress
+            title, source, temp_base, cleanup, temp_files, progress
         )
-    trim_range = _find_dvd_trim_range(title, inputs)
+    trim_range = _find_dvd_trim_range(title, source)
     if trim_range is None:
+        if source.image is not None:
+            return None
         log_warn(
             "DVD cell trimming failed; muxing raw VOBs. "
             "Output duration may be incorrect. "
@@ -1454,23 +1529,15 @@ def _prepare_dvd_inputs(
         return inputs
 
     start, end = trim_range
-    temp_directory = temp_base
-    output = _temp_vob_path(temp_directory)
+    output = _temp_vob_path(temp_base)
     _register_temp_file(output, cleanup, temp_files)
 
-    vobu_ranges = _main_edition_vobu_ranges(title, inputs)
+    vobu_ranges = _main_edition_vobu_ranges(title, source)
     if vobu_ranges:
-        _write_vobu_trim(inputs, vobu_ranges, output, progress)
+        _write_vobu_trim(source, vobu_ranges, output, progress)
         return [output]
 
-    log_debug(f"Trimming DVD title ({(end - start) / 1e9:.1f} GB)...")
-    whole = (end - start) or 1
-
-    def copied(count: int) -> None:
-        if progress is not None:
-            progress(count / whole)
-
-    _extract_concat_range(inputs, start, end, output, copied)
+    _write_vobu_trim(source, [(start, end)], output, progress)
     return [output]
 
 
@@ -2882,6 +2949,12 @@ class MKVCreator:
                 estimated_size = 0
 
         extract_temp_base = temp_base_for_title(estimated_size, self.config)
+        if is_iso and _is_dvd_vob_input(
+            streams, [Path(path) for path in title.iso_internal_paths]
+        ):
+            direct = self._dvd_iso_inputs(title, extract_temp_base)
+            if direct is not None:
+                return direct
         if is_iso:
             n_files = len(title.iso_internal_paths)
             if estimated_size:
@@ -2919,7 +2992,7 @@ class MKVCreator:
 
         is_dvd_vob = _is_dvd_vob_input(streams, inputs)
         if is_dvd_vob:
-            inputs = _prepare_dvd_inputs(
+            trimmed = _prepare_dvd_inputs(
                 title,
                 inputs,
                 extract_temp_base,
@@ -2927,7 +3000,51 @@ class MKVCreator:
                 self.cleanup.temp_files,
                 self._stage_progress(title, tr("Preparing the title")),
             )
+            inputs = trimmed if trimmed is not None else inputs
         return _MuxInputPlan(inputs=inputs, cleanup=cleanup, is_dvd_vob=is_dvd_vob)
+
+    def _dvd_iso_inputs(
+        self, title: Title, temp_base: Path | None
+    ) -> _MuxInputPlan | None:
+        """Trim a DVD title straight out of its disc image.
+
+        Only the title's own VOBUs are read from the image, and the NAV
+        packs that locate them, rather than every VOB being extracted first.
+        None when the image can't be read in place or the title can't be
+        trimmed from its IFO; the caller then extracts the VOBs.
+        """
+        from mkvsmith.disc_reader import _open_iso
+
+        if title.dvd_ifo_data is None:
+            return None
+        image = _open_iso(title.source_file)
+        if image is None:
+            return None
+        with image:
+            entries = [image.entries.get(path) for path in title.iso_internal_paths]
+            members = [entry for entry in entries if entry is not None]
+            if len(members) != len(entries):
+                return None
+            log_info(
+                tr(
+                    "Reading the title from the ISO ({size} GB of VOBs)...",
+                    size=f"{sum(entry.size for entry in members) / 1e9:.1f}",
+                )
+            )
+            cleanup: list[Path] = []
+            inputs = _prepare_dvd_inputs(
+                title,
+                [],
+                temp_base,
+                cleanup,
+                self.cleanup.temp_files,
+                self._stage_progress(title, tr("Preparing the title")),
+                source=_DvdSource([], image, members),
+            )
+        if inputs is None:
+            log_debug("DVD title can't be trimmed from its IFO; extracting the VOBs")
+            return None
+        return _MuxInputPlan(inputs=inputs, cleanup=cleanup, is_dvd_vob=True)
 
     def _prepare_tracks(
         self,

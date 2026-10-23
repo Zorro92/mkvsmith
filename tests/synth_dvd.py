@@ -462,3 +462,15 @@ def video_cc_pack(pts: int, pairs: list[tuple[int, int]]) -> bytes:
     gop = b"\x00\x00\x01\xb8" + bytes([0x00, 0x08, 0x00, 0x00])
     picture = b"\x00\x00\x01\x00" + bytes([0x00, 0x0F, 0xFF, 0xF8])
     return pes_pack(0xE0, gop + cc_user_data(pairs) + picture, pts)
+
+
+def nav_pack(vob_id: int, cell_id: int, start_ptm: int, end_ptm: int) -> bytes:
+    """A VOBU's NAV pack (one sector): the PCI with its presentation span,
+    then the DSI naming the VOB and cell it belongs to (DVD-Video, dsi_gi)."""
+    pci = bytes(12) + start_ptm.to_bytes(4, "big") + end_ptm.to_bytes(4, "big")
+    dsi = bytes(24) + vob_id.to_bytes(2, "big") + bytes([0, cell_id])
+    packets = b""
+    for substream, body in ((0x00, pci), (0x01, dsi)):
+        payload = bytes([substream]) + body
+        packets += b"\x00\x00\x01\xbf" + len(payload).to_bytes(2, "big") + payload
+    return pad_to_sector(_pack_header() + packets)

@@ -121,7 +121,7 @@ def test_dvd_edition_inputs_retime_atoms_onto_nav_durations(
     monkeypatch.setattr(mkv, "_write_vobu_trim", write)
 
     mkv._prepare_dvd_edition_inputs(
-        title, [tmp_path / "VTS_09_1.VOB"], tmp_path, [], []
+        title, mkv._DvdSource([tmp_path / "VTS_09_1.VOB"]), tmp_path, [], []
     )
 
     atoms = title.editions[0].atoms

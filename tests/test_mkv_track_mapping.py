@@ -5,6 +5,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
+import io
 import subprocess
 from collections.abc import Callable, Sequence
 from typing import IO, Any, cast
@@ -310,22 +311,12 @@ def test_prepare_dvd_inputs_extracts_contiguous_range(
         return (2, 8)
 
     monkeypatch.setattr(mkv, "_dvd_main_content_range", fake_content_range)
-    calls: list[tuple[list[Path], int, int, Path]] = []
-
-    def extract(
-        inputs: list[Path], start: int, end: int, output: Path, _copied: object
-    ) -> Path:
-        calls.append((inputs, start, end, output))
-        output.write_bytes(b"trimmed")
-        return output
-
-    monkeypatch.setattr(mkv, "_extract_concat_range", extract)
     cleanup: list[Path] = []
 
     result = mkv._prepare_dvd_inputs(title, [source], None, cleanup, temp_files)
 
-    assert calls == [([source], 2, 8, result[0])]
-    assert result[0].read_bytes() == b"trimmed"
+    assert result is not None
+    assert result[0].read_bytes() == b"234567"
     assert cleanup == [result[0]]
     assert temp_files == cleanup
 
@@ -366,10 +357,67 @@ def test_prepare_dvd_inputs_concatenates_vobu_runs(
     )
 
     # The runs go straight into one VOB: no per-run files on the way.
+    assert result is not None
     assert result[0].read_bytes() == b"0145"
     assert cleanup == [result[0]]
     assert temp_files == cleanup
     assert seen == [0.5, 1.0]
+
+
+class _FakeEntry:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.size = len(data)
+
+
+class _FakeImage:
+    """Members of a disc image, read in place."""
+
+    def read(
+        self, entry: _FakeEntry, offset: int = 0, size: int | None = None
+    ) -> bytes:
+        end = entry.size if size is None else offset + size
+        return entry.data[offset:end]
+
+
+def _image_source(*members: bytes) -> mkv._DvdSource:
+    return mkv._DvdSource(
+        [],
+        cast(Any, _FakeImage()),
+        [cast(Any, _FakeEntry(data)) for data in members],
+    )
+
+
+def test_dvd_source_reads_an_image_across_its_members() -> None:
+    source = _image_source(b"0123", b"456789")
+
+    assert source.size() == 10
+    assert source.read(2, 5) == b"23456"
+    reader = source.read_sector()
+    assert reader is not None and reader(0) == b"0123456789"
+
+    out = io.BytesIO()
+    seen: list[int] = []
+    source.copy(1, 9, out, seen.append)
+    assert out.getvalue() == b"12345678"
+    assert seen == [8]
+
+    # Files on disk are read directly by the NAV scans.
+    assert mkv._DvdSource([Path("a.vob")]).read_sector() is None
+
+
+def test_prepare_dvd_inputs_from_an_image_gives_up_without_an_ifo_range(
+    tmp_path: Path,
+) -> None:
+    title = Title(
+        index=0, source_file=tmp_path / "disc.iso", name="T", duration_seconds=1
+    )
+    # No IFO: the range would need a PTS scan of every VOB, so the caller
+    # extracts them instead.
+    result = mkv._prepare_dvd_inputs(
+        title, [], tmp_path, [], [], source=_image_source(b"x" * 4096)
+    )
+    assert result is None
 
 
 def test_is_dvd_vob_input_requires_mpeg2_vob() -> None:

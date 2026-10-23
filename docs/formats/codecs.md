@@ -98,6 +98,15 @@ profile 7. So mkvsmith folds the stream table's Dolby Vision entry into
 the base layer's video stream (marked Dolby Vision in the listing) rather
 than listing a second video stream that would match no mkvmerge track.
 
+✔ real disc, the same feature ripped whole (130,751 frames): the RPUs
+dovi_tool extracts from the MKV are byte for byte the ones on PID `1015`,
+in order. The enhancement layer rides inside each frame, as NAL units of
+type 63, not in `BlockAdditions` (no frame has one); split out again with
+dovi_tool it is the PID `1015` stream byte for byte, but for a 4-byte
+start code (3 on the disc) before its final end-of-sequence NAL unit. The
+track's `Colour` element (BT.2020, PQ, the mastering display, MaxCLL 331,
+MaxFALL 226) is the base layer's SEI values exactly.
+
 ### MPEG-2 (DVD, some BD)
 
 Sequence header: `aspect_ratio_information` (4 bits: 1 square, 2 4:3, 3

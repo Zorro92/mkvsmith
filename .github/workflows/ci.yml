@@ -12,16 +12,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ubuntu-24.04-arm: native ARM64 Linux (Raspberry Pi / ARM NAS class),
-        # free for public repositories.
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        # Exact images, not the -latest labels: those move to new releases
+        # on GitHub's schedule (and warn for weeks before). Bump them here.
+        # ubuntu-26.04-arm: native ARM64 Linux (Raspberry Pi / ARM NAS
+        # class), free for public repositories.
+        os: [ubuntu-26.04, ubuntu-26.04-arm, macos-26, windows-2025]
         python-version: ["3.12", "3.13"]
         exclude:
           # Full Python matrix on x86 Linux; one Python per other OS to keep
           # runner usage (macOS/Windows bill at higher multipliers) low.
-          - { os: ubuntu-24.04-arm, python-version: "3.12" }
-          - { os: macos-latest, python-version: "3.12" }
-          - { os: windows-latest, python-version: "3.12" }
+          - { os: ubuntu-26.04-arm, python-version: "3.12" }
+          - { os: macos-26, python-version: "3.12" }
+          - { os: windows-2025, python-version: "3.12" }
     steps:
       - uses: actions/checkout@v5
 
@@ -66,7 +68,7 @@ jobs:
     # its AppImage (scripts/mkvmerge_versions.py). The other jobs cover the
     # packaged versions.
     name: mkvmerge versions (54, 81, latest)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5

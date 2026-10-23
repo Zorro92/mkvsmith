@@ -378,6 +378,14 @@ one of the 28 joins then lands within 1 ms of the playlist's time, the
 video and all four audio tracks end at the playlist's length, the audio
 trims are unchanged, and every frame step is 40–42 ms.
 
+H.264 needs none of this: its blocks carry each frame's own time, so a
+`track` append starts the next clip where the last one's final frame
+ends. ✔ real disc: a feature of 132 seamless H.264 clips (131 joins,
+92 clip tails trimmed) came out with every frame step 41–42 ms, every
+join's frame on the playlist's time (93 exactly, 38 within 1 ms), the
+video ending at the playlist's length and every audio track within an
+AC-3 frame of it.
+
 Counting a clip's frames with ffprobe gives one more packet than the clip
 has frames (✔ real disc, every clip tried), which reads as a dropped
 frame; the clip's last video PTS shows there is none.

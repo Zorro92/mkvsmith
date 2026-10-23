@@ -1789,3 +1789,24 @@ def test_the_title_lists_name_enter_in_the_footer(tmp_path: Path) -> None:
         await wait_until(pilot, lambda: "enter" in footer_keys(app))
 
     titles_app(body, [make_title(0)], tmp_path)
+
+
+def test_a_newer_version_shows_as_a_notification(
+    monkeypatch: pytest.MonkeyPatch, settings_file: Path
+) -> None:
+    from mkvsmith.updates import UpdateInfo
+
+    info = UpdateInfo("0.26.5", "0.27.0", "uv tool upgrade mkvsmith")
+    monkeypatch.setattr(tui, "checks_enabled", lambda _setting: True)
+    monkeypatch.setattr(tui, "check_for_update", lambda: info)
+
+    async def body(pilot: Pilot[None], app: tui.MkvsmithApp) -> None:
+        await wait_until(
+            pilot,
+            lambda: any("0.27.0" in str(n.message) for n in app._notifications),
+        )
+        note = next(n for n in app._notifications if "0.27.0" in str(n.message))
+        assert note.title == "Update available"
+        assert "uv tool upgrade mkvsmith" in str(note.message)
+
+    run_app(body)

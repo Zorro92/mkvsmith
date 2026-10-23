@@ -33,6 +33,12 @@ def _temp_files_in_tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Iterato
         tempfile.tempdir = saved
 
 
+@pytest.fixture(autouse=True)
+def _no_update_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test asks GitHub for the latest version (updates.DISABLE_ENV)."""
+    monkeypatch.setenv("MKVSMITH_NO_UPDATE_CHECK", "1")
+
+
 @pytest.fixture
 def fixtures_dir() -> Path:
     """Directory holding captured real disc-structure blobs (.mpls/.clpi/.ifo/.vob)."""

@@ -46,7 +46,10 @@ The first time, it asks a few questions (your languages, whether to keep
 subtitles, and so on). Press Enter to keep each suggestion. After that,
 pick a disc and rip.
 
-To update to the latest version, run `uv tool upgrade mkvsmith`. Prefer
+mkvsmith checks once a day whether a newer version is out and tells you,
+with the command that updates it (`mkvsmith --check-updates` checks right
+away; `mkvsmith --set updates.check=no` turns the check off). To update to
+the latest version, run `uv tool upgrade mkvsmith`. Prefer
 [pipx](https://pipx.pypa.io/)? Use
 `pipx install git+https://github.com/Zorro92/mkvsmith` (with Python 3.12 or
 newer) and `pipx upgrade mkvsmith`.

@@ -127,6 +127,8 @@ class Settings:
     discdb_timeout: float = 10.0
     discdb_contribute: str = "off"
     discdb_open_browser: bool = True
+    # [updates]
+    update_check: bool = True
 
     # ``section.name`` keys the user has answered (present in the file, or
     # set through ``set_setting``). Only these are written back, so a
@@ -525,6 +527,13 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "bool",
         _parse_bool,
         "Open TheDiscDB in a browser after preparing a contribution?",
+    ),
+    SettingSpec(
+        "updates.check",
+        "update_check",
+        "bool",
+        _parse_bool,
+        "Check once a day for a newer mkvsmith?",
     ),
 )
 

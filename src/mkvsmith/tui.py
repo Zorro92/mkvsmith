@@ -54,6 +54,7 @@ from mkvsmith.cli import (
     _title_source_id,
     _video_stream_line,
 )
+from mkvsmith.updates import check_for_update, checks_enabled, update_notice
 from mkvsmith.disc_reader import (
     _VIDEO_FILE_EXTENSIONS,
     DISC_IMAGE_EXTENSIONS,
@@ -1988,10 +1989,23 @@ class MkvsmithApp(App[None]):
     async def _start(self) -> None:
         await asyncio.to_thread(self._setup)
         self.push_screen(MainMenu())
+        if checks_enabled(self.state.settings.update_check):
+            self.run_worker(self._check_for_update, thread=True, group="updates")
         if self.initial_titles:
             self.push_screen(TitlesScreen(self.initial_titles, self.initial_metadata))
         elif self.source is not None:
             self.push_screen(ScanScreen(self.source))
+
+    def _check_for_update(self) -> None:
+        """Tell the user, once the day's check is in, about a newer mkvsmith."""
+        info = check_for_update()
+        if info is not None:
+            self.call_from_thread(
+                self.notify,
+                update_notice(info),
+                title=tr("Update available"),
+                timeout=30,
+            )
 
     def _setup(self) -> None:
         """First-run setup (or the settings new since the last run).

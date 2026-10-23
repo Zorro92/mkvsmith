@@ -65,6 +65,13 @@ from mkvsmith.i18n import (
     language_name,
     detect_locale_language,
 )
+from mkvsmith.updates import (
+    BackgroundCheck,
+    check_for_update,
+    checks_enabled,
+    fetch_latest_version,
+    update_notice,
+)
 from mkvsmith.settings import (
     ASK_MODES,
     DISCDB_CONTRIBUTE_MODES,
@@ -904,6 +911,11 @@ def _build_arg_parser(full: bool = False) -> argparse.ArgumentParser:
         help=tr("show the version and exit"),
     )
     other.add_argument(
+        "--check-updates",
+        action="store_true",
+        help=tr("check now for a newer mkvsmith and exit"),
+    )
+    other.add_argument(
         "--ui-lang",
         default=None,
         metavar="LANG",
@@ -1204,6 +1216,8 @@ def parse_args(
         _run_settings_changes(a.set_settings, a.reset_settings)
     if a.settings:
         _show_settings()
+    if a.check_updates:
+        _check_updates_now()
 
     interactive = _is_interactive_run(a)
     if before_apply is not None:
@@ -1670,11 +1684,55 @@ def main():
     runtime_state = RUNTIME_STATE
     source, action, number, stream_ids, edition_indices = _initialize_cli(runtime_state)
     _configure_runtime(runtime_state)
-    # The full-screen UI scans and rips by itself. (A TheDiscDB contribution
-    # stops after preparing it, so it takes the plain path below.)
+    # The full-screen UI scans and rips by itself (and checks for updates
+    # itself). A TheDiscDB contribution stops after preparing it, so it
+    # takes the plain path below.
     if action == "interactive" and not runtime_state.discdb_options.contribute:
         _run_interactive(source, runtime_state)
         return
+    update_check = (
+        BackgroundCheck()
+        if checks_enabled(runtime_state.settings.update_check)
+        else None
+    )
+    try:
+        _run_cli(source, action, number, stream_ids, edition_indices, runtime_state)
+    finally:
+        _report_update(update_check)
+
+
+def _report_update(update_check: BackgroundCheck | None) -> None:
+    """Say so when the run's update check found a newer mkvsmith (it gets a
+    moment more if the day's check is still under way)."""
+    if update_check is None:
+        return
+    info = update_check.result(wait=2.0)
+    if info is not None:
+        log_info(update_notice(info))
+
+
+def _check_updates_now() -> None:
+    """``--check-updates``: ask now (not the day's cached answer), and exit."""
+    latest = fetch_latest_version()
+    if latest is None:
+        log_warn(tr("Could not check for updates (no connection to GitHub?)"))
+        sys.exit(1)
+    info = check_for_update(force=True, fetch=lambda: latest)
+    if info is None:
+        log_info(tr("mkvsmith {current} is up to date", current=MKVSMITH_VERSION))
+    else:
+        log_info(update_notice(info))
+    sys.exit(0)
+
+
+def _run_cli(
+    source: Path | None,
+    action: str,
+    number: int | None,
+    stream_ids: list[str] | None,
+    edition_indices: list[int] | None,
+    runtime_state: RuntimeState,
+) -> None:
     if source is None:
         log_error(tr("A source path is required"))
         log_error(tr("Run with -h to see usage, e.g. script.py /path/to/media"))

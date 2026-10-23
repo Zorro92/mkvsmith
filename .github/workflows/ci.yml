@@ -72,7 +72,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Cache unpacked MKVToolNix AppImages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/mkvsmith/mkvtoolnix
           # Versions already unpacked are reused; a newer "latest" is
